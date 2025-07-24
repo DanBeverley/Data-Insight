@@ -1,0 +1,39 @@
+paths:
+  data_dir: "data"
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+  models_dir: "models"
+  reports_dir: "reports"
+
+# HEURISTICS FOR AUTOMATED COLUMN CLASSIFICATION
+heuristics:
+  missing_value_drop_threshold: 0.90
+  id_cardinality_threshold: 1.0
+  high_cardinality_threshold: 0.10
+  skewed_feature_threshold: 2.0
+
+# PIPELINE & PREPROCESSING PARAMETERS
+pipeline_params:
+  numeric_imputer_strategy: "median"
+  categorical_imputer_strategy: "most_frequent"
+  high_cardinality_encoder: "target" # Options: 'target', 'hashing'
+  hashing_n_features: 20
+  imbalance_smote_threshold: 0.20
+
+# FEATURE CONTROLS
+advanced_features:
+  # Set to true to enable the intelligent, model-based categorical grouper.
+  # If false, the pipeline will rely on standard one-hot encoding without grouping.
+  use_semantic_categorical_grouping: true
+
+  # Parameters for the SemanticCategoricalGrouper
+  semantic_grouping:
+    # The pre-trained model to use for generating string embeddings.
+    embedding_model: "all-MiniLM-L6-v2"
+    # Higher values mean more conservative clustering (fewer, tighter groups).
+    min_cluster_size: 2
+
+# DATA DRIFT & MONITORING PARAMETERS
+drift_params:
+  psi_threshold: 0.25
+  ks_p_value_threshold: 0.05
