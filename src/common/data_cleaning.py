@@ -21,7 +21,7 @@ except ImportError:
     print("Warning: To use SementicCategoricalGrouper, please install required packages")
     print("pip install sentence-transformers hdbscan")
 
-class SementicCategoricalGrouper(BaseEstimator, TransformerMixin):
+class SemanticCategoricalGrouper(BaseEstimator, TransformerMixin):
     """
     A transformer to automatically group semantically similar categorical features.
 
