@@ -13,6 +13,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, PowerTransformer
+from category_encoders import TargetEncoder
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 
@@ -78,7 +79,7 @@ class WorkflowOrchestrator:
                     roles["skewed"].append(col)
                 else:
                     roles["numeric"].append(col)
-            elif pd.api.types.is_object_dtype(profile["dtype"]):
+            elif pd.api.types.is_object_dtype(profile["dtype"]) or pd.api.types.is_categorical_dtype(profile["dtype"]):
                 if profile["cardinality"] > heuristic["high_cardinality_threshold"]:
                     roles["high_cardinality_cat"].append(col)
                 else:
@@ -118,6 +119,21 @@ class WorkflowOrchestrator:
                                                  min_cluster_size=semantic_params.get("mini_cluster_size", 2))
             cat_steps.insert(0, ("semantic_grouping", grouper))
         return Pipeline(steps=cat_steps)
+    
+    def _build_high_cardinality_transformer(self) -> Pipeline:
+        """Builds the pipeline for cardinality categorical features"""
+        encoder_name = settings['pipeline_params']['high_cardinality_encoder']
+        if encoder_name == 'target':
+            encoder = TargetEncoder()
+        else:
+            # Placeholder for future encoders like HashingEncoder
+            raise NotImplementedError(f"Encoder '{encoder_name}' is not yet implemented.")
+            
+        return Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='most_frequent')),
+            ('encoder', encoder)
+        ])
+
 
     def build(self) -> Tuple[Pipeline, Dict]:
         """
@@ -142,7 +158,9 @@ class WorkflowOrchestrator:
             transformers.append(('skewed', self._build_skewed_transformer(), self.column_roles['skewed']))
         if self.column_roles['categorical']:
             transformers.append(('categorical', self._build_categorical_transformer(), self.column_roles['categorical']))
-            
+        if self.column_roles["high_cardinality_cat"]:
+            transformers.append(("high_cardinality", self._build_high_cardinality_transformer(),
+                                 self.column_roles["high_cardinality_cat"]))  
         preprocessor = ColumnTransformer(transformers=transformers, remainder='drop')
         # Task-specific augmentation
         if self.task == "classification":
@@ -154,7 +172,15 @@ class WorkflowOrchestrator:
                                               ("resampler", SMOTE(random_state=42))])
             else:
                 final_pipeline = Pipeline([("preprocessor", preprocessor)])
-            #TODO: Add "clustering" timeseries handlers
+        elif self.task == "regression":
+            final_pipeline = Pipeline([("preprocessor", preprocessor)])
+        elif self.task == "clustering":
+            logging.info("Building preprocessing pipeline for unsupervised clustering task")
+            final_pipeline = Pipeline([("preprocessor", preprocessor)])
+        # --- REPLACED TODO: Explicit error for unimplemented features ---
+        elif self.task == 'timeseries':
+            raise NotImplementedError("The 'timeseries' task is a planned feature and not yet implemented.")
+
         else:
             raise ValueError(f"Unsupported task: '{self.task}'")
         logging.info("Workflow orchestration complete. Pipeline is ready")
