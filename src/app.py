@@ -17,6 +17,7 @@ sys.path.append(str(Path(__file__).resolve().parent))
 
 from automator import WorkflowOrchestrator
 from config import settings
+from common.data_ingestion import ingest_data
 
 st.set_page_config(
     page_title="DataInsight AI",
@@ -26,19 +27,9 @@ st.set_page_config(
 )
 
 @st.cache_data
-def load_data(uploaded_file):
+def load_data_from_upload(uploaded_file):
     """Caches the data loading to prevent reloading on every interaction."""
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            return pd.read_csv(uploaded_file)
-        elif uploaded_file.name.endswith(('.xls', '.xlsx')):
-            return pd.read_excel(uploaded_file)
-        else:
-            st.error("Unsupported file format. Please upload a CSV or Excel file.")
-            return None
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
-        return None
+    return ingest_data(uploaded_file)
 
 def show_lineage_report(roles: dict):
     """Displays the column roles and processing decisions."""
@@ -64,7 +55,7 @@ with st.sidebar:
         st.session_state.df = None
 
     if uploaded_file:
-        df = load_data(uploaded_file)
+        df = load_data_from_upload(uploaded_file)
         if df is not None:
             st.session_state.df = df
             st.success("File loaded successfully!")
