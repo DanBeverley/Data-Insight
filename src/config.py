@@ -1,7 +1,7 @@
 """
 Configuration Loader for DataInsight AI
 
-This module reads the main `config.yml` file, validates its structure,
+This module reads the main `config.yaml` file, validates its structure,
 and provides a singleton-like object (`settings`) for easy access
 to configuration parameters throughout the application.
 """

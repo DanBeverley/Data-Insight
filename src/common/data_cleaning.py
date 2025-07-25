@@ -44,7 +44,7 @@ class SemanticCategoricalGrouper(BaseEstimator, TransformerMixin):
         self.embedding_model_name = embedding_model_name
         self.min_cluster_size = min_cluster_size
         self.model_ :Optional[SentenceTransformer] = None
-        self.mapping_:Dict[str, Dict[str, str]] = {}
+        self.mappings_:Dict[str, Dict[str, str]] = {}
     
     def fit(self, X:pd.DataFrame, y:Optional[pd.Series]=None):
         """
