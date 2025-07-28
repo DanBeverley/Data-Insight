@@ -43,6 +43,8 @@ class WorkflowOrchestrator:
         self.df:pd.DataFrame = df.copy()
         self.schema:Dict = {}
         self.column_roles:Dict[str, List[str]] = {}
+        self.target_column = target_column
+        self.task = task
         self._profile_data()
         self._classify_columns()
         self._prepare_feature_lists()
@@ -89,7 +91,7 @@ class WorkflowOrchestrator:
         self.column_roles = roles
         logging.info(f"Column roles classified: { {k: len(v) for k, v in roles.items()} }")
 
-    def _prepare_feature_list(self) -> None:
+    def _prepare_feature_lists(self) -> None:
         """"Ensure the target column is not included in any feature transformation lists"""
         if self.target_column in self.df.columns:
             for role in self.column_roles:
@@ -114,7 +116,7 @@ class WorkflowOrchestrator:
                                                ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]
         if settings["advanced_features"]["use_semantic_categorical_grouping"]:
             logging.info("Semantic grouping enabled. Prepending to categorical pipeline")
-            semantic_params = settings["advanced_features"].get("semantic_grouping, {}")
+            semantic_params = settings["advanced_features"].get("semantic_grouping",{})
             grouper = SemanticCategoricalGrouper(embedding_model_name=semantic_params.get("embedding_model", "all-MiniLM-L6-v2"),
                                                  min_cluster_size=semantic_params.get("mini_cluster_size", 2))
             cat_steps.insert(0, ("semantic_grouping", grouper))
