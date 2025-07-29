@@ -6,7 +6,9 @@ inspecting raw data and dynamically constructing a tailored preprocessing
 pipeline
 """
 import logging
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any, Union
+from dataclasses import dataclass, field
+from enum import Enum, auto
 
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -18,9 +20,30 @@ from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 
 from config import settings
+from supervised.pipeline import create_supervised_pipeline
+from unsupervised.pipeline import create_unsupervised_pipeline
+from utils import generate_lineage_report
 from common.data_cleaning import SemanticCategoricalGrouper
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+class Status(Enum):
+    SUCCESS = auto()
+    FAILURE = auto()
+
+@dataclass
+class OrchestratorResult:
+    """A structured object to hold the results of an orchestration run."""
+    status:Status
+    pipeline:Optional[Union[Pipeline, ImbPipeline]] = None
+    processed_data:Optional[pd.DataFrame] = None
+    lineage_report:Optional[Dict[str, Any]] = None
+    error_message:Optional[str] = None
+    column_roles:Dict[str, List[str]] = field(default_factory=dict)
+
+class PipelineConstructionError(Exception):
+    """Custom exception for failures during pipeline construction"""
+    pass
 
 class WorkflowOrchestrator:
     """
@@ -41,13 +64,80 @@ class WorkflowOrchestrator:
         if not isinstance(df, pd.DataFrame):
             raise TypeError("Input must be a pandas DataFrame")
         self.df:pd.DataFrame = df.copy()
-        self.schema:Dict = {}
+        self.schema:Dict[str, Any] = {}
         self.column_roles:Dict[str, List[str]] = {}
-        self.target_column = target_column
-        self.task = task
-        self._profile_data()
-        self._classify_columns()
-        self._prepare_feature_lists()
+        self.target_column:Optional[str] = target_column
+        self.task:str = task
+    
+    def run(self) -> OrchestratorResult:
+        """
+        Executes the full preprocessing workflow from profiling to final output.
+
+        Returns:
+            An OrchestratorResult object containing the outcome of the run.
+        """
+        try:
+            logging.info(f"Orchestrating for task: '{self.task}'")
+            self._profile_data()
+            self._classify_columns()
+            self._prepare_feature_lists()
+
+            preprocessor = self._build_preprocessor()
+            if self.task in ["classification", "regression"]:
+                y = self.df[self.target_column] if self.target_column else None
+                pipeline = create_supervised_pipeline(preprocessor, self.task, y)
+            elif self.task == "clustering":
+                # Example: Defaulting to KMeans with 3 clusters for demo
+                # In a real app, this would be configured in the UI
+                params = {"n_clusters":3, "n_init":10, "random_state":42}
+                pipeline = create_unsupervised_pipeline(preprocessor, "kmeans", params)
+            else:
+                raise NotImplementedError(f"Task '{self.task}' is not implemented")
+            
+            X = self.df.drop(columns=[self.target_column]) if self.target_column else self.df
+            y = self.df[self.target_column] if self.target_column and self.task in ["classification", "regression"] else None
+            if y is not None:
+                X_transformed = pipeline.fit_transform(X,y)
+            else:
+                X_transformed = pipeline.fit_transform(X)
+            
+            # Reconstruct DataFrame with proper column names
+            feature_names = pipeline.named_steps["preprocessor"].get_feature_names_out()
+            processed_df = pd.DataFrame(X_transformed, columns=feature_names, index=X.index)
+            # Drop NaN rows created by time-series features 
+            nan_rows_mask = processed_df.isnull().any(axis=1)
+            if nan_rows_mask.any():
+                logging.warning(f"Dropping {nan_rows_mask.sum()} rows with NaNs after transformation.")
+                processed_df = processed_df[~nan_rows_mask]
+                if y is not None:
+                    y = y[~nan_rows_mask]
+            
+            if y is not None:
+                 processed_df[self.target_column] = y.values
+
+            # Generate lineage report
+            lineage = generate_lineage_report(
+                self.column_roles, pipeline, settings.config.dict(), self.task
+            )
+
+            logging.info("Workflow orchestration completed successfully.")
+            return OrchestratorResult(
+                status=Status.SUCCESS,
+                pipeline=pipeline,
+                processed_data=processed_df,
+                lineage_report=lineage,
+                column_roles=self.column_roles
+            )
+
+        except (PipelineConstructionError, NotImplementedError, ValueError, TypeError) as e:
+            logging.error(f"A predictable error occurred during orchestration: {e}", exc_info=True)
+            return OrchestratorResult(status=Status.FAILURE, error_message=str(e))
+        except Exception as e:
+            logging.error(f"An unexpected error occurred during orchestration: {e}", exc_info=True)
+            return OrchestratorResult(
+                status=Status.FAILURE,
+                error_message="An unexpected internal error occurred. Please check the logs."
+            )
     
     def _profile_data(self) -> None:
         """Analyzes the DataFrame to create a metadata for each column"""
@@ -70,7 +160,7 @@ class WorkflowOrchestrator:
                                       "categorical":[],
                                       "high_cardinality_cat":[],
                                       "id":[]}
-        heuristic = settings["heuristics"]
+        heuristic = settings.heuristics
         for col, profile in self.schema.items():
             if profile["missing_percent"] > heuristic["missing_value_drop_threshold"]:
                 roles["to_drop"].append(col)
@@ -101,34 +191,45 @@ class WorkflowOrchestrator:
 
     def _build_numeric_transformer(self) -> Pipeline:
         """Builds the pipeline for standard numeric features"""
-        return Pipeline(steps=[("imputer", SimpleImputer(strategy=settings["pipeline_params"]["numeric_imputer_strategy"])),
-                               ("scaler", StandardScaler())])
+        return Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy=settings.pipeline_params.numeric_imputer_strategy)),
+            ("scaler", StandardScaler())
+        ])
     def _build_skewed_transformer(self) -> Pipeline:
         """Builds the pipeline for skewed numeric features"""
-        return Pipeline(steps=[("imputer", SimpleImputer(strategy=settings["pipeline_params"]["numeric_imputer_strategy"])),
-                               ("power_transform", PowerTransformer(method="yeo-johnson")),
-                               ("scaler", StandardScaler())])
+        return Pipeline(steps=[
+            ("imputer", SimpleImputer(strategy=settings.pipeline_params.numeric_imputer_strategy)),
+            ("power_transform", PowerTransformer(method="yeo-johnson")),
+            ("scaler", StandardScaler())
+        ])
     
     def _build_categorical_transformer(self) -> Pipeline:
         """Builds the pipeline for categorical features, with optional semantic grouping"""
-        cat_steps = [("imputer", SimpleImputer(strategy=settings["pipeline_params"]["categorical_imputer_strategy"],
-                                               fill_value="missing")),
-                                               ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]
-        if settings["advanced_features"]["use_semantic_categorical_grouping"]:
-            logging.info("Semantic grouping enabled. Prepending to categorical pipeline")
-            semantic_params = settings["advanced_features"].get("semantic_grouping",{})
-            grouper = SemanticCategoricalGrouper(embedding_model_name=semantic_params.get("embedding_model", "all-MiniLM-L6-v2"),
-                                                 min_cluster_size=semantic_params.get("mini_cluster_size", 2))
+        params = settings.pipeline_params
+        adv_features = settings.advanced_features
+
+        cat_steps = [
+            ("imputer", SimpleImputer(strategy=params.categorical_imputer_strategy, fill_value="missing")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+        ]
+        
+        if adv_features.use_semantic_categorical_grouping:
+            logging.info("Semantic grouping enabled. Prepending to categorical pipeline.")
+            semantic_params = adv_features.semantic_grouping
+            grouper = SemanticCategoricalGrouper(
+                embedding_model_name=semantic_params.embedding_model,
+                min_cluster_size=semantic_params.min_cluster_size
+            )
             cat_steps.insert(0, ("semantic_grouping", grouper))
+            
         return Pipeline(steps=cat_steps)
     
     def _build_high_cardinality_transformer(self) -> Pipeline:
         """Builds the pipeline for cardinality categorical features"""
-        encoder_name = settings['pipeline_params']['high_cardinality_encoder']
+        encoder_name = settings.pipeline_params.high_cardinality_encoder
         if encoder_name == 'target':
             encoder = TargetEncoder()
         else:
-            # Placeholder for future encoders like HashingEncoder
             raise NotImplementedError(f"Encoder '{encoder_name}' is not yet implemented.")
             
         return Pipeline(steps=[
@@ -137,23 +238,9 @@ class WorkflowOrchestrator:
         ])
 
 
-    def build(self) -> Tuple[Pipeline, Dict]:
-        """
-        The main public method that orchestrates the entire workflow.
-
-        Returns:
-            A tuple containing the fully configured scikit-learn pipeline and the
-            column roles dictionary for the lineage report.
-        """
-        logging.info(f"Orchestrating workflow for task: '{self.task}'")
-        # HOOK FOR PHASE 2: Feature Generation 
-        # logging.info("[Future] Phase 2: Feature Generation step would be here.")
-
-        # HOOK FOR PHASE 2: Feature Selection
-        # logging.info("[Future] Phase 2: Feature Selection step would be here.")
-
-        # PHASE 1: Build Core Preprocessor
-        transformers: List[Tuple] = []
+    def _build_preprocessor(self) -> ColumnTransformer:
+        """Assembles the main ColumnTransformer from various sub-pipelines."""
+        transformers = []
         if self.column_roles['numeric']:
             transformers.append(('numeric', self._build_numeric_transformer(), self.column_roles['numeric']))
         if self.column_roles['skewed']:
@@ -161,30 +248,10 @@ class WorkflowOrchestrator:
         if self.column_roles['categorical']:
             transformers.append(('categorical', self._build_categorical_transformer(), self.column_roles['categorical']))
         if self.column_roles["high_cardinality_cat"]:
-            transformers.append(("high_cardinality", self._build_high_cardinality_transformer(),
-                                 self.column_roles["high_cardinality_cat"]))  
-        preprocessor = ColumnTransformer(transformers=transformers, remainder='drop')
-        # Task-specific augmentation
-        if self.task == "classification":
-            y = self.df[self.target_column]
-            minority_ratio = y.value_counts(normalize=True).min()
-            if minority_ratio < settings["pipeline_params"]["imbalance_smote_threshold"]:
-                logging.info(f"Imbalance detected (ratio: {minority_ratio:.2f}). Adding SMOTE")
-                final_pipeline = ImbPipeline([("preprocessor", preprocessor),
-                                              ("resampler", SMOTE(random_state=42))])
-            else:
-                final_pipeline = Pipeline([("preprocessor", preprocessor)])
-        elif self.task == "regression":
-            final_pipeline = Pipeline([("preprocessor", preprocessor)])
-        elif self.task == "clustering":
-            logging.info("Building preprocessing pipeline for unsupervised clustering task")
-            final_pipeline = Pipeline([("preprocessor", preprocessor)])
-        # --- REPLACED TODO: Explicit error for unimplemented features ---
-        elif self.task == 'timeseries':
-            raise NotImplementedError("The 'timeseries' task is a planned feature and not yet implemented.")
+            transformers.append(("high_cardinality", self._build_high_cardinality_transformer(), self.column_roles["high_cardinality_cat"]))
+        
+        if not transformers:
+            raise PipelineConstructionError("No columns were classified for preprocessing. Check data types and content.")
 
-        else:
-            raise ValueError(f"Unsupported task: '{self.task}'")
-        logging.info("Workflow orchestration complete. Pipeline is ready")
-        return final_pipeline, self.column_roles
+        return ColumnTransformer(transformers=transformers, remainder='drop')
             
