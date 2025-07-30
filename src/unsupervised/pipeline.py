@@ -62,7 +62,7 @@ def create_unsupervised_pipeline(preprocessor:ColumnTransformer, algorithm:str,
     logging.info(f"Created pipeline with steps: ['preprocessor', 'estimator' ({EstimatorClass.__name__})]")
     return pipeline
 
-def find_optimal_clusters_elbow(preprocessed_data:pd.DataFramme, k_range:Tuple[int, int]=(2,11)) -> Dict[int, float]:
+def find_optimal_clusters_elbow(preprocessed_data:pd.DataFrame, k_range:Tuple[int, int]=(2,11)) -> Dict[int, float]:
     """
     Calculates the inertia for a range of k values for the Elbow Method.
 
@@ -80,7 +80,7 @@ def find_optimal_clusters_elbow(preprocessed_data:pd.DataFramme, k_range:Tuple[i
     logging.info(f"Running Elbow Method analysis for k in range {k_range}...")
     inertias = {}
     for k in range(k_range[0], k_range[1]):
-        kmeans = KMeans(n_cluster=k, init = "k-means++", n_init=10, random_state=42)
+        kmeans = KMeans(n_clusters=k, init = "k-means++", n_init=10, random_state=42)
         kmeans.fit(preprocessed_data)
         inertias[k] = kmeans.inertia_
         logging.debug(f"k={k}, inertia={inertias[k]}")
