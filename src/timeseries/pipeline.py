@@ -14,7 +14,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.pipeline import Pipeline
 
-from timeseries.feature_engineering import (
+from .feature_engineering import (
     DateTimeFeatureTransformer,
     LagFeatureTransformer,
     RollingWindowTransformer
