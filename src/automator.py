@@ -10,7 +10,9 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
@@ -19,13 +21,33 @@ from category_encoders import TargetEncoder
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 
-from config import settings
-from supervised.pipeline import create_supervised_pipeline
-from unsupervised.pipeline import create_unsupervised_pipeline
-from utils import generate_lineage_report
-from common.data_cleaning import SemanticCategoricalGrouper
+from .config import settings
+from .supervised.pipeline import create_supervised_pipeline
+from .unsupervised.pipeline import create_unsupervised_pipeline
+from .utils import generate_lineage_report
+from .common.data_cleaning import SemanticCategoricalGrouper
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+class TargetEncoderWrapper(BaseEstimator, TransformerMixin):
+    """
+    A wrapper for category_encoders.TargetEncoder to ensure compatibility
+    with scikit-learn's get_feature_names_out.
+    """
+    def __init__(self):
+        self.encoder = TargetEncoder()
+        self.feature_names_in_ = None
+
+    def fit(self, X, y):
+        self.encoder.fit(X, y)
+        self.feature_names_in_ = X.columns
+        return self
+
+    def transform(self, X):
+        return self.encoder.transform(X)
+
+    def get_feature_names_out(self, input_features=None):
+        return list(self.feature_names_in_)
 
 class Status(Enum):
     SUCCESS = auto()
@@ -36,7 +58,8 @@ class OrchestratorResult:
     """A structured object to hold the results of an orchestration run."""
     status:Status
     pipeline:Optional[Union[Pipeline, ImbPipeline]] = None
-    processed_data:Optional[pd.DataFrame] = None
+    processed_features:Optional[pd.DataFrame] = None
+    aligned_target:Optional[pd.Series] = None
     lineage_report:Optional[Dict[str, Any]] = None
     error_message:Optional[str] = None
     column_roles:Dict[str, List[str]] = field(default_factory=dict)
@@ -92,39 +115,45 @@ class WorkflowOrchestrator:
                 params = {"n_clusters":3, "n_init":10, "random_state":42}
                 pipeline = create_unsupervised_pipeline(preprocessor, "kmeans", params)
             else:
-                raise NotImplementedError(f"Task '{self.task}' is not implemented")
+                raise NotImplementedError(f"Task '{self.task}' is not yet implemented")
             
             X = self.df.drop(columns=[self.target_column]) if self.target_column else self.df
             y = self.df[self.target_column] if self.target_column and self.task in ["classification", "regression"] else None
+            
+            preprocessor_step = pipeline.named_steps['preprocessor']
             if y is not None:
-                X_transformed = pipeline.fit_transform(X,y)
+                preprocessor_step.fit(X, y)
             else:
-                X_transformed = pipeline.fit_transform(X)
+                preprocessor_step.fit(X)
+            
+            X_transformed = preprocessor_step.transform(X)
             
             # Reconstruct DataFrame with proper column names
             feature_names = pipeline.named_steps["preprocessor"].get_feature_names_out()
-            processed_df = pd.DataFrame(X_transformed, columns=feature_names, index=X.index)
-            # Drop NaN rows created by time-series features 
-            nan_rows_mask = processed_df.isnull().any(axis=1)
+            processed_features = pd.DataFrame(X_transformed, columns=feature_names, index=X.index)
+            
+            # Align the target variable
+            y_aligned = self.df.loc[processed_features.index, self.target_column] if self.target_column else None
+
+            # Drop NaNs from BOTH the processed features and the aligned target
+            nan_rows_mask = processed_features.isnull().any(axis=1)
             if nan_rows_mask.any():
                 logging.warning(f"Dropping {nan_rows_mask.sum()} rows with NaNs after transformation.")
-                processed_df = processed_df[~nan_rows_mask]
-                if y is not None:
-                    y = y[~nan_rows_mask]
-            
-            if y is not None:
-                 processed_df[self.target_column] = y.values
+                processed_features = processed_features.loc[~nan_rows_mask]
+                if y_aligned is not None:
+                    y_aligned = y_aligned.loc[~nan_rows_mask]
 
             # Generate lineage report
             lineage = generate_lineage_report(
-                self.column_roles, pipeline, settings.config.dict(), self.task
+                self.column_roles, pipeline, settings._config_data, self.task
             )
 
             logging.info("Workflow orchestration completed successfully.")
             return OrchestratorResult(
                 status=Status.SUCCESS,
                 pipeline=pipeline,
-                processed_data=processed_df,
+                processed_features=processed_features,
+                aligned_target=y_aligned,
                 lineage_report=lineage,
                 column_roles=self.column_roles
             )
@@ -148,7 +177,7 @@ class WorkflowOrchestrator:
                                 "missing_percent":series.isnull().sum()/len(series),
                                 "unique_count":series.nunique(),
                                 "cardinality":series.nunique()/len(series),
-                                "skewness":series.skew() if pd.api.types.is_numeric_dtypes(series) else None}
+                                "skewness":series.skew() if pd.api.types.is_numeric_dtype(series) and len(series.dropna()) > 0 else 0.0}
         logging.info("Data profiling complete")
     
     def _classify_columns(self) -> None:
@@ -160,65 +189,92 @@ class WorkflowOrchestrator:
                                       "categorical":[],
                                       "high_cardinality_cat":[],
                                       "id":[]}
-        heuristic = settings.heuristics
-        for col, profile in self.schema.items():
-            if profile["missing_percent"] > heuristic["missing_value_drop_threshold"]:
+        heuristics = settings['heuristics']
+        feature_columns = [col for col in self.df.columns if col != self.target_column]
+
+        for col in feature_columns:
+            profile = self.schema[col]
+            
+            # Priority 1: Check for dropping first.
+            if profile["missing_percent"] > heuristics["missing_value_drop_threshold"]:
                 roles["to_drop"].append(col)
-            elif profile["cardinality"] == heuristic["id_cardinality_threshold"]:
+                continue
+
+            # Priority 2: Check for ID columns based on cardinality.
+            is_potential_id = np.isclose(profile["cardinality"], heuristics["id_cardinality_threshold"])
+            is_float = pd.api.types.is_float_dtype(profile["dtype"])
+            if is_potential_id and not is_float:
                 roles["id"].append(col)
-            elif pd.api.types.is_numeric_dtype(profile["dtype"]):
-                if abs(profile["skewness"]) > heuristic["skewed_feature_threshold"]:
+                continue
+
+            # Priority 3: Handle all numeric types (skewed or normal).
+            if pd.api.types.is_numeric_dtype(profile["dtype"]):
+                if abs(profile["skewness"]) >= heuristics["skewed_feature_threshold"]:
                     roles["skewed"].append(col)
                 else:
                     roles["numeric"].append(col)
-            elif pd.api.types.is_object_dtype(profile["dtype"]) or pd.api.types.is_categorical_dtype(profile["dtype"]):
-                if profile["cardinality"] > heuristic["high_cardinality_threshold"]:
+                continue
+
+            # Priority 4: Handle all categorical/object types.
+            if pd.api.types.is_object_dtype(profile["dtype"]) or pd.api.types.is_categorical_dtype(profile["dtype"]):
+                if profile["cardinality"] > heuristics["high_cardinality_threshold"]:
                     roles["high_cardinality_cat"].append(col)
                 else:
-                    roles['categorical'].append(col)
+                    roles["categorical"].append(col)
+                continue
+            
+            # Fallback for unhandled dtypes
+            logging.warning(f"Column '{col}' with dtype '{profile['dtype']}' was not classified and will be dropped.")
+            roles["to_drop"].append(col)
         
         roles['to_drop'].extend(roles['id'])
         self.column_roles = roles
         logging.info(f"Column roles classified: { {k: len(v) for k, v in roles.items()} }")
 
     def _prepare_feature_lists(self) -> None:
-        """"Ensure the target column is not included in any feature transformation lists"""
         if self.target_column in self.df.columns:
-            for role in self.column_roles:
+            transform_roles = ["numeric", "skewed", "categorical", "high_cardinality_cat"]
+            for role in transform_roles:
                 if self.target_column in self.column_roles[role]:
                     self.column_roles[role].remove(self.target_column)
                     logging.warning(f"Target column '{self.target_column}' removed from '{role}' transform list.")
 
     def _build_numeric_transformer(self) -> Pipeline:
         """Builds the pipeline for standard numeric features"""
+        imputer = SimpleImputer(strategy=settings['pipeline_params']['numeric_imputer_strategy'])
+        imputer.set_output(transform="pandas")
         return Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy=settings.pipeline_params.numeric_imputer_strategy)),
+            ("imputer", imputer),
             ("scaler", StandardScaler())
         ])
     def _build_skewed_transformer(self) -> Pipeline:
         """Builds the pipeline for skewed numeric features"""
+        imputer = SimpleImputer(strategy=settings['pipeline_params']['numeric_imputer_strategy'])
+        imputer.set_output(transform="pandas")
         return Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy=settings.pipeline_params.numeric_imputer_strategy)),
+            ("imputer", imputer),
             ("power_transform", PowerTransformer(method="yeo-johnson")),
             ("scaler", StandardScaler())
         ])
     
     def _build_categorical_transformer(self) -> Pipeline:
         """Builds the pipeline for categorical features, with optional semantic grouping"""
-        params = settings.pipeline_params
-        adv_features = settings.advanced_features
+        params = settings['pipeline_params']
+        adv_features = settings['advanced_features']
 
+        imputer = SimpleImputer(strategy=params['categorical_imputer_strategy'], fill_value="missing")
+        imputer.set_output(transform="pandas")
         cat_steps = [
-            ("imputer", SimpleImputer(strategy=params.categorical_imputer_strategy, fill_value="missing")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+            ("imputer", imputer),
+            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False, drop=None))
         ]
         
-        if adv_features.use_semantic_categorical_grouping:
+        if adv_features['use_semantic_categorical_grouping']:
             logging.info("Semantic grouping enabled. Prepending to categorical pipeline.")
-            semantic_params = adv_features.semantic_grouping
+            semantic_params = adv_features['semantic_grouping']
             grouper = SemanticCategoricalGrouper(
-                embedding_model_name=semantic_params.embedding_model,
-                min_cluster_size=semantic_params.min_cluster_size
+                embedding_model_name=semantic_params['embedding_model'],
+                min_cluster_size=semantic_params['min_cluster_size']
             )
             cat_steps.insert(0, ("semantic_grouping", grouper))
             
@@ -226,14 +282,16 @@ class WorkflowOrchestrator:
     
     def _build_high_cardinality_transformer(self) -> Pipeline:
         """Builds the pipeline for cardinality categorical features"""
-        encoder_name = settings.pipeline_params.high_cardinality_encoder
+        encoder_name = settings['pipeline_params']['high_cardinality_encoder']
         if encoder_name == 'target':
-            encoder = TargetEncoder()
+            encoder = TargetEncoderWrapper()
         else:
             raise NotImplementedError(f"Encoder '{encoder_name}' is not yet implemented.")
             
+        imputer = SimpleImputer(strategy='most_frequent')
+        imputer.set_output(transform="pandas")
         return Pipeline(steps=[
-            ('imputer', SimpleImputer(strategy='most_frequent')),
+            ('imputer', imputer),
             ('encoder', encoder)
         ])
 
