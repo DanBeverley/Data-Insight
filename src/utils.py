@@ -17,7 +17,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, PowerTransformer
-from common.data_cleaning import SemanticCategoricalGrouper
+from .common.data_cleaning import SemanticCategoricalGrouper
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
@@ -101,7 +101,12 @@ def generate_lineage_report(
     
     # Inspect each transformer within the ColumnTransformer
     for name, trans_pipeline, columns in preprocessor.transformers_:
-        if not columns: continue # Skip if no columns were processed by this transformer
+        if not columns: 
+            continue
+        
+        if not isinstance(trans_pipeline, Pipeline):
+            logging.warning(f"Transformer '{name}' is not a Pipeline object, skipping detail extraction.")
+            continue
 
         report["pipeline_details"][name] = {"columns": columns, "steps": {}}
         
