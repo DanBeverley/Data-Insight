@@ -22,7 +22,7 @@ from sklearn.pipeline import Pipeline
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
 
-from config import settings
+from ..config import settings
 
 RANDOM_STATE = 42
 
@@ -91,7 +91,6 @@ def create_supervised_pipeline(
         
         if minority_ratio < imbalance_threshold:
             logging.info(f"Class imbalance detected (minority class ratio: {minority_ratio:.2f}). Adding SMOTE to pipeline.")
-            # Use imblearn's pipeline to correctly handle resampling during cross-validation
             pipeline_steps.append(('resampler', SMOTE(random_state=RANDOM_STATE)))
             pipeline_steps.append(('model', model))
             return ImbPipeline(pipeline_steps)
@@ -99,7 +98,7 @@ def create_supervised_pipeline(
             logging.info("Target variable is balanced. Using standard pipeline.")
 
     pipeline_steps.append(('model', model))
-    return Pipeline(pipeline_steps)
+    return ImbPipeline(pipeline_steps)
 
 
 def calculate_permutation_importance(
