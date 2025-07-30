@@ -79,9 +79,11 @@ class SemanticCategoricalGrouper(BaseEstimator, TransformerMixin):
             # 1.Embed: Convert unique values to numerical vectors
             embeddings = self.model_.encode(unique_values)
             # 2.Cluster: Group similar vectors together
-            clusterer = hdbscan.HDBSCAN(min_cluster_size = self.min_cluster_size,
-                                        metrics = "euclidean",
-                                        gen_min_span_tree = True)
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=self.min_cluster_size,
+                                        metric="euclidean",
+                                        gen_min_span_tree=True,
+                                        algorithm='best',
+                                        core_dist_n_jobs=-1)
             clusterer.fit(embeddings)
             labels = clusterer.labels_
             # 3. Create mapping: map original values to canonical group name
@@ -129,7 +131,15 @@ class SemanticCategoricalGrouper(BaseEstimator, TransformerMixin):
                 original_col = X_copy[col].copy()
                 X_copy[col] = X_copy[col].map(mapping)
                 # Fill values not seen during fit (NaNs) with their original_value
-                X_copy[col].fillna(original_col, inplace = True)
+                X_copy[col] = X_copy[col].fillna(original_col)
         return X_copy
 
-                 
+    def get_feature_names_out(self, input_features=None):
+        """
+        Returns the feature names after transformation.
+        Since this transformer modifies columns in place, the output feature
+        names are the same as the input feature names.
+        """
+        if input_features is None:
+            return [col for col in self.mappings_.keys()]
+        return list(input_features)
