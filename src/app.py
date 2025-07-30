@@ -15,10 +15,10 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 
-from automator import WorkflowOrchestrator
-from config import settings
-from common.data_ingestion import ingest_data
-from data_quality.validator import DataQualityValidator, ValidationReport, ValidationCheck
+from .automator import WorkflowOrchestrator
+from .config import settings
+from .common.data_ingestion import ingest_data
+from .data_quality.validator import DataQualityValidator, ValidationReport, ValidationCheck
 
 st.set_page_config(
     page_title="DataInsight AI",
@@ -115,7 +115,7 @@ with st.sidebar:
 if st.session_state.df is None:
     st.info("Please upload a dataset using the sidebar to get started.")
 else:
-    if st.session_sate.validation_report:
+    if st.session_state.validation_report:
         display_validation_report(st.session_state.validation_report)
     st.header("Data Preview")
     st.dataframe(st.session_state.df.head())
