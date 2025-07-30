@@ -119,3 +119,68 @@ class DataQualityValidator:
             passed=True,
             message="No 'object' columns with mixed underlying types were detected."
         )
+
+    def _check_schema_compliance(self) -> ValidationCheck:
+        """Checks if the DataFrame columns match the expected schema."""
+        if not self.expected_schema:
+            return ValidationCheck(
+                name="Schema Compliance Check",
+                passed=True,
+                message="No expected schema provided; skipping validation."
+            )
+        
+        missing_cols = set(self.expected_schema.keys()) - set(self.df.columns)
+        extra_cols = set(self.df.columns) - set(self.expected_schema.keys())
+        
+        if missing_cols or extra_cols:
+            details = {}
+            if missing_cols:
+                details["missing_columns"] = list(missing_cols)
+            if extra_cols:
+                details["extra_columns"] = list(extra_cols)
+            
+            return ValidationCheck(
+                name="Schema Compliance Check",
+                passed=False,
+                message=f"Schema mismatch detected.",
+                details=details
+            )
+        
+        return ValidationCheck(
+            name="Schema Compliance Check",
+            passed=True,
+            message="All expected columns are present and no extra columns found."
+        )
+
+    def _check_outliers(self) -> ValidationCheck:
+        """Detects potential outliers in numeric columns using IQR method."""
+        numeric_cols = self.df.select_dtypes(include=['number']).columns
+        outlier_info = {}
+        
+        for col in numeric_cols:
+            Q1 = self.df[col].quantile(0.25)
+            Q3 = self.df[col].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            outliers = self.df[(self.df[col] < lower_bound) | (self.df[col] > upper_bound)]
+            if len(outliers) > 0:
+                outlier_info[col] = {
+                    "count": len(outliers),
+                    "percentage": f"{(len(outliers) / len(self.df)) * 100:.2f}%"
+                }
+        
+        if outlier_info:
+            return ValidationCheck(
+                name="Outlier Detection Check",
+                passed=False,
+                message=f"Potential outliers detected in {len(outlier_info)} numeric columns.",
+                details=outlier_info
+            )
+        
+        return ValidationCheck(
+            name="Outlier Detection Check",
+            passed=True,
+            message="No significant outliers detected in numeric columns."
+        )
