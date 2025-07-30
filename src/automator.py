@@ -1,12 +1,8 @@
-"""
-The Core Automation Engine for DataInsight AI
+"""Core Automation Engine for DataInsight AI
 
-This module contains the `PipelineAutomator`, the central class responsible for
-inspecting raw data and dynamically constructing a tailored preprocessing
-pipeline
-"""
+Orchestrates automated preprocessing with optional feature engineering/selection."""
 import logging
-from typing import Dict, List, Tuple, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -26,14 +22,13 @@ from .supervised.pipeline import create_supervised_pipeline
 from .unsupervised.pipeline import create_unsupervised_pipeline
 from .utils import generate_lineage_report
 from .common.data_cleaning import SemanticCategoricalGrouper
+from .feature_generation.auto_fe import AutomatedFeatureEngineer
+from .feature_selector.intelligent_selector import IntelligentFeatureSelector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class TargetEncoderWrapper(BaseEstimator, TransformerMixin):
-    """
-    A wrapper for category_encoders.TargetEncoder to ensure compatibility
-    with scikit-learn's get_feature_names_out.
-    """
+    """Wrapper for category_encoders.TargetEncoder with get_feature_names_out support."""
     def __init__(self):
         self.encoder = TargetEncoder()
         self.feature_names_in_ = None
@@ -55,7 +50,7 @@ class Status(Enum):
 
 @dataclass
 class OrchestratorResult:
-    """A structured object to hold the results of an orchestration run."""
+    """Results container for workflow orchestration."""
     status:Status
     pipeline:Optional[Union[Pipeline, ImbPipeline]] = None
     processed_features:Optional[pd.DataFrame] = None
@@ -65,24 +60,11 @@ class OrchestratorResult:
     column_roles:Dict[str, List[str]] = field(default_factory=dict)
 
 class PipelineConstructionError(Exception):
-    """Custom exception for failures during pipeline construction"""
+    """Exception raised when pipeline construction fails."""
     pass
 
 class WorkflowOrchestrator:
-    """
-    Orchestrates the creation of an automated preprocessing pipeline.
-
-    This class takes a pandas DataFrame, profiles it, classifies its columns
-    based on heuristics defined in `config.yml`, and builds a scikit-learn
-    ColumnTransformer and Pipeline tailored to the data's specific needs and
-    the desired machine learning task.
-
-    Attributes:
-        df (pd.DataFrame): The raw input DataFrame.
-        schema (Dict): A dictionary containing profiling metadata for each column.
-        column_roles (Dict[str, List[str]]): A dictionary mapping column roles
-            (e.g., 'numeric', 'skewed', 'categorical') to lists of column names.
-    """
+    """Orchestrates automated preprocessing with optional feature engineering/selection."""
     def __init__(self, df:pd.DataFrame, target_column:str, task:str):
         if not isinstance(df, pd.DataFrame):
             raise TypeError("Input must be a pandas DataFrame")
@@ -93,14 +75,17 @@ class WorkflowOrchestrator:
         self.task:str = task
     
     def run(self) -> OrchestratorResult:
-        """
-        Executes the full preprocessing workflow from profiling to final output.
-
-        Returns:
-            An OrchestratorResult object containing the outcome of the run.
-        """
+        """Executes complete preprocessing workflow with optional Phase 2 capabilities."""
         try:
-            logging.info(f"Orchestrating for task: '{self.task}'")
+            logging.info(f"Starting orchestration for task: '{self.task}'")
+            
+            # Phase 2: Optional automated feature generation
+            if hasattr(settings, 'feature_generation') and settings.get('feature_generation', {}).get('enabled', False):
+                logging.info("Automated feature generation enabled")
+                engineer = AutomatedFeatureEngineer(config=settings['feature_generation'])
+                # Feature generation would modify self.df here
+                # Currently disabled pending relational setup
+            
             self._profile_data()
             self._classify_columns()
             self._prepare_feature_lists()
@@ -110,8 +95,6 @@ class WorkflowOrchestrator:
                 y = self.df[self.target_column] if self.target_column else None
                 pipeline = create_supervised_pipeline(preprocessor, self.task, y)
             elif self.task == "clustering":
-                # Example: Defaulting to KMeans with 3 clusters for demo
-                # In a real app, this would be configured in the UI
                 params = {"n_clusters":3, "n_init":10, "random_state":42}
                 pipeline = create_unsupervised_pipeline(preprocessor, "kmeans", params)
             else:
@@ -127,18 +110,34 @@ class WorkflowOrchestrator:
                 preprocessor_step.fit(X)
             
             X_transformed = preprocessor_step.transform(X)
-            
-            # Reconstruct DataFrame with proper column names
             feature_names = pipeline.named_steps["preprocessor"].get_feature_names_out()
             processed_features = pd.DataFrame(X_transformed, columns=feature_names, index=X.index)
-            
-            # Align the target variable
             y_aligned = self.df.loc[processed_features.index, self.target_column] if self.target_column else None
 
-            # Drop NaNs from BOTH the processed features and the aligned target
-            nan_rows_mask = processed_features.isnull().any(axis=1)
-            if nan_rows_mask.any():
-                logging.warning(f"Dropping {nan_rows_mask.sum()} rows with NaNs after transformation.")
+            # Phase 2: Optional intelligent feature selection
+            if (hasattr(settings, 'feature_selection') and 
+                settings.get('feature_selection', {}).get('enabled', False) and 
+                self.task in ['classification', 'regression'] and y_aligned is not None):
+                
+                logging.info("Starting intelligent feature selection")
+                selector = IntelligentFeatureSelector(task=self.task, config=settings['feature_selection'])
+                
+                nan_mask = processed_features.isnull().any(axis=1)
+                if nan_mask.any():
+                    logging.warning(f"Dropping {nan_mask.sum()} rows with NaNs before feature selection")
+                    X_clean = processed_features.dropna()
+                    y_clean = y_aligned.loc[X_clean.index]
+                else:
+                    X_clean = processed_features
+                    y_clean = y_aligned
+                
+                processed_features = selector.select_features(X_clean, y_clean)
+                y_aligned = y_clean.loc[processed_features.index]
+                logging.info(f"Feature selection complete. Final shape: {processed_features.shape}")
+            
+            elif processed_features.isnull().any().any():
+                nan_rows_mask = processed_features.isnull().any(axis=1)
+                logging.warning(f"Dropping {nan_rows_mask.sum()} rows with NaNs after transformation")
                 processed_features = processed_features.loc[~nan_rows_mask]
                 if y_aligned is not None:
                     y_aligned = y_aligned.loc[~nan_rows_mask]
@@ -169,7 +168,7 @@ class WorkflowOrchestrator:
             )
     
     def _profile_data(self) -> None:
-        """Analyzes the DataFrame to create a metadata for each column"""
+        """Profiles DataFrame columns for statistical metadata."""
         logging.info("Data Profiling...")
         for col in self.df.columns:
             series = self.df[col]
@@ -181,7 +180,7 @@ class WorkflowOrchestrator:
         logging.info("Data profiling complete")
     
     def _classify_columns(self) -> None:
-        """Classifies columns into roles based on the schema and config heurestics"""
+        """Classifies columns into processing roles using heuristics."""
         logging.info("Classifying column roles based on heuristics...")
         roles:Dict[str, List[str]] = {"to_drop":[],
                                       "numeric":[],
@@ -223,7 +222,6 @@ class WorkflowOrchestrator:
                     roles["categorical"].append(col)
                 continue
             
-            # Fallback for unhandled dtypes
             logging.warning(f"Column '{col}' with dtype '{profile['dtype']}' was not classified and will be dropped.")
             roles["to_drop"].append(col)
         
@@ -240,7 +238,7 @@ class WorkflowOrchestrator:
                     logging.warning(f"Target column '{self.target_column}' removed from '{role}' transform list.")
 
     def _build_numeric_transformer(self) -> Pipeline:
-        """Builds the pipeline for standard numeric features"""
+        """Creates transformer for standard numeric features."""
         imputer = SimpleImputer(strategy=settings['pipeline_params']['numeric_imputer_strategy'])
         imputer.set_output(transform="pandas")
         return Pipeline(steps=[
@@ -248,7 +246,7 @@ class WorkflowOrchestrator:
             ("scaler", StandardScaler())
         ])
     def _build_skewed_transformer(self) -> Pipeline:
-        """Builds the pipeline for skewed numeric features"""
+        """Creates transformer for skewed numeric features."""
         imputer = SimpleImputer(strategy=settings['pipeline_params']['numeric_imputer_strategy'])
         imputer.set_output(transform="pandas")
         return Pipeline(steps=[
@@ -258,7 +256,7 @@ class WorkflowOrchestrator:
         ])
     
     def _build_categorical_transformer(self) -> Pipeline:
-        """Builds the pipeline for categorical features, with optional semantic grouping"""
+        """Creates transformer for categorical features with optional semantic grouping."""
         params = settings['pipeline_params']
         adv_features = settings['advanced_features']
 
@@ -281,7 +279,7 @@ class WorkflowOrchestrator:
         return Pipeline(steps=cat_steps)
     
     def _build_high_cardinality_transformer(self) -> Pipeline:
-        """Builds the pipeline for cardinality categorical features"""
+        """Creates transformer for high-cardinality categorical features."""
         encoder_name = settings['pipeline_params']['high_cardinality_encoder']
         if encoder_name == 'target':
             encoder = TargetEncoderWrapper()
@@ -297,7 +295,7 @@ class WorkflowOrchestrator:
 
 
     def _build_preprocessor(self) -> ColumnTransformer:
-        """Assembles the main ColumnTransformer from various sub-pipelines."""
+        """Assembles main ColumnTransformer from sub-pipelines."""
         transformers = []
         if self.column_roles['numeric']:
             transformers.append(('numeric', self._build_numeric_transformer(), self.column_roles['numeric']))

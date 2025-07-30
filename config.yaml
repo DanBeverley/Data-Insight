@@ -37,3 +37,14 @@ advanced_features:
 drift_params:
   psi_threshold: 0.25
   ks_p_value_threshold: 0.05
+
+# PHASE 2: FEATURE ENGINEERING & SELECTION
+feature_generation:
+  enabled: false
+  dfs_max_depth: 2
+
+feature_selection:
+  enabled: false
+  variance_threshold: 0.01
+  correlation_threshold: 0.95
+  max_features_model_based: 50

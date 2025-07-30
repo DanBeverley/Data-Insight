@@ -6,7 +6,7 @@ configuration, ensuring that all settings loaded from `config.yml` are valid,
 correctly typed, and easy to access with auto-completion.
 """
 from pydantic import BaseModel, Field, validator
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 
 class PathsConfig(BaseModel):
     data_dir: str
@@ -52,6 +52,16 @@ class DriftParamsConfig(BaseModel):
     psi_threshold: float = Field(..., gt=0)
     ks_p_value_threshold: float = Field(..., ge=0, le=1)
 
+class FeatureGenerationConfig(BaseModel):
+    enabled: bool = False
+    dfs_max_depth: int = 2
+
+class FeatureSelectionConfig(BaseModel):
+    enabled: bool = False
+    variance_threshold: float = Field(0.01, ge=0)
+    correlation_threshold: float = Field(0.95, gt=0, lt=1)
+    max_features_model_based: int = Field(50, gt=0)
+
 class AppConfig(BaseModel):
     """The root configuration model for the entire application."""
     app_version: str
@@ -60,6 +70,8 @@ class AppConfig(BaseModel):
     pipeline_params: PipelineParamsConfig
     advanced_features: AdvancedFeaturesConfig
     drift_params: DriftParamsConfig
+    feature_generation: FeatureGenerationConfig
+    feature_selection: FeatureSelectionConfig
 
     class Config:
         validate_assignment = True
