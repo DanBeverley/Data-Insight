@@ -20,7 +20,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-class DateTimeFeatureTransfomer(BaseEstimator, TransformerMixin):
+class DateTimeFeatureTransformer(BaseEstimator, TransformerMixin):
     """Extract features from a datetime column"""
     def __init__(self, features:List[str]):
         if not features:
