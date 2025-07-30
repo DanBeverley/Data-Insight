@@ -10,7 +10,7 @@ import yaml
 from pathlib import Path
 from typing import Any
 
-from config import AppConfig
+from ..config import AppConfig
 
 class Settings:
     """Singleton class to hold the validated application settings."""
