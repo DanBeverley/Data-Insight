@@ -20,9 +20,11 @@ from imblearn.pipeline import Pipeline as ImbPipeline
 from .config import settings
 from .supervised.pipeline import create_supervised_pipeline
 from .unsupervised.pipeline import create_unsupervised_pipeline
+from .timeseries.pipeline import create_timeseries_pipeline, create_timeseries_config
+from .nlp.pipeline import create_nlp_pipeline, create_nlp_config
 from .utils import generate_lineage_report
 from .common.data_cleaning import SemanticCategoricalGrouper
-from .feature_generation.auto_fe import AutomatedFeatureEngineer
+from .feature_generation.auto_fe import AutomatedFeatureEngineer, create_feature_engineering_config
 from .feature_selector.intelligent_selector import IntelligentFeatureSelector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -79,24 +81,42 @@ class WorkflowOrchestrator:
         try:
             logging.info(f"Starting orchestration for task: '{self.task}'")
             
-            # Phase 2: Optional automated feature generation
+            # Phase 2: Optional automated feature generation  
             if hasattr(settings, 'feature_generation') and settings.get('feature_generation', {}).get('enabled', False):
-                logging.info("Automated feature generation enabled")
-                engineer = AutomatedFeatureEngineer(config=settings['feature_generation'])
-                # Feature generation would modify self.df here
-                # Currently disabled pending relational setup
+                logging.info("Starting automated feature generation")
+                fe_config = create_feature_engineering_config(self.df, self.task)
+                engineer = AutomatedFeatureEngineer(config=fe_config)
+                
+                # Apply feature engineering to single table
+                enhanced_df = engineer.generate_features({"main": self.df})
+                logging.info(f"Generated {len(enhanced_df.columns) - len(self.df.columns)} new features")
+                self.df = enhanced_df
             
             self._profile_data()
             self._classify_columns()
             self._prepare_feature_lists()
 
-            preprocessor = self._build_preprocessor()
+            # Enhanced task routing with Phase 2A capabilities
             if self.task in ["classification", "regression"]:
                 y = self.df[self.target_column] if self.target_column else None
+                preprocessor = self._build_preprocessor()
                 pipeline = create_supervised_pipeline(preprocessor, self.task, y)
+                
             elif self.task == "clustering":
+                preprocessor = self._build_preprocessor()
                 params = {"n_clusters":3, "n_init":10, "random_state":42}
                 pipeline = create_unsupervised_pipeline(preprocessor, "kmeans", params)
+                
+            elif self.task == "timeseries":
+                # Use specialized time-series pipeline
+                ts_config = create_timeseries_config(self.df, self.target_column, auto_detect=True)
+                pipeline = create_timeseries_pipeline(self.df, self.target_column, config=ts_config)
+                
+            elif self.task == "nlp":
+                # Use specialized NLP pipeline
+                nlp_config = create_nlp_config(self.df, self.target_column, auto_detect=True)
+                pipeline = create_nlp_pipeline(self.df, self.target_column, config=nlp_config)
+                
             else:
                 raise NotImplementedError(f"Task '{self.task}' is not yet implemented")
             
