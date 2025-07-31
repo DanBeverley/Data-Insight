@@ -10,6 +10,9 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 
+from .domain_detector import DomainDetector
+from .relationship_discovery import RelationshipDiscovery
+
 class SemanticType(Enum):
     # Key types
     PRIMARY_KEY = "primary_key"
@@ -65,6 +68,8 @@ class IntelligentDataProfiler:
     def __init__(self):
         self.patterns = self._initialize_patterns()
         self.domain_keywords = self._initialize_domain_keywords()
+        self.domain_detector = DomainDetector()
+        self.relationship_discovery = RelationshipDiscovery()
         
     def _initialize_patterns(self) -> Dict[str, re.Pattern]:
         """Initialize regex patterns for semantic type detection"""
@@ -90,18 +95,34 @@ class IntelligentDataProfiler:
             'geographic_indicators': ['country', 'state', 'city', 'zip', 'postal', 'location']
         }
     
-    def profile_dataset(self, df: pd.DataFrame) -> Dict[str, SemanticProfile]:
-        """Complete semantic profiling of dataset"""
-        profiles = {}
-        
+    def profile_dataset(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Complete intelligent profiling of dataset"""
+        # Basic semantic profiling
+        column_profiles = {}
         for column in df.columns:
             profile = self._profile_column(df[column], column)
-            profiles[column] = profile
-            
-        # Post-process for relationship detection
-        self._detect_relationships(df, profiles)
+            column_profiles[column] = profile
         
-        return profiles
+        # Domain detection
+        domain_matches = self.domain_detector.detect_domain(df, column_profiles)
+        
+        # Relationship discovery
+        relationships = self.relationship_discovery.discover_relationships(df, column_profiles)
+        
+        # Generate comprehensive insights
+        return {
+            'column_profiles': column_profiles,
+            'domain_analysis': {
+                'detected_domains': [match.__dict__ for match in domain_matches],
+                'recommendations': self.domain_detector.get_domain_recommendations(domain_matches)
+            },
+            'relationship_analysis': {
+                'relationships': [rel.__dict__ for rel in relationships],
+                'relationship_graph': self.relationship_discovery.generate_relationship_graph(relationships),
+                'recommendations': self.relationship_discovery.get_relationship_recommendations(relationships)
+            },
+            'overall_recommendations': self._generate_overall_recommendations(column_profiles, domain_matches, relationships)
+        }
     
     def _profile_column(self, series: pd.Series, column_name: str) -> SemanticProfile:
         """Profile individual column for semantic type"""
@@ -474,5 +495,37 @@ class IntelligentDataProfiler:
         cardinality = evidence.get('cardinality', 0)
         if cardinality > 0.95 and semantic_type not in [SemanticType.PRIMARY_KEY, SemanticType.NATURAL_KEY]:
             recommendations.append("Very high cardinality - consider grouping or encoding strategies")
+        
+        return recommendations
+    
+    def _generate_overall_recommendations(self, column_profiles: Dict, domain_matches: List, relationships: List) -> List[str]:
+        """Generate overall dataset recommendations"""
+        recommendations = []
+        
+        # Data quality recommendations
+        high_null_cols = [col for col, profile in column_profiles.items() 
+                         if profile.evidence.get('null_ratio', 0) > 0.3]
+        if high_null_cols:
+            recommendations.append(f"Address high missing values in: {', '.join(high_null_cols[:3])}")
+        
+        # Domain-specific recommendations
+        if domain_matches:
+            top_domain = domain_matches[0].domain
+            recommendations.append(f"Dataset appears to be {top_domain}-related - apply domain-specific feature engineering")
+        
+        # Relationship-based recommendations
+        relationship_types = [rel.relationship_type for rel in relationships]
+        if 'primary_foreign_key' in relationship_types:
+            recommendations.append("Use key relationships for hierarchical aggregations and joins")
+        
+        if any('correlation' in rt for rt in relationship_types):
+            recommendations.append("Consider dimensionality reduction due to correlated features")
+        
+        # Semantic type diversity
+        semantic_types = [profile.semantic_type.value for profile in column_profiles.values()]
+        type_diversity = len(set(semantic_types)) / len(semantic_types) if semantic_types else 0
+        
+        if type_diversity < 0.5:
+            recommendations.append("Low semantic diversity - consider additional feature engineering")
         
         return recommendations
