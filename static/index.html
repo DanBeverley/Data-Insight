@@ -6,6 +6,7 @@
     <title>DataInsight AI</title>
     <link rel="stylesheet" href="/static/styles.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
     <div id="app">
@@ -67,11 +68,11 @@
                     </div>
                 </section>
 
-                <!-- Step 2: Data Preview & Validation -->
+                <!-- Step 2: Data Preview & Intelligence -->
                 <section class="section hidden" id="dataPreviewSection">
                     <div class="section-header">
-                        <h2><span class="step-number">02</span> Data Overview</h2>
-                        <p>Review your data quality and structure</p>
+                        <h2><span class="step-number">02</span> Data Intelligence</h2>
+                        <p>AI-powered data understanding and insights</p>
                     </div>
                     
                     <div class="data-info-grid">
@@ -87,11 +88,21 @@
                         
                         <div class="info-card">
                             <div class="info-icon">
-                                <i class="fas fa-columns"></i>
+                                <i class="fas fa-brain"></i>
                             </div>
                             <div class="info-content">
-                                <span class="info-label">Columns</span>
-                                <span class="info-value" id="columnCount">-</span>
+                                <span class="info-label">Domain Detected</span>
+                                <span class="info-value" id="domainDetected">-</span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-project-diagram"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Relationships</span>
+                                <span class="info-value" id="relationshipCount">-</span>
                             </div>
                         </div>
                         
@@ -106,19 +117,109 @@
                         </div>
                     </div>
                     
-                    <div class="data-preview-container">
-                        <div class="preview-header">
-                            <h3>Data Preview</h3>
-                            <button id="generateEDA" class="btn btn-secondary">
-                                <i class="fas fa-chart-bar"></i>
-                                Generate EDA Report
-                            </button>
+                    <!-- Intelligence Tabs -->
+                    <div class="intelligence-tabs">
+                        <div class="tab-nav">
+                            <button class="tab-button active" data-tab="overview">Overview</button>
+                            <button class="tab-button" data-tab="semantic">Semantic Types</button>
+                            <button class="tab-button" data-tab="relationships">Relationships</button>
+                            <button class="tab-button" data-tab="recommendations">Insights</button>
                         </div>
-                        <div class="table-container">
-                            <table id="dataPreviewTable" class="data-table">
-                                <thead></thead>
-                                <tbody></tbody>
-                            </table>
+                        
+                        <div class="tab-content">
+                            <!-- Overview Tab -->
+                            <div class="tab-panel active" id="overviewTab">
+                                <div class="data-preview-container">
+                                    <div class="preview-header">
+                                        <h3>Data Preview</h3>
+                                        <div class="preview-actions">
+                                            <button id="generateEDA" class="btn btn-secondary">
+                                                <i class="fas fa-chart-bar"></i>
+                                                Generate EDA
+                                            </button>
+                                            <button id="deepProfile" class="btn btn-primary">
+                                                <i class="fas fa-search-plus"></i>
+                                                Deep Profile
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="table-container">
+                                        <table id="dataPreviewTable" class="data-table">
+                                            <thead></thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Semantic Types Tab -->
+                            <div class="tab-panel" id="semanticTab">
+                                <div class="semantic-types-container">
+                                    <div class="semantic-legend">
+                                        <h4>Detected Semantic Types</h4>
+                                        <div id="semanticTypesLegend" class="types-legend"></div>
+                                    </div>
+                                    <div class="semantic-table-container">
+                                        <table id="semanticTypesTable" class="semantic-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Column</th>
+                                                    <th>Semantic Type</th>
+                                                    <th>Confidence</th>
+                                                    <th>Recommendations</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Relationships Tab -->
+                            <div class="tab-panel" id="relationshipsTab">
+                                <div class="relationships-container">
+                                    <div class="relationship-graph-container">
+                                        <h4>Column Relationships</h4>
+                                        <div id="relationshipGraph" class="graph-container">
+                                            <div class="graph-placeholder">
+                                                <i class="fas fa-project-diagram"></i>
+                                                <p>Click "Generate Graph" to visualize relationships</p>
+                                                <button id="generateGraph" class="btn btn-primary">Generate Graph</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="relationship-details">
+                                        <h4>Relationship Details</h4>
+                                        <div id="relationshipsList" class="relationships-list"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Recommendations Tab -->
+                            <div class="tab-panel" id="recommendationsTab">
+                                <div class="recommendations-container">
+                                    <div class="insights-summary">
+                                        <h4>Key Insights</h4>
+                                        <div id="keyInsights" class="insights-list"></div>
+                                    </div>
+                                    <div class="feature-recommendations">
+                                        <h4>Feature Engineering Recommendations</h4>
+                                        <div class="recommendations-header">
+                                            <select id="priorityFilter" class="filter-select">
+                                                <option value="">All Priorities</option>
+                                                <option value="high">High Priority</option>
+                                                <option value="medium">Medium Priority</option>
+                                                <option value="low">Low Priority</option>
+                                            </select>
+                                            <button id="getRecommendations" class="btn btn-primary">
+                                                <i class="fas fa-magic"></i>
+                                                Get Recommendations
+                                            </button>
+                                        </div>
+                                        <div id="featureRecommendations" class="recommendations-list"></div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     
@@ -163,6 +264,33 @@
                         <div class="advanced-options hidden" id="advancedOptions">
                             <div class="config-group">
                                 <label class="checkbox-label">
+                                    <input type="checkbox" id="enableIntelligence" checked>
+                                    <span class="checkmark"></span>
+                                    Enable AI Intelligence Features
+                                </label>
+                                <small class="help-text">Semantic understanding, domain detection, relationship discovery</small>
+                            </div>
+                            
+                            <div class="config-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="robustPipeline" checked>
+                                    <span class="checkmark"></span>
+                                    Use Robust Pipeline
+                                </label>
+                                <small class="help-text">Production-grade pipeline with error recovery</small>
+                            </div>
+                            
+                            <div class="config-group">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="adaptiveLearning" checked>
+                                    <span class="checkmark"></span>
+                                    Enable Adaptive Learning
+                                </label>
+                                <small class="help-text">Learn from execution patterns to improve recommendations</small>
+                            </div>
+
+                            <div class="config-group">
+                                <label class="checkbox-label">
                                     <input type="checkbox" id="featureGeneration">
                                     <span class="checkmark"></span>
                                     Enable Automated Feature Generation
@@ -202,6 +330,53 @@
                                 <div class="progress-fill" id="progressFill"></div>
                             </div>
                             <p id="processingStepText">Preparing data analysis...</p>
+                        </div>
+                        
+                        <!-- Pipeline Status Monitor -->
+                        <div class="pipeline-monitor hidden" id="pipelineMonitor">
+                            <div class="monitor-header">
+                                <h4>Pipeline Status</h4>
+                                <div class="pipeline-type">
+                                    <span class="type-badge" id="pipelineType">-</span>
+                                </div>
+                            </div>
+                            <div class="pipeline-stages">
+                                <div class="stage-item" data-stage="ingestion">
+                                    <div class="stage-icon"><i class="fas fa-upload"></i></div>
+                                    <span class="stage-name">Data Ingestion</span>
+                                    <div class="stage-status pending"></div>
+                                </div>
+                                <div class="stage-item" data-stage="profiling">
+                                    <div class="stage-icon"><i class="fas fa-search"></i></div>
+                                    <span class="stage-name">Intelligence Profiling</span>
+                                    <div class="stage-status pending"></div>
+                                </div>
+                                <div class="stage-item" data-stage="cleaning">
+                                    <div class="stage-icon"><i class="fas fa-broom"></i></div>
+                                    <span class="stage-name">Data Cleaning</span>
+                                    <div class="stage-status pending"></div>
+                                </div>
+                                <div class="stage-item" data-stage="feature_engineering">
+                                    <div class="stage-icon"><i class="fas fa-magic"></i></div>
+                                    <span class="stage-name">Feature Engineering</span>
+                                    <div class="stage-status pending"></div>
+                                </div>
+                                <div class="stage-item" data-stage="modeling">
+                                    <div class="stage-icon"><i class="fas fa-robot"></i></div>
+                                    <span class="stage-name">Modeling</span>
+                                    <div class="stage-status pending"></div>
+                                </div>
+                            </div>
+                            <div class="monitor-actions">
+                                <button id="refreshStatus" class="btn btn-secondary btn-small">
+                                    <i class="fas fa-sync"></i>
+                                    Refresh
+                                </button>
+                                <button id="triggerRecovery" class="btn btn-warning btn-small hidden">
+                                    <i class="fas fa-first-aid"></i>
+                                    Recover
+                                </button>
+                            </div>
                         </div>
                     </div>
                     
@@ -254,16 +429,34 @@
                                 <small>CSV format</small>
                             </button>
                             
+                            <button class="download-btn" id="downloadEnhancedData">
+                                <i class="fas fa-magic"></i>
+                                <span>Enhanced Data</span>
+                                <small>With engineered features</small>
+                            </button>
+                            
                             <button class="download-btn" id="downloadPipeline">
                                 <i class="fas fa-cogs"></i>
                                 <span>ML Pipeline</span>
                                 <small>Joblib format</small>
                             </button>
                             
+                            <button class="download-btn" id="downloadIntelligence">
+                                <i class="fas fa-brain"></i>
+                                <span>Intelligence Report</span>
+                                <small>Complete analysis</small>
+                            </button>
+                            
                             <button class="download-btn" id="downloadLineage">
                                 <i class="fas fa-file-alt"></i>
                                 <span>Lineage Report</span>
-                                <small>JSON format</small>
+                                <small>Processing history</small>
+                            </button>
+                            
+                            <button class="download-btn" id="downloadMetadata">
+                                <i class="fas fa-info-circle"></i>
+                                <span>Pipeline Metadata</span>
+                                <small>Execution details</small>
                             </button>
                         </div>
                     </div>
