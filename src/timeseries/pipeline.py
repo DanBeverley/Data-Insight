@@ -196,3 +196,86 @@ def create_timeseries_config(
         }
     
     return config
+
+
+class TimeSeriesPipeline:
+    """
+    Wrapper class for time series pipeline creation and management.
+    
+    Provides a unified interface for creating time series forecasting pipelines
+    with feature engineering and modeling capabilities.
+    """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize TimeSeriesPipeline.
+        
+        Parameters
+        ----------
+        config : dict, optional
+            Configuration dictionary for pipeline parameters
+        """
+        self.config = config or {}
+        self.pipeline = None
+        self.is_fitted = False
+        
+    def create_pipeline(self, preprocessor, target_column: str = None):
+        """
+        Create a time series pipeline.
+        
+        Parameters
+        ----------
+        preprocessor : sklearn transformer
+            Preprocessing pipeline
+        target_column : str, optional
+            Name of target column for forecasting
+            
+        Returns
+        -------
+        sklearn.Pipeline
+            Configured pipeline
+        """
+        self.pipeline = create_timeseries_pipeline(
+            preprocessor=preprocessor,
+            target_column=target_column,
+            config=self.config
+        )
+        return self.pipeline
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series = None, **kwargs):
+        """Fit the pipeline."""
+        if self.pipeline is None:
+            raise ValueError("Pipeline not created. Call create_pipeline() first.")
+        
+        self.pipeline.fit(X, y, **kwargs)
+        self.is_fitted = True
+        return self
+    
+    def predict(self, X: pd.DataFrame):
+        """Make predictions."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        return self.pipeline.predict(X)
+    
+    def forecast(self, steps: int = 1):
+        """Generate forecast for future time steps."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        # This would need specific implementation based on the model used
+        raise NotImplementedError("Forecast method needs specific implementation")
+    
+    def get_pipeline_info(self) -> Dict[str, Any]:
+        """Get information about the pipeline."""
+        if self.pipeline is None:
+            return {'status': 'not_created'}
+        
+        info = {
+            'status': 'fitted' if self.is_fitted else 'created',
+            'task': 'timeseries',
+            'steps': [name for name, _ in self.pipeline.steps],
+            'model_type': type(self.pipeline.named_steps.get('model', None)).__name__
+        }
+        
+        return info
