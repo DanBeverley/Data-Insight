@@ -11,7 +11,7 @@ import json
 import logging
 import requests
 from pathlib import Path
-from typing import Any, Optional, Union, Dict
+from typing import Any, Optional, Union, Dict, List
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -228,3 +228,99 @@ def validate_data_source(source: Union[str, Path, Any]) -> Dict[str, Any]:
         result['error'] = str(e)
         
     return result
+
+
+class DataIngestion:
+    """
+    Object-oriented wrapper for data ingestion functions.
+    
+    Provides a consistent interface for loading data from various sources
+    with enhanced error handling and validation.
+    """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize DataIngestion with optional configuration.
+        
+        Parameters
+        ----------
+        config : dict, optional
+            Configuration dictionary for ingestion parameters
+        """
+        default_config = {
+            'timeout': 30,
+            'max_retries': 3,
+            'encoding': 'utf-8',
+            'validate_source': True
+        }
+        
+        self.config = {**default_config, **(config or {})}
+        self.last_source_info = None
+    
+    def load(self, source: Union[str, Path, Any], filename: str = None, **kwargs) -> Optional[pd.DataFrame]:
+        """
+        Load data from a source with comprehensive error handling.
+        
+        Parameters
+        ----------
+        source : str, Path, or file-like object
+            Data source to load from
+        filename : str, optional
+            Optional filename for file objects
+        **kwargs : additional arguments
+            Additional arguments for pandas reading functions
+            
+        Returns
+        -------
+        pd.DataFrame or None
+            Loaded data or None if failed
+        """
+        # Validate source if enabled
+        if self.config['validate_source']:
+            validation = validate_data_source(source)
+            self.last_source_info = validation
+            
+            if not validation['valid']:
+                logging.error(f"Source validation failed: {validation['error']}")
+                return None
+        
+        # Load data using the appropriate function
+        try:
+            if isinstance(source, str) and urlparse(source).scheme in ['http', 'https']:
+                data_type = kwargs.get('data_type', 'csv')
+                df = ingest_from_url(source, data_type)
+            else:
+                df = ingest_data(source, filename)
+            
+            if df is not None:
+                logging.info(f"Successfully loaded data with shape: {df.shape}")
+                
+            return df
+            
+        except Exception as e:
+            logging.error(f"Data ingestion failed: {e}")
+            return None
+    
+    def load_from_file(self, file_obj: Any, filename: str = None) -> Optional[pd.DataFrame]:
+        """Load data from a file-like object."""
+        return _ingest_from_file_object(file_obj, filename)
+    
+    def load_from_path(self, path: Union[str, Path]) -> Optional[pd.DataFrame]:
+        """Load data from a local file path."""
+        return _ingest_from_path(Path(path))
+    
+    def load_from_url(self, url: str, data_type: str = 'csv') -> Optional[pd.DataFrame]:
+        """Load data from a URL."""
+        return _ingest_from_url(url, data_type)
+    
+    def validate_source(self, source: Union[str, Path, Any]) -> Dict[str, Any]:
+        """Validate a data source."""
+        return validate_data_source(source)
+    
+    def get_source_info(self) -> Optional[Dict[str, Any]]:
+        """Get information about the last validated source."""
+        return self.last_source_info
+    
+    def get_supported_formats(self) -> List[str]:
+        """Get list of supported file formats."""
+        return ['csv', 'xlsx', 'xls', 'json', 'tsv']
