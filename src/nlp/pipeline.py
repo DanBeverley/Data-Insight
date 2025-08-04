@@ -196,6 +196,99 @@ def create_nlp_config(
     
     return config
 
+
+class NLPPipeline:
+    """
+    Wrapper class for NLP pipeline creation and management.
+    
+    Provides a unified interface for creating text processing and classification pipelines
+    with feature extraction, cleaning, and modeling capabilities.
+    """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize NLPPipeline.
+        
+        Parameters
+        ----------
+        config : dict, optional
+            Configuration dictionary for pipeline parameters
+        """
+        self.config = config or {}
+        self.pipeline = None
+        self.is_fitted = False
+        
+    def create_pipeline(self, df: pd.DataFrame, target_column: str = None):
+        """
+        Create an NLP pipeline.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame with text data
+        target_column : str, optional
+            Name of target column for classification tasks
+            
+        Returns
+        -------
+        sklearn.Pipeline
+            Configured pipeline
+        """
+        self.pipeline = create_nlp_pipeline(
+            df=df,
+            target_column=target_column,
+            config=self.config
+        )
+        return self.pipeline
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series = None, **kwargs):
+        """Fit the pipeline."""
+        if self.pipeline is None:
+            raise ValueError("Pipeline not created. Call create_pipeline() first.")
+        
+        self.pipeline.fit(X, y, **kwargs)
+        self.is_fitted = True
+        return self
+    
+    def predict(self, X: pd.DataFrame):
+        """Make predictions."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        return self.pipeline.predict(X)
+    
+    def predict_proba(self, X: pd.DataFrame):
+        """Get prediction probabilities (classification only)."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        if hasattr(self.pipeline, 'predict_proba'):
+            return self.pipeline.predict_proba(X)
+        else:
+            raise ValueError("Current pipeline doesn't support probability predictions")
+    
+    def transform(self, X: pd.DataFrame):
+        """Transform text data to features."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        return self.pipeline.transform(X)
+    
+    def get_pipeline_info(self) -> Dict[str, Any]:
+        """Get information about the pipeline."""
+        if self.pipeline is None:
+            return {'status': 'not_created'}
+        
+        info = {
+            'status': 'fitted' if self.is_fitted else 'created',
+            'task': 'nlp',
+            'steps': [name for name, _ in self.pipeline.steps],
+            'model_type': type(self.pipeline.named_steps.get('model', None)).__name__
+        }
+        
+        return info
+
+
 def create_hybrid_pipeline(
     df: pd.DataFrame,
     text_columns: List[str],
