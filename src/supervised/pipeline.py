@@ -19,8 +19,14 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.pipeline import Pipeline
-from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline as ImbPipeline
+
+try:
+    from imblearn.over_sampling import SMOTE
+    from imblearn.pipeline import Pipeline as ImbPipeline
+    HAS_IMBLEARN = True
+except ImportError:
+    HAS_IMBLEARN = False
+    ImbPipeline = Pipeline  # Fallback to regular sklearn Pipeline
 
 from ..config import settings
 
@@ -89,11 +95,13 @@ def create_supervised_pipeline(
         imbalance_threshold = settings['pipeline_params']['imbalance_smote_threshold']
         minority_ratio = target_series.value_counts(normalize=True).min()
         
-        if minority_ratio < imbalance_threshold:
+        if minority_ratio < imbalance_threshold and HAS_IMBLEARN:
             logging.info(f"Class imbalance detected (minority class ratio: {minority_ratio:.2f}). Adding SMOTE to pipeline.")
             pipeline_steps.append(('resampler', SMOTE(random_state=RANDOM_STATE)))
             pipeline_steps.append(('model', model))
             return ImbPipeline(pipeline_steps)
+        elif minority_ratio < imbalance_threshold:
+            logging.info(f"Class imbalance detected (minority class ratio: {minority_ratio:.2f}), but SMOTE unavailable. Using standard pipeline.")
         else:
             logging.info("Target variable is balanced. Using standard pipeline.")
 
@@ -176,8 +184,11 @@ if __name__ == "__main__":
     )
     print("Pipeline Type:", type(imbalanced_pipeline).__name__)
     print("Pipeline Steps:", [name for name, _ in imbalanced_pipeline.steps])
-    assert 'resampler' in imbalanced_pipeline.named_steps
-    assert isinstance(imbalanced_pipeline.named_steps['resampler'], SMOTE)
+    if HAS_IMBLEARN:
+        assert 'resampler' in imbalanced_pipeline.named_steps
+        assert isinstance(imbalanced_pipeline.named_steps['resampler'], SMOTE)
+    else:
+        print("SMOTE not available, skipping resampler assertions")
 
     # 3. --- Test Case 2: Balanced Classification ---
     print("\n--- Testing Balanced Classification ---")
@@ -219,3 +230,121 @@ if __name__ == "__main__":
     )
     print("Permutation Importance Results:")
     print(importance_df)
+
+
+class SupervisedPipeline:
+    """
+    Wrapper class for supervised learning pipeline creation and management.
+    
+    Provides a unified interface for creating classification and regression pipelines
+    with automatic handling of imbalanced data and model selection.
+    """
+    
+    def __init__(self, task: str = 'classification', config: Optional[Dict[str, Any]] = None):
+        """
+        Initialize SupervisedPipeline.
+        
+        Parameters
+        ----------
+        task : str
+            Type of supervised learning task ('classification' or 'regression')
+        config : dict, optional
+            Configuration dictionary for pipeline parameters
+        """
+        self.task = task
+        self.config = config or {}
+        self.pipeline = None
+        self.is_fitted = False
+        
+    def create_pipeline(self, preprocessor, target_series: pd.Series = None, model=None):
+        """
+        Create a supervised learning pipeline.
+        
+        Parameters
+        ----------
+        preprocessor : sklearn transformer
+            Preprocessing pipeline
+        target_series : pd.Series, optional
+            Target variable for imbalance detection
+        model : sklearn estimator, optional
+            Custom model to use
+            
+        Returns
+        -------
+        sklearn.Pipeline
+            Configured pipeline
+        """
+        self.pipeline = create_supervised_pipeline(
+            preprocessor=preprocessor,
+            task=self.task,
+            target_series=target_series,
+            model=model
+        )
+        return self.pipeline
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series, **kwargs):
+        """Fit the pipeline."""
+        if self.pipeline is None:
+            raise ValueError("Pipeline not created. Call create_pipeline() first.")
+        
+        self.pipeline.fit(X, y, **kwargs)
+        self.is_fitted = True
+        return self
+    
+    def predict(self, X: pd.DataFrame):
+        """Make predictions."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        return self.pipeline.predict(X)
+    
+    def predict_proba(self, X: pd.DataFrame):
+        """Get prediction probabilities (classification only)."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        if self.task != 'classification':
+            raise ValueError("predict_proba only available for classification tasks")
+        
+        return self.pipeline.predict_proba(X)
+    
+    def score(self, X: pd.DataFrame, y: pd.Series):
+        """Get model score."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        return self.pipeline.score(X, y)
+    
+    def get_feature_importance(self, X_val: pd.DataFrame, y_val: pd.Series, 
+                             feature_names: List[str]) -> pd.DataFrame:
+        """Calculate permutation feature importance."""
+        if not self.is_fitted:
+            raise ValueError("Pipeline not fitted. Call fit() first.")
+        
+        return calculate_permutation_importance(
+            fitted_pipeline=self.pipeline,
+            X_val=X_val,
+            y_val=y_val,
+            feature_names=feature_names
+        )
+    
+    def get_pipeline_info(self) -> Dict[str, Any]:
+        """Get information about the pipeline."""
+        if self.pipeline is None:
+            return {'status': 'not_created'}
+        
+        info = {
+            'status': 'fitted' if self.is_fitted else 'created',
+            'task': self.task,
+            'steps': [name for name, _ in self.pipeline.steps],
+            'model_type': type(self.pipeline.named_steps.get('model', None)).__name__
+        }
+        
+        # Check if SMOTE is used
+        if 'resampler' in self.pipeline.named_steps:
+            info['uses_smote'] = True
+            info['smote_type'] = type(self.pipeline.named_steps['resampler']).__name__
+        else:
+            info['uses_smote'] = False
+            
+        return info
