@@ -317,3 +317,7 @@ def create_feature_engineering_config(
         config['max_interactions'] = min(10, config.get('max_interactions', 10))
     
     return config
+
+
+# Alias for backward compatibility
+AutoFeatureEngineer = AutomatedFeatureEngineer
