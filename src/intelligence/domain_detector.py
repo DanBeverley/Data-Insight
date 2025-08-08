@@ -193,8 +193,8 @@ class DomainDetector:
         found_types = set()
         
         for col_profile in column_profiles.values():
-            if 'semantic_type' in col_profile:
-                found_types.add(col_profile['semantic_type'])
+            if hasattr(col_profile, 'semantic_type'):
+                found_types.add(col_profile.semantic_type.value)
         
         if not expected_types:
             return 0.0
