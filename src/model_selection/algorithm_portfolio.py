@@ -6,26 +6,22 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import time
 
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
-from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
-from sklearn.svm import SVC, SVR
-from sklearn.naive_bayes import GaussianNB
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.neural_network import MLPClassifier, MLPRegressor
+# Lazy imports to avoid memory issues
+
+XGBOOST_AVAILABLE = False
+LIGHTGBM_AVAILABLE = False
 
 try:
-    from xgboost import XGBClassifier, XGBRegressor
+    import xgboost
     XGBOOST_AVAILABLE = True
 except ImportError:
-    XGBOOST_AVAILABLE = False
-    logging.warning("XGBoost not available")
+    pass
 
 try:
-    from lightgbm import LGBMClassifier, LGBMRegressor
+    import lightgbm
     LIGHTGBM_AVAILABLE = True
 except ImportError:
-    LIGHTGBM_AVAILABLE = False
-    logging.warning("LightGBM not available")
+    pass
 
 @dataclass
 class AlgorithmConfig:
@@ -103,11 +99,25 @@ class AlgorithmPortfolioManager:
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
-        self.algorithms_registry = self._initialize_algorithms()
+        self.algorithms_registry = None  # Initialize lazily
         self.performance_history: Dict[str, List[float]] = {}
+        
+    def _get_algorithms_registry(self):
+        """Get algorithms registry, initialize if needed"""
+        if self.algorithms_registry is None:
+            self.algorithms_registry = self._initialize_algorithms()
+        return self.algorithms_registry
         
     def _initialize_algorithms(self) -> Dict[str, AlgorithmConfig]:
         """Initialize the portfolio of available algorithms"""
+        
+        # Import sklearn classes only when needed
+        from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
+        from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+        from sklearn.svm import SVC, SVR
+        from sklearn.naive_bayes import GaussianNB
+        from sklearn.neural_network import MLPClassifier, MLPRegressor
         
         algorithms = {
             # Fast Algorithms
@@ -293,6 +303,7 @@ class AlgorithmPortfolioManager:
         
         # Add XGBoost if available
         if XGBOOST_AVAILABLE:
+            from xgboost import XGBClassifier, XGBRegressor
             algorithms['xgboost'] = AlgorithmConfig(
                 name='xgboost',
                 model_class=XGBClassifier,
@@ -367,11 +378,13 @@ class AlgorithmPortfolioManager:
         
         # Filter by constraints
         filtered_candidates = []
+        algorithms_registry = self._get_algorithms_registry()
+        
         for algorithm_name in candidates:
-            if algorithm_name not in self.algorithms_registry:
+            if algorithm_name not in algorithms_registry:
                 continue
                 
-            config = self.algorithms_registry[algorithm_name]
+            config = algorithms_registry[algorithm_name]
             
             # Check interpretability requirement
             if require_interpretability and config.interpretability == 'low':
@@ -436,11 +449,13 @@ class AlgorithmPortfolioManager:
         
         scored_algorithms = []
         
+        algorithms_registry = self._get_algorithms_registry()
+        
         for algorithm_name in candidates:
-            if algorithm_name not in self.algorithms_registry:
+            if algorithm_name not in algorithms_registry:
                 continue
                 
-            config = self.algorithms_registry[algorithm_name]
+            config = algorithms_registry[algorithm_name]
             score = self._calculate_algorithm_score(config, dataset_characteristics)
             scored_algorithms.append((algorithm_name, score))
         
@@ -479,15 +494,17 @@ class AlgorithmPortfolioManager:
     
     def create_algorithm(self, algorithm_name: str) -> BaseAlgorithm:
         """Create an algorithm instance"""
-        if algorithm_name not in self.algorithms_registry:
+        algorithms_registry = self._get_algorithms_registry()
+        if algorithm_name not in algorithms_registry:
             raise ValueError(f"Algorithm {algorithm_name} not found in registry")
         
-        config = self.algorithms_registry[algorithm_name]
+        config = algorithms_registry[algorithm_name]
         return SklearnAlgorithm(config)
     
     def get_algorithm_info(self, algorithm_name: str) -> Optional[AlgorithmConfig]:
         """Get algorithm configuration information"""
-        return self.algorithms_registry.get(algorithm_name)
+        algorithms_registry = self._get_algorithms_registry()
+        return algorithms_registry.get(algorithm_name)
     
     def update_performance_history(self, algorithm_name: str, performance_score: float):
         """Update historical performance for an algorithm"""
@@ -502,8 +519,9 @@ class AlgorithmPortfolioManager:
     
     def get_portfolio_summary(self) -> Dict[str, Any]:
         """Get summary of available algorithms in portfolio"""
+        algorithms_registry = self._get_algorithms_registry()
         summary = {
-            'total_algorithms': len(self.algorithms_registry),
+            'total_algorithms': len(algorithms_registry),
             'by_complexity': {},
             'by_task_type': {'classification': [], 'regression': []},
             'external_dependencies': {
@@ -512,7 +530,7 @@ class AlgorithmPortfolioManager:
             }
         }
         
-        for name, config in self.algorithms_registry.items():
+        for name, config in algorithms_registry.items():
             # Count by complexity
             tier = config.complexity_tier
             if tier not in summary['by_complexity']:
