@@ -318,6 +318,18 @@ class RobustPipelineOrchestrator:
         else:
             enhanced_df = self.auto_fe.generate_features({'main': df})
         
+        # Handle missing values after feature engineering
+        if enhanced_df.isnull().sum().sum() > 0:
+            for col in enhanced_df.columns:
+                if col == target_column:
+                    continue
+                if enhanced_df[col].dtype in ['int64', 'float64']:
+                    enhanced_df[col] = enhanced_df[col].fillna(enhanced_df[col].median())
+                else:
+                    mode_vals = enhanced_df[col].mode()
+                    fill_val = mode_vals[0] if len(mode_vals) > 0 else 'unknown'
+                    enhanced_df[col] = enhanced_df[col].fillna(fill_val)
+        
         return StageResult(
             stage=PipelineStage.FEATURE_ENGINEERING,
             status="success",
@@ -325,7 +337,8 @@ class RobustPipelineOrchestrator:
             metadata={
                 'original_features': len(df.columns),
                 'engineered_features': len(enhanced_df.columns),
-                'feature_engineering_applied': True
+                'feature_engineering_applied': True,
+                'missing_values_handled': True
             }
         )
     
