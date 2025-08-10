@@ -14,14 +14,27 @@ from sklearn.feature_selection import SelectKBest, f_regression, f_classif
 try:
     import featuretools as ft
     from featuretools.primitives import (
-        Count, Mean, Max, Min, Std, Sum,
-        Day, Month, Year, Weekday, IsWeekend
+        Count, Mean, Max, Min, Std, Sum, Mode,
+        Day, Month, Year, Weekday, IsWeekend,
+        Median, NumUnique, Trend
     )
     FEATURETOOLS_AVAILABLE = True
 except ImportError:
     ft = None
     FEATURETOOLS_AVAILABLE = False
     logging.warning("Featuretools not available. Using basic feature engineering only.")
+
+try:
+    from textblob import TextBlob
+    TEXTBLOB_AVAILABLE = True
+except ImportError:
+    TEXTBLOB_AVAILABLE = False
+
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    SKLEARN_TEXT_AVAILABLE = True
+except ImportError:
+    SKLEARN_TEXT_AVAILABLE = False
 
 class AutomatedFeatureEngineer:
     """Intelligent automated feature generation with domain awareness and memory management."""
@@ -129,7 +142,13 @@ class AutomatedFeatureEngineer:
         # Add temporal features for datetime columns
         result_df = self._add_temporal_features(result_df)
         
-        # Add basic mathematical features
+        # Add text features for text columns
+        result_df = self._add_text_features(result_df)
+        
+        # Add advanced temporal features
+        result_df = self._add_advanced_temporal_features(result_df)
+        
+        # Add enhanced mathematical features
         result_df = self._add_mathematical_features(result_df)
         
         # Add statistical aggregation features
@@ -242,35 +261,221 @@ class AutomatedFeatureEngineer:
         
         return df
     
+    def _add_text_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add advanced text feature engineering."""
+        text_cols = df.select_dtypes(include=['object']).columns
+        text_cols = [col for col in text_cols if self._is_text_column(df[col])]
+        
+        if not text_cols:
+            return df
+            
+        for col in text_cols[:3]:  # Limit to prevent explosion
+            text_series = df[col].fillna('').astype(str)
+            
+            # Basic text statistics
+            df[f'text_{col}_length'] = text_series.str.len()
+            df[f'text_{col}_word_count'] = text_series.str.split().str.len()
+            df[f'text_{col}_punct_ratio'] = text_series.str.count(r'[^\w\s]') / (text_series.str.len() + 1)
+            df[f'text_{col}_upper_ratio'] = text_series.str.count(r'[A-Z]') / (text_series.str.len() + 1)
+            
+            # Sentiment analysis if available
+            if TEXTBLOB_AVAILABLE and len(text_series) <= 1000:  # Limit for performance
+                try:
+                    sentiments = text_series.apply(lambda x: TextBlob(str(x)[:500]).sentiment.polarity if x else 0)
+                    df[f'text_{col}_sentiment'] = sentiments
+                    
+                    subjectivity = text_series.apply(lambda x: TextBlob(str(x)[:500]).sentiment.subjectivity if x else 0)
+                    df[f'text_{col}_subjectivity'] = subjectivity
+                except:
+                    logging.warning(f"Failed to compute sentiment for {col}")
+            
+            # Topic modeling features (basic)
+            if SKLEARN_TEXT_AVAILABLE and len(text_series.unique()) > 10:
+                try:
+                    # Create topic features using simple TF-IDF + clustering
+                    vectorizer = TfidfVectorizer(max_features=50, stop_words='english', 
+                                               min_df=2, max_df=0.8, ngram_range=(1, 2))
+                    tfidf_matrix = vectorizer.fit_transform(text_series)
+                    
+                    # Simple topic assignment using k-means
+                    from sklearn.cluster import KMeans
+                    n_topics = min(5, max(2, len(text_series.unique()) // 20))
+                    kmeans = KMeans(n_clusters=n_topics, random_state=42, n_init=10)
+                    topics = kmeans.fit_predict(tfidf_matrix)
+                    df[f'text_{col}_topic'] = topics
+                    
+                    # Topic confidence (distance to centroid)
+                    distances = kmeans.transform(tfidf_matrix)
+                    df[f'text_{col}_topic_confidence'] = 1 / (1 + distances.min(axis=1))
+                    
+                except Exception as e:
+                    logging.warning(f"Failed to compute topics for {col}: {e}")
+        
+        return df
+    
+    def _is_text_column(self, series: pd.Series) -> bool:
+        """Check if column contains meaningful text data."""
+        if series.dtype != 'object':
+            return False
+            
+        sample_values = series.dropna().head(100)
+        if len(sample_values) == 0:
+            return False
+            
+        # Check if values look like text (average length > 10, contains spaces)
+        avg_length = sample_values.astype(str).str.len().mean()
+        has_spaces = sample_values.astype(str).str.contains(' ').mean()
+        
+        return avg_length > 10 and has_spaces > 0.3
+    
+    def _add_advanced_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add advanced temporal features with seasonal patterns and optimal lags."""
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns
+        
+        for col in datetime_cols:
+            dt_series = pd.to_datetime(df[col])
+            
+            # Quarter and season features
+            df[f'temporal_{col}_quarter'] = dt_series.dt.quarter
+            month = dt_series.dt.month
+            df[f'temporal_{col}_season'] = ((month - 1) // 3) + 1
+            
+            # Holiday and business day features
+            df[f'temporal_{col}_is_month_start'] = dt_series.dt.is_month_start.astype(int)
+            df[f'temporal_{col}_is_month_end'] = dt_series.dt.is_month_end.astype(int)
+            df[f'temporal_{col}_is_quarter_start'] = dt_series.dt.is_quarter_start.astype(int)
+            df[f'temporal_{col}_is_quarter_end'] = dt_series.dt.is_quarter_end.astype(int)
+            
+            # Advanced cyclical encoding with multiple periods
+            df[f'temporal_{col}_dayofyear_sin'] = np.sin(2 * np.pi * dt_series.dt.dayofyear / 365.25)
+            df[f'temporal_{col}_dayofyear_cos'] = np.cos(2 * np.pi * dt_series.dt.dayofyear / 365.25)
+            df[f'temporal_{col}_week_sin'] = np.sin(2 * np.pi * dt_series.dt.isocalendar().week / 52)
+            df[f'temporal_{col}_week_cos'] = np.cos(2 * np.pi * dt_series.dt.isocalendar().week / 52)
+            
+            # Time-based aggregations if we have numeric columns
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0 and len(df) > 30:  # Sufficient data for patterns
+                # Sort by datetime for lag features
+                sorted_idx = dt_series.argsort()
+                df_sorted = df.iloc[sorted_idx]
+                
+                # Add lag features for top numeric columns
+                for num_col in numeric_cols[:3]:  # Limit to prevent explosion
+                    if num_col.startswith(('temporal_', 'text_', 'domain_')):
+                        continue
+                        
+                    # Multiple lag periods
+                    for lag in [1, 7, 30]:
+                        if lag < len(df):
+                            df[f'temporal_{col}_{num_col}_lag_{lag}'] = df_sorted[num_col].shift(lag).iloc[sorted_idx.argsort()]
+                    
+                    # Rolling statistics 
+                    for window in [7, 30]:
+                        if window < len(df):
+                            rolling_mean = df_sorted[num_col].rolling(window=window, min_periods=1).mean()
+                            rolling_std = df_sorted[num_col].rolling(window=window, min_periods=1).std()
+                            df[f'temporal_{col}_{num_col}_rolling_mean_{window}'] = rolling_mean.iloc[sorted_idx.argsort()]
+                            df[f'temporal_{col}_{num_col}_rolling_std_{window}'] = rolling_std.iloc[sorted_idx.argsort()]
+        
+        return df
+    
     def _add_mathematical_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add mathematical transformation features."""
+        """Add enhanced mathematical transformation features."""
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        numeric_cols = [col for col in numeric_cols if not col.startswith(('temporal_', 'domain_'))]
+        numeric_cols = [col for col in numeric_cols if not col.startswith(('temporal_', 'domain_', 'text_'))]
         
         if len(numeric_cols) < 2:
             return df
         
-        # Limit features to prevent explosion
-        max_cols = min(8, len(numeric_cols))
-        selected_cols = numeric_cols[:max_cols]
+        # Intelligent column selection based on variance and correlation
+        selected_cols = self._select_best_numeric_columns(df, numeric_cols)
         
-        # Ratio features for meaningful pairs
+        # Enhanced ratio features with zero-handling
         if self.config.get('ratio_features', True):
-            for i in range(min(3, len(selected_cols))):
-                for j in range(i + 1, min(i + 4, len(selected_cols))):
+            for i in range(min(4, len(selected_cols))):
+                for j in range(i + 1, min(i + 5, len(selected_cols))):
                     col1, col2 = selected_cols[i], selected_cols[j]
+                    
+                    # Safe division with multiple strategies
                     denominator = df[col2].replace(0, np.nan)
                     if not denominator.isna().all():
                         df[f"ratio_{col1}_{col2}"] = df[col1] / denominator
+                        
+                        # Log ratio for positive values
+                        if (df[col1] > 0).any() and (df[col2] > 0).any():
+                            safe_col1 = df[col1].clip(lower=1e-10)
+                            safe_col2 = df[col2].clip(lower=1e-10)
+                            df[f"log_ratio_{col1}_{col2}"] = np.log(safe_col1) - np.log(safe_col2)
         
-        # Interaction features for top columns
+        # Enhanced interaction features
         if self.config.get('interaction_features', True) and len(selected_cols) >= 2:
             for i in range(min(3, len(selected_cols))):
                 for j in range(i + 1, min(i + 3, len(selected_cols))):
                     col1, col2 = selected_cols[i], selected_cols[j]
+                    
+                    # Multiplicative interaction
                     df[f"{col1}_x_{col2}"] = df[col1] * df[col2]
+                    
+                    # Additive interaction 
+                    df[f"{col1}_plus_{col2}"] = df[col1] + df[col2]
+                    
+                    # Difference features
+                    df[f"{col1}_minus_{col2}"] = df[col1] - df[col2]
+                    
+                    # Min/Max features
+                    df[f"{col1}_{col2}_min"] = np.minimum(df[col1], df[col2])
+                    df[f"{col1}_{col2}_max"] = np.maximum(df[col1], df[col2])
+        
+        # Polynomial features for top columns (intelligent degree selection)
+        if self.config.get('polynomial_features', True) and len(selected_cols) >= 1:
+            top_cols = selected_cols[:3]  # Limit to top 3 columns
+            degree = 2 if len(df) > 1000 else 2  # Conservative degree
+            
+            try:
+                poly = PolynomialFeatures(degree=degree, include_bias=False, interaction_only=False)
+                poly_features = poly.fit_transform(df[top_cols])
+                poly_names = poly.get_feature_names_out(top_cols)
+                
+                # Add only new polynomial features (exclude original features)
+                for i, name in enumerate(poly_names):
+                    if name not in top_cols:  # Skip original features
+                        df[f"poly_{name}"] = poly_features[:, i]
+            except Exception as e:
+                logging.warning(f"Failed to generate polynomial features: {e}")
         
         return df
+    
+    def _select_best_numeric_columns(self, df: pd.DataFrame, numeric_cols: List[str]) -> List[str]:
+        """Select best numeric columns based on variance and correlation structure."""
+        if len(numeric_cols) <= 5:
+            return numeric_cols
+            
+        scores = {}
+        
+        for col in numeric_cols:
+            score = 0
+            series = df[col]
+            
+            # Variance score (normalized)
+            if series.var() > 0:
+                cv = series.std() / abs(series.mean() + 1e-10)  # Coefficient of variation
+                score += min(cv, 5)  # Cap at 5 to avoid extreme values
+            
+            # Non-missing data score
+            score += (1 - series.isnull().mean()) * 2
+            
+            # Avoid highly correlated features
+            for other_col in numeric_cols:
+                if other_col != col and other_col in scores:
+                    corr = abs(df[col].corr(df[other_col]))
+                    if not np.isnan(corr) and corr > 0.95:
+                        score -= 1
+            
+            scores[col] = score
+        
+        # Return top columns
+        sorted_cols = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+        return sorted_cols[:8]
     
     def _add_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add statistical aggregation features."""
@@ -326,9 +531,9 @@ class AutomatedFeatureEngineer:
                 child_column_name=child_variable
             )
         
-        # Define primitives
-        agg_primitives = [Sum, Mean, Max, Min, Std, Count]
-        trans_primitives = [Day, Month, Year, Weekday, IsWeekend]
+        # Enhanced primitives for better feature generation
+        agg_primitives = [Sum, Mean, Max, Min, Std, Count, Mode, Median, NumUnique]
+        trans_primitives = [Day, Month, Year, Weekday, IsWeekend, Trend]
         
         # Run DFS
         self.feature_matrix, self.generated_features = ft.dfs(
@@ -453,10 +658,14 @@ def create_feature_engineering_config(
         'ratio_features': True,
         'statistical_features': True,
         'interaction_features': numeric_cols >= 3,
+        'polynomial_features': numeric_cols >= 2 and n_samples > 100,
         'temporal_features': datetime_cols > 0,
+        'text_features': True,
         'domain_features': True,
         'memory_limit_mb': 2000,
-        'max_features': 1000
+        'max_features': 1000,
+        'dfs_max_depth': 2,
+        'dfs_chunk_size': 5000 if n_samples > 5000 else None
     }
     
     # Adjust limits based on data size and memory
