@@ -1,604 +1,550 @@
-import pandas as pd
+"""Adaptive Learning System for Continuous Model Improvement"""
+
 import numpy as np
-from typing import Dict, List, Any, Optional, Tuple
+import pandas as pd
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
-import json
+from enum import Enum
+import time
 import pickle
-from pathlib import Path
-from datetime import datetime, timedelta
-from collections import defaultdict, deque
-import logging
+import warnings
+warnings.filterwarnings('ignore')
+
+from sklearn.base import clone
+from sklearn.metrics import accuracy_score, r2_score, mean_squared_error
+from sklearn.model_selection import train_test_split
+
+from ..data_quality.drift_monitor import ComprehensiveDriftMonitor, DriftResult
+from ..model_selection.performance_validator import ProductionModelValidator, ModelPerformance, TaskType
+
+class LearningStrategy(Enum):
+    REACTIVE = "reactive"
+    PROACTIVE = "proactive"
+    HYBRID = "hybrid"
+
+class TriggerType(Enum):
+    PERFORMANCE_DEGRADATION = "performance_degradation"
+    DATA_DRIFT = "data_drift"
+    TIME_BASED = "time_based"
+    MANUAL = "manual"
 
 @dataclass
-class LearningEvent:
-    timestamp: datetime
-    event_type: str
-    context: Dict[str, Any]
-    outcome: Dict[str, Any]
-    success_score: float
+class AdaptationTrigger:
+    trigger_type: TriggerType
+    threshold: float
+    current_value: float
+    triggered: bool
+    confidence: float
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
-class PatternInsight:
-    pattern_id: str
-    pattern_type: str
-    description: str
-    confidence: float
-    frequency: int
-    conditions: Dict[str, Any]
-    recommendations: List[str]
-    last_updated: datetime
+class LearningEvent:
+    event_id: str
+    trigger: AdaptationTrigger
+    original_performance: float
+    new_performance: float
+    adaptation_applied: str
+    improvement: float
+    timestamp: float
+    success: bool
+
+@dataclass
+class AdaptiveConfig:
+    learning_strategy: LearningStrategy = LearningStrategy.HYBRID
+    performance_threshold: float = 0.05
+    drift_threshold: float = 0.1
+    min_samples_for_adaptation: int = 100
+    adaptation_frequency_days: int = 7
+    max_model_history: int = 10
+    confidence_threshold: float = 0.7
+    early_stopping_patience: int = 3
 
 class AdaptiveLearningSystem:
-    """Self-learning system that improves pipeline performance over time"""
     
-    def __init__(self, learning_store_path: str = "./learning_store"):
-        self.learning_store_path = Path(learning_store_path)
-        self.learning_store_path.mkdir(exist_ok=True)
+    def __init__(self, config: Optional[AdaptiveConfig] = None):
+        self.config = config or AdaptiveConfig()
+        self.drift_monitor = ComprehensiveDriftMonitor()
+        self.validator = ProductionModelValidator()
         
-        # Learning components
-        self.event_history: deque = deque(maxlen=10000)
-        self.pattern_library: Dict[str, PatternInsight] = {}
-        self.performance_tracker: Dict[str, List[float]] = defaultdict(list)
-        self.adaptation_rules: Dict[str, Dict] = {}
+        self.model_history: List[Dict[str, Any]] = []
+        self.performance_history: List[float] = []
+        self.learning_events: List[LearningEvent] = []
+        self.baseline_performance: Optional[float] = None
         
-        # Configuration
-        self.min_events_for_pattern = 5
-        self.pattern_confidence_threshold = 0.7
-        self.performance_window_size = 100
+    def monitor_and_adapt(self, current_model, X_new: pd.DataFrame, y_new: pd.Series,
+                         task_type: TaskType, algorithm_name: str = "") -> Dict[str, Any]:
         
-        # Load existing knowledge
-        self._load_learning_state()
+        adaptation_results = {
+            'triggers_detected': [],
+            'adaptations_applied': [],
+            'performance_change': 0.0,
+            'recommendation': 'continue_monitoring'
+        }
         
-        self.logger = logging.getLogger("AdaptiveLearningSystem")
+        triggers = self._evaluate_triggers(current_model, X_new, y_new, task_type)
+        adaptation_results['triggers_detected'] = [t.trigger_type.value for t in triggers if t.triggered]
+        
+        if not any(t.triggered for t in triggers):
+            return adaptation_results
+        
+        if self.config.learning_strategy in [LearningStrategy.REACTIVE, LearningStrategy.HYBRID]:
+            reactive_adaptation = self._apply_reactive_adaptation(
+                current_model, X_new, y_new, triggers, task_type, algorithm_name
+            )
+            adaptation_results.update(reactive_adaptation)
+        
+        if self.config.learning_strategy in [LearningStrategy.PROACTIVE, LearningStrategy.HYBRID]:
+            proactive_adaptation = self._apply_proactive_adaptation(
+                current_model, X_new, y_new, task_type, algorithm_name
+            )
+            if proactive_adaptation['improvement'] > reactive_adaptation.get('improvement', 0):
+                adaptation_results.update(proactive_adaptation)
+        
+        self._update_learning_history(adaptation_results, triggers)
+        
+        return adaptation_results
     
-    def record_pipeline_execution(self, pipeline_results: Dict[str, Any],
-                                intelligence_profile: Dict[str, Any],
-                                execution_metadata: Dict[str, Any]):
-        """Record pipeline execution for learning"""
+    def _evaluate_triggers(self, model, X: pd.DataFrame, y: pd.Series, 
+                          task_type: TaskType) -> List[AdaptationTrigger]:
         
-        # Extract learning signals
-        success_score = self._calculate_success_score(pipeline_results)
+        triggers = []
+        
+        performance_trigger = self._evaluate_performance_trigger(model, X, y, task_type)
+        triggers.append(performance_trigger)
+        
+        drift_trigger = self._evaluate_drift_trigger(X)
+        triggers.append(drift_trigger)
+        
+        time_trigger = self._evaluate_time_trigger()
+        triggers.append(time_trigger)
+        
+        return triggers
+    
+    def _evaluate_performance_trigger(self, model, X: pd.DataFrame, y: pd.Series,
+                                    task_type: TaskType) -> AdaptationTrigger:
+        
+        try:
+            current_performance = self._measure_performance(model, X, y, task_type)
+            
+            if self.baseline_performance is None:
+                self.baseline_performance = current_performance
+                performance_degradation = 0.0
+                triggered = False
+            else:
+                performance_degradation = self.baseline_performance - current_performance
+                triggered = performance_degradation > self.config.performance_threshold
+            
+            confidence = min(1.0, abs(performance_degradation) / self.config.performance_threshold) if triggered else 0.5
+            
+            return AdaptationTrigger(
+                trigger_type=TriggerType.PERFORMANCE_DEGRADATION,
+                threshold=self.config.performance_threshold,
+                current_value=performance_degradation,
+                triggered=triggered,
+                confidence=confidence,
+                metadata={
+                    'baseline_performance': self.baseline_performance,
+                    'current_performance': current_performance
+                }
+            )
+            
+        except Exception as e:
+            return AdaptationTrigger(
+                trigger_type=TriggerType.PERFORMANCE_DEGRADATION,
+                threshold=self.config.performance_threshold,
+                current_value=0.0,
+                triggered=False,
+                confidence=0.0,
+                metadata={'error': str(e)}
+            )
+    
+    def _evaluate_drift_trigger(self, X: pd.DataFrame) -> AdaptationTrigger:
+        
+        try:
+            if not hasattr(self, '_reference_data') or self._reference_data is None:
+                self._reference_data = X.copy()
+                return AdaptationTrigger(
+                    trigger_type=TriggerType.DATA_DRIFT,
+                    threshold=self.config.drift_threshold,
+                    current_value=0.0,
+                    triggered=False,
+                    confidence=0.0,
+                    metadata={'status': 'establishing_baseline'}
+                )
+            
+            self.drift_monitor.fit_reference(self._reference_data)
+            drift_results = self.drift_monitor.detect_drift(X)
+            
+            if not drift_results:
+                max_drift_score = 0.0
+                triggered = False
+            else:
+                max_drift_score = max(drift.drift_score for drift in drift_results)
+                triggered = max_drift_score > self.config.drift_threshold
+            
+            confidence = min(1.0, max_drift_score / self.config.drift_threshold) if triggered else 0.5
+            
+            return AdaptationTrigger(
+                trigger_type=TriggerType.DATA_DRIFT,
+                threshold=self.config.drift_threshold,
+                current_value=max_drift_score,
+                triggered=triggered,
+                confidence=confidence,
+                metadata={
+                    'drift_count': len(drift_results),
+                    'drift_details': [d.description for d in drift_results[:3]]
+                }
+            )
+            
+        except Exception as e:
+            return AdaptationTrigger(
+                trigger_type=TriggerType.DATA_DRIFT,
+                threshold=self.config.drift_threshold,
+                current_value=0.0,
+                triggered=False,
+                confidence=0.0,
+                metadata={'error': str(e)}
+            )
+    
+    def _evaluate_time_trigger(self) -> AdaptationTrigger:
+        
+        current_time = time.time()
+        
+        if not hasattr(self, '_last_adaptation_time'):
+            self._last_adaptation_time = current_time
+            time_since_adaptation = 0.0
+            triggered = False
+        else:
+            time_since_adaptation = (current_time - self._last_adaptation_time) / (24 * 3600)
+            triggered = time_since_adaptation >= self.config.adaptation_frequency_days
+        
+        confidence = min(1.0, time_since_adaptation / self.config.adaptation_frequency_days) if triggered else 0.5
+        
+        return AdaptationTrigger(
+            trigger_type=TriggerType.TIME_BASED,
+            threshold=self.config.adaptation_frequency_days,
+            current_value=time_since_adaptation,
+            triggered=triggered,
+            confidence=confidence,
+            metadata={
+                'days_since_adaptation': time_since_adaptation,
+                'last_adaptation': self._last_adaptation_time if hasattr(self, '_last_adaptation_time') else None
+            }
+        )
+    
+    def _apply_reactive_adaptation(self, model, X: pd.DataFrame, y: pd.Series,
+                                 triggers: List[AdaptationTrigger], task_type: TaskType,
+                                 algorithm_name: str) -> Dict[str, Any]:
+        
+        if len(X) < self.config.min_samples_for_adaptation:
+            return {
+                'adaptation_type': 'reactive',
+                'success': False,
+                'reason': 'insufficient_data',
+                'improvement': 0.0
+            }
+        
+        original_performance = self._measure_performance(model, X, y, task_type)
+        
+        adapted_model = clone(model)
+        adapted_model.fit(X, y)
+        
+        new_performance = self._measure_performance(adapted_model, X, y, task_type)
+        improvement = new_performance - original_performance
+        
+        if improvement > 0:
+            self._store_model_version(adapted_model, new_performance, algorithm_name)
+            self.baseline_performance = new_performance
+            
+            return {
+                'adaptation_type': 'reactive',
+                'success': True,
+                'improvement': improvement,
+                'new_performance': new_performance,
+                'adapted_model': adapted_model
+            }
+        else:
+            return {
+                'adaptation_type': 'reactive',
+                'success': False,
+                'reason': 'no_improvement',
+                'improvement': improvement
+            }
+    
+    def _apply_proactive_adaptation(self, model, X: pd.DataFrame, y: pd.Series,
+                                  task_type: TaskType, algorithm_name: str) -> Dict[str, Any]:
+        
+        if len(X) < self.config.min_samples_for_adaptation:
+            return {
+                'adaptation_type': 'proactive',
+                'success': False,
+                'reason': 'insufficient_data',
+                'improvement': 0.0
+            }
+        
+        original_performance = self._measure_performance(model, X, y, task_type)
+        
+        best_model = model
+        best_performance = original_performance
+        adaptation_strategy = "none"
+        
+        strategies = [
+            ('incremental_learning', self._incremental_learning_adaptation),
+            ('hyperparameter_adjustment', self._hyperparameter_adaptation),
+            ('ensemble_update', self._ensemble_adaptation)
+        ]
+        
+        for strategy_name, strategy_func in strategies:
+            try:
+                adapted_model = strategy_func(model, X, y, task_type)
+                performance = self._measure_performance(adapted_model, X, y, task_type)
+                
+                if performance > best_performance:
+                    best_model = adapted_model
+                    best_performance = performance
+                    adaptation_strategy = strategy_name
+                    
+            except Exception as e:
+                continue
+        
+        improvement = best_performance - original_performance
+        
+        if improvement > 0:
+            self._store_model_version(best_model, best_performance, algorithm_name)
+            
+            return {
+                'adaptation_type': 'proactive',
+                'success': True,
+                'strategy': adaptation_strategy,
+                'improvement': improvement,
+                'new_performance': best_performance,
+                'adapted_model': best_model
+            }
+        else:
+            return {
+                'adaptation_type': 'proactive',
+                'success': False,
+                'reason': 'no_improvement',
+                'improvement': improvement
+            }
+    
+    def _incremental_learning_adaptation(self, model, X: pd.DataFrame, y: pd.Series,
+                                       task_type: TaskType):
+        
+        if hasattr(model, 'partial_fit'):
+            adapted_model = clone(model)
+            adapted_model.partial_fit(X, y)
+            return adapted_model
+        else:
+            adapted_model = clone(model)
+            adapted_model.fit(X, y)
+            return adapted_model
+    
+    def _hyperparameter_adaptation(self, model, X: pd.DataFrame, y: pd.Series,
+                                 task_type: TaskType):
+        
+        adapted_model = clone(model)
+        current_params = model.get_params()
+        
+        if hasattr(model, 'learning_rate') and 'learning_rate' in current_params:
+            new_lr = current_params['learning_rate'] * 0.9
+            adapted_model.set_params(learning_rate=max(0.001, new_lr))
+        
+        if hasattr(model, 'n_estimators') and 'n_estimators' in current_params:
+            new_estimators = min(current_params['n_estimators'] + 10, 200)
+            adapted_model.set_params(n_estimators=new_estimators)
+        
+        adapted_model.fit(X, y)
+        return adapted_model
+    
+    def _ensemble_adaptation(self, model, X: pd.DataFrame, y: pd.Series,
+                           task_type: TaskType):
+        
+        if len(self.model_history) == 0:
+            return clone(model)
+        
+        recent_models = [item['model'] for item in self.model_history[-3:]]
+        recent_models.append(model)
+        
+        ensemble_predictions = []
+        for m in recent_models:
+            try:
+                pred = m.predict(X)
+                ensemble_predictions.append(pred)
+            except:
+                continue
+        
+        if len(ensemble_predictions) < 2:
+            return clone(model)
+        
+        if task_type == TaskType.CLASSIFICATION:
+            from scipy import stats
+            ensemble_pred = stats.mode(np.array(ensemble_predictions), axis=0)[0].flatten()
+        else:
+            ensemble_pred = np.mean(ensemble_predictions, axis=0)
+        
+        class EnsembleWrapper:
+            def __init__(self, models, task_type):
+                self.models = models
+                self.task_type = task_type
+                
+            def predict(self, X):
+                predictions = []
+                for model in self.models:
+                    try:
+                        pred = model.predict(X)
+                        predictions.append(pred)
+                    except:
+                        continue
+                
+                if self.task_type == TaskType.CLASSIFICATION:
+                    from scipy import stats
+                    return stats.mode(np.array(predictions), axis=0)[0].flatten()
+                else:
+                    return np.mean(predictions, axis=0)
+            
+            def get_params(self):
+                return {'ensemble_size': len(self.models)}
+        
+        return EnsembleWrapper(recent_models, task_type)
+    
+    def _measure_performance(self, model, X: pd.DataFrame, y: pd.Series, 
+                           task_type: TaskType) -> float:
+        
+        try:
+            if len(X) < 20:
+                return 0.0
+            
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.3, random_state=42
+            )
+            
+            if hasattr(model, 'predict'):
+                y_pred = model.predict(X_test)
+            else:
+                model_clone = clone(model)
+                model_clone.fit(X_train, y_train)
+                y_pred = model_clone.predict(X_test)
+            
+            if task_type == TaskType.CLASSIFICATION:
+                return accuracy_score(y_test, y_pred)
+            else:
+                return r2_score(y_test, y_pred)
+                
+        except Exception:
+            return 0.0
+    
+    def _store_model_version(self, model, performance: float, algorithm_name: str):
+        
+        model_info = {
+            'model': model,
+            'performance': performance,
+            'algorithm_name': algorithm_name,
+            'timestamp': time.time(),
+            'version': len(self.model_history) + 1
+        }
+        
+        self.model_history.append(model_info)
+        self.performance_history.append(performance)
+        
+        if len(self.model_history) > self.config.max_model_history:
+            self.model_history.pop(0)
+            self.performance_history.pop(0)
+    
+    def _update_learning_history(self, adaptation_results: Dict[str, Any], 
+                               triggers: List[AdaptationTrigger]):
         
         event = LearningEvent(
-            timestamp=datetime.now(),
-            event_type="pipeline_execution",
-            context={
-                'domain': self._extract_domain_context(intelligence_profile),
-                'data_characteristics': self._extract_data_characteristics(intelligence_profile),
-                'feature_engineering': self._extract_fe_context(pipeline_results),
-                'pipeline_config': execution_metadata.get('config', {})
-            },
-            outcome={
-                'success_score': success_score,
-                'performance_metrics': pipeline_results.get('performance_metrics', {}),
-                'execution_time': execution_metadata.get('total_time', 0),
-                'stages_completed': execution_metadata.get('successful_stages', 0)
-            },
-            success_score=success_score,
-            metadata=execution_metadata
+            event_id=f"adapt_{len(self.learning_events)}_{int(time.time())}",
+            trigger=triggers[0] if triggers else None,
+            original_performance=self.baseline_performance or 0.0,
+            new_performance=adaptation_results.get('new_performance', 0.0),
+            adaptation_applied=adaptation_results.get('adaptation_type', 'none'),
+            improvement=adaptation_results.get('improvement', 0.0),
+            timestamp=time.time(),
+            success=adaptation_results.get('success', False)
         )
         
-        self.event_history.append(event)
-        self._update_performance_tracking(event)
+        self.learning_events.append(event)
         
-        # Trigger pattern discovery and adaptation
-        self._discover_new_patterns()
-        self._update_adaptation_rules()
+        if len(self.learning_events) > 100:
+            self.learning_events.pop(0)
         
-        # Persist learning
-        self._save_learning_state()
+        self._last_adaptation_time = time.time()
     
-    def get_adaptive_recommendations(self, intelligence_profile: Dict[str, Any],
-                                   current_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Get recommendations based on learned patterns"""
+    def get_learning_insights(self) -> Dict[str, Any]:
         
-        context = {
-            'domain': self._extract_domain_context(intelligence_profile),
-            'data_characteristics': self._extract_data_characteristics(intelligence_profile)
-        }
+        if not self.learning_events:
+            return {'status': 'no_learning_events'}
         
-        recommendations = {
-            'feature_engineering': self._recommend_feature_engineering(context),
-            'pipeline_config': self._recommend_pipeline_config(context),
-            'data_processing': self._recommend_data_processing(context),
-            'model_selection': self._recommend_model_selection(context)
-        }
+        successful_adaptations = [e for e in self.learning_events if e.success]
+        total_improvement = sum(e.improvement for e in successful_adaptations)
+        
+        trigger_counts = {}
+        for event in self.learning_events:
+            if event.trigger:
+                trigger_type = event.trigger.trigger_type.value
+                trigger_counts[trigger_type] = trigger_counts.get(trigger_type, 0) + 1
+        
+        adaptation_success_rate = len(successful_adaptations) / len(self.learning_events)
+        
+        recent_events = self.learning_events[-10:]
+        recent_success_rate = len([e for e in recent_events if e.success]) / len(recent_events) if recent_events else 0
         
         return {
-            'adaptive_recommendations': recommendations,
-            'confidence_scores': self._calculate_recommendation_confidence(recommendations, context),
-            'learning_insights': self._generate_learning_insights()
+            'total_adaptations': len(self.learning_events),
+            'successful_adaptations': len(successful_adaptations),
+            'success_rate': adaptation_success_rate,
+            'recent_success_rate': recent_success_rate,
+            'total_improvement': total_improvement,
+            'average_improvement': total_improvement / len(successful_adaptations) if successful_adaptations else 0,
+            'trigger_distribution': trigger_counts,
+            'current_baseline': self.baseline_performance,
+            'model_versions_stored': len(self.model_history),
+            'learning_trend': self._calculate_learning_trend()
         }
     
-    def _calculate_success_score(self, pipeline_results: Dict[str, Any]) -> float:
-        """Calculate overall success score for pipeline execution"""
+    def _calculate_learning_trend(self) -> str:
         
-        scores = []
+        if len(self.performance_history) < 3:
+            return 'insufficient_data'
         
-        # Performance score
-        performance_metrics = pipeline_results.get('performance_metrics', {})
-        if 'accuracy' in performance_metrics:
-            scores.append(performance_metrics['accuracy'])
-        elif 'r2_score' in performance_metrics:
-            scores.append(max(0, performance_metrics['r2_score']))
+        recent_performance = self.performance_history[-3:]
         
-        # Execution efficiency score
-        execution_time = pipeline_results.get('execution_time', 0)
-        if execution_time > 0:
-            efficiency_score = min(1.0, 300 / execution_time)  # 5 minutes baseline
-            scores.append(efficiency_score)
-        
-        # Data quality score
-        validation_metrics = pipeline_results.get('validation_metrics', {})
-        if 'data_quality_score' in validation_metrics:
-            scores.append(validation_metrics['data_quality_score'])
-        
-        # Stage completion score
-        successful_stages = pipeline_results.get('successful_stages', 0)
-        total_stages = pipeline_results.get('total_stages', 7)
-        completion_score = successful_stages / total_stages
-        scores.append(completion_score)
-        
-        return np.mean(scores) if scores else 0.5
+        if all(recent_performance[i] >= recent_performance[i-1] for i in range(1, len(recent_performance))):
+            return 'improving'
+        elif all(recent_performance[i] <= recent_performance[i-1] for i in range(1, len(recent_performance))):
+            return 'declining'
+        else:
+            return 'stable'
     
-    def _extract_domain_context(self, intelligence_profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract domain context for learning"""
-        domain_analysis = intelligence_profile.get('domain_analysis', {})
-        detected_domains = domain_analysis.get('detected_domains', [])
+    def rollback_to_best_model(self) -> Optional[Any]:
         
-        return {
-            'primary_domain': detected_domains[0].get('domain') if detected_domains else 'unknown',
-            'domain_confidence': detected_domains[0].get('confidence', 0) if detected_domains else 0,
-            'domain_count': len(detected_domains)
-        }
-    
-    def _extract_data_characteristics(self, intelligence_profile: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract data characteristics for learning"""
-        column_profiles = intelligence_profile.get('column_profiles', {})
-        
-        semantic_types = [profile.semantic_type.value for profile in column_profiles.values()]
-        type_distribution = {st: semantic_types.count(st) for st in set(semantic_types)}
-        
-        return {
-            'column_count': len(column_profiles),
-            'semantic_diversity': len(set(semantic_types)) / len(semantic_types) if semantic_types else 0,
-            'dominant_semantic_types': sorted(type_distribution.items(), key=lambda x: x[1], reverse=True)[:3],
-            'has_temporal': any('datetime' in st for st in semantic_types),
-            'has_text': any('text' in st for st in semantic_types),
-            'has_geographic': any('geo' in st or 'location' in st for st in semantic_types)
-        }
-    
-    def _extract_fe_context(self, pipeline_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract feature engineering context"""
-        fe_results = pipeline_results.get('feature_engineering_results', {})
-        
-        return {
-            'original_features': fe_results.get('original_features', 0),
-            'engineered_features': fe_results.get('engineered_features', 0),
-            'feature_expansion_ratio': fe_results.get('engineered_features', 0) / max(1, fe_results.get('original_features', 1)),
-            'applied_techniques': fe_results.get('applied_techniques', [])
-        }
-    
-    def _update_performance_tracking(self, event: LearningEvent):
-        """Update performance tracking metrics"""
-        
-        # Track overall performance
-        self.performance_tracker['overall'].append(event.success_score)
-        
-        # Track domain-specific performance
-        domain = event.context.get('domain', {}).get('primary_domain', 'unknown')
-        self.performance_tracker[f'domain_{domain}'].append(event.success_score)
-        
-        # Track by data characteristics
-        data_chars = event.context.get('data_characteristics', {})
-        if data_chars.get('has_temporal'):
-            self.performance_tracker['temporal_data'].append(event.success_score)
-        if data_chars.get('has_text'):
-            self.performance_tracker['text_data'].append(event.success_score)
-    
-    def _discover_new_patterns(self):
-        """Discover new patterns from recent events"""
-        
-        if len(self.event_history) < self.min_events_for_pattern:
-            return
-        
-        # Group events by context similarities
-        context_groups = self._group_events_by_context()
-        
-        for group_key, events in context_groups.items():
-            if len(events) >= self.min_events_for_pattern:
-                pattern = self._analyze_event_pattern(group_key, events)
-                if pattern and pattern.confidence >= self.pattern_confidence_threshold:
-                    self.pattern_library[pattern.pattern_id] = pattern
-    
-    def _group_events_by_context(self) -> Dict[str, List[LearningEvent]]:
-        """Group events by similar context characteristics"""
-        
-        groups = defaultdict(list)
-        
-        for event in self.event_history:
-            if event.event_type == 'pipeline_execution':
-                # Create grouping key based on context
-                domain = event.context.get('domain', {}).get('primary_domain', 'unknown')
-                data_chars = event.context.get('data_characteristics', {})
-                
-                group_key = f"{domain}_{data_chars.get('column_count', 0)//10}_{data_chars.get('has_temporal', False)}_{data_chars.get('has_text', False)}"
-                groups[group_key].append(event)
-        
-        return groups
-    
-    def _analyze_event_pattern(self, group_key: str, events: List[LearningEvent]) -> Optional[PatternInsight]:
-        """Analyze a group of events to extract patterns"""
-        
-        if not events:
+        if not self.model_history:
             return None
         
-        # Calculate pattern statistics
-        success_scores = [event.success_score for event in events]
-        avg_success = np.mean(success_scores)
-        success_std = np.std(success_scores)
+        best_model_info = max(self.model_history, key=lambda x: x['performance'])
+        self.baseline_performance = best_model_info['performance']
         
-        # Identify high-performing configurations
-        high_performers = [event for event in events if event.success_score > avg_success + 0.1]
-        
-        if not high_performers:
-            return None
-        
-        # Extract common characteristics of high performers
-        common_configs = self._extract_common_configurations(high_performers)
-        
-        pattern_id = f"pattern_{group_key}_{datetime.now().strftime('%Y%m%d')}"
-        
-        return PatternInsight(
-            pattern_id=pattern_id,
-            pattern_type="high_performance_config",
-            description=f"High-performing configuration for {group_key}",
-            confidence=min(1.0, (avg_success - 0.5) * 2),  # Scale 0.5-1.0 to 0-1.0
-            frequency=len(high_performers),
-            conditions=self._extract_pattern_conditions(events[0]),
-            recommendations=self._generate_pattern_recommendations(common_configs),
-            last_updated=datetime.now()
-        )
+        return best_model_info['model']
     
-    def _extract_common_configurations(self, events: List[LearningEvent]) -> Dict[str, Any]:
-        """Extract common configurations from high-performing events"""
-        
-        common_configs = {
-            'feature_engineering': defaultdict(int),
-            'pipeline_settings': defaultdict(int),
-            'data_processing': defaultdict(int)
-        }
-        
-        for event in events:
-            # Feature engineering patterns
-            fe_context = event.context.get('feature_engineering', {})
-            for technique in fe_context.get('applied_techniques', []):
-                common_configs['feature_engineering'][technique] += 1
-            
-            # Pipeline configuration patterns  
-            config = event.context.get('pipeline_config', {})
-            for key, value in config.items():
-                if isinstance(value, (str, int, float, bool)):
-                    common_configs['pipeline_settings'][f"{key}_{value}"] += 1
-        
-        # Keep only frequent patterns (>50% of events)
-        threshold = len(events) * 0.5
-        filtered_configs = {}
-        
-        for category, configs in common_configs.items():
-            filtered_configs[category] = {k: v for k, v in configs.items() if v >= threshold}
-        
-        return filtered_configs
-    
-    def _extract_pattern_conditions(self, reference_event: LearningEvent) -> Dict[str, Any]:
-        """Extract conditions under which pattern applies"""
+    def export_learning_state(self) -> Dict[str, Any]:
         
         return {
-            'domain': reference_event.context.get('domain', {}),
-            'data_characteristics': reference_event.context.get('data_characteristics', {}),
-            'min_success_score': 0.7
-        }
-    
-    def _generate_pattern_recommendations(self, common_configs: Dict[str, Any]) -> List[str]:
-        """Generate recommendations based on discovered patterns"""
-        
-        recommendations = []
-        
-        # Feature engineering recommendations
-        fe_configs = common_configs.get('feature_engineering', {})
-        if fe_configs:
-            top_techniques = sorted(fe_configs.items(), key=lambda x: x[1], reverse=True)[:3]
-            recommendations.extend([f"Apply {technique}" for technique, _ in top_techniques])
-        
-        # Pipeline recommendations
-        pipeline_configs = common_configs.get('pipeline_settings', {})
-        if pipeline_configs:
-            recommendations.extend([f"Use {config}" for config in list(pipeline_configs.keys())[:3]])
-        
-        return recommendations
-    
-    def _update_adaptation_rules(self):
-        """Update adaptation rules based on learned patterns"""
-        
-        # Clear old rules
-        self.adaptation_rules.clear()
-        
-        # Generate rules from high-confidence patterns
-        for pattern in self.pattern_library.values():
-            if pattern.confidence >= 0.8:
-                rule_id = f"rule_{pattern.pattern_id}"
-                self.adaptation_rules[rule_id] = {
-                    'conditions': pattern.conditions,
-                    'actions': pattern.recommendations,
-                    'confidence': pattern.confidence,
-                    'last_applied': None
-                }
-    
-    def _recommend_feature_engineering(self, context: Dict[str, Any]) -> List[str]:
-        """Recommend feature engineering based on learned patterns"""
-        
-        matching_patterns = self._find_matching_patterns(context)
-        recommendations = []
-        
-        for pattern in matching_patterns:
-            if 'feature_engineering' in pattern.recommendations[0].lower():
-                recommendations.extend(pattern.recommendations)
-        
-        # Add domain-specific learned recommendations
-        domain = context.get('domain', {}).get('primary_domain', 'unknown')
-        domain_performance = self.performance_tracker.get(f'domain_{domain}', [])
-        
-        if domain_performance and np.mean(domain_performance[-10:]) > 0.8:
-            recommendations.append(f"Apply domain-optimized feature engineering for {domain}")
-        
-        return list(set(recommendations))[:5]  # Top 5 unique recommendations
-    
-    def _recommend_pipeline_config(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Recommend pipeline configuration based on learned patterns"""
-        
-        config_recommendations = {}
-        matching_patterns = self._find_matching_patterns(context)
-        
-        for pattern in matching_patterns:
-            conditions = pattern.conditions
-            data_chars = conditions.get('data_characteristics', {})
-            
-            # Recommend caching for large datasets
-            if data_chars.get('column_count', 0) > 50:
-                config_recommendations['enable_caching'] = True
-                config_recommendations['cache_intermediate'] = True
-            
-            # Recommend parallel processing for complex features
-            if data_chars.get('semantic_diversity', 0) > 0.7:
-                config_recommendations['parallel_processing'] = True
-                config_recommendations['max_workers'] = 4
-        
-        return config_recommendations
-    
-    def _recommend_data_processing(self, context: Dict[str, Any]) -> List[str]:
-        """Recommend data processing steps based on learned patterns"""
-        
-        recommendations = []
-        domain = context.get('domain', {}).get('primary_domain', 'unknown')
-        
-        # Domain-specific processing recommendations
-        if domain == 'finance':
-            recommendations.extend([
-                "Apply robust scaling for financial outliers",
-                "Use time-aware validation splits",
-                "Implement feature importance tracking"
-            ])
-        elif domain == 'ecommerce':
-            recommendations.extend([
-                "Handle seasonal patterns in validation",
-                "Apply customer-level feature aggregation",
-                "Use stratified sampling for customer segments"
-            ])
-        
-        return recommendations
-    
-    def _recommend_model_selection(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Recommend model selection based on learned patterns"""
-        
-        data_chars = context.get('data_characteristics', {})
-        
-        recommendations = {
-            'primary_algorithms': [],
-            'ensemble_methods': [],
-            'hyperparameter_focus': []
-        }
-        
-        # Based on data characteristics
-        if data_chars.get('has_temporal'):
-            recommendations['primary_algorithms'].extend(['XGBoost', 'LightGBM', 'TimeSeriesForest'])
-            recommendations['hyperparameter_focus'].append('learning_rate')
-        
-        if data_chars.get('semantic_diversity', 0) > 0.8:
-            recommendations['ensemble_methods'].append('StackingClassifier')
-            recommendations['hyperparameter_focus'].append('max_depth')
-        
-        return recommendations
-    
-    def _find_matching_patterns(self, context: Dict[str, Any]) -> List[PatternInsight]:
-        """Find patterns that match the current context"""
-        
-        matching_patterns = []
-        
-        for pattern in self.pattern_library.values():
-            if self._context_matches_pattern(context, pattern.conditions):
-                matching_patterns.append(pattern)
-        
-        # Sort by confidence and recency
-        return sorted(matching_patterns, 
-                     key=lambda p: (p.confidence, p.last_updated), 
-                     reverse=True)
-    
-    def _context_matches_pattern(self, context: Dict[str, Any], 
-                               pattern_conditions: Dict[str, Any]) -> bool:
-        """Check if current context matches pattern conditions"""
-        
-        # Domain matching
-        context_domain = context.get('domain', {}).get('primary_domain', 'unknown')
-        pattern_domain = pattern_conditions.get('domain', {}).get('primary_domain', 'unknown')
-        
-        if context_domain != pattern_domain:
-            return False
-        
-        # Data characteristics matching
-        context_chars = context.get('data_characteristics', {})
-        pattern_chars = pattern_conditions.get('data_characteristics', {})
-        
-        # Check key characteristics
-        char_matches = 0
-        char_total = 0
-        
-        for key in ['has_temporal', 'has_text', 'has_geographic']:
-            if key in pattern_chars:
-                char_total += 1
-                if context_chars.get(key) == pattern_chars.get(key):
-                    char_matches += 1
-        
-        return char_matches / max(1, char_total) >= 0.7
-    
-    def _calculate_recommendation_confidence(self, recommendations: Dict[str, Any],
-                                          context: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate confidence scores for recommendations"""
-        
-        confidence_scores = {}
-        matching_patterns = self._find_matching_patterns(context)
-        
-        for category, recs in recommendations.items():
-            if matching_patterns:
-                avg_confidence = np.mean([p.confidence for p in matching_patterns])
-                confidence_scores[category] = min(0.95, avg_confidence + 0.1)
-            else:
-                confidence_scores[category] = 0.5  # Default confidence
-        
-        return confidence_scores
-    
-    def _generate_learning_insights(self) -> Dict[str, Any]:
-        """Generate insights about the learning system state"""
-        
-        return {
-            'total_patterns_learned': len(self.pattern_library),
-            'high_confidence_patterns': len([p for p in self.pattern_library.values() if p.confidence > 0.8]),
-            'recent_performance_trend': self._calculate_performance_trend(),
-            'most_successful_domain': self._identify_best_performing_domain(),
-            'learning_velocity': len(self.event_history) / max(1, (datetime.now() - datetime.now().replace(hour=0, minute=0, second=0)).days + 1)
-        }
-    
-    def _calculate_performance_trend(self) -> str:
-        """Calculate recent performance trend"""
-        
-        overall_scores = self.performance_tracker['overall']
-        if len(overall_scores) < 10:
-            return "insufficient_data"
-        
-        recent_avg = np.mean(overall_scores[-10:])
-        older_avg = np.mean(overall_scores[-20:-10]) if len(overall_scores) >= 20 else np.mean(overall_scores[:-10])
-        
-        if recent_avg > older_avg + 0.05:
-            return "improving"
-        elif recent_avg < older_avg - 0.05:
-            return "declining"
-        else:
-            return "stable"
-    
-    def _identify_best_performing_domain(self) -> str:
-        """Identify the best performing domain"""
-        
-        domain_averages = {}
-        
-        for key, scores in self.performance_tracker.items():
-            if key.startswith('domain_') and len(scores) >= 3:
-                domain = key.replace('domain_', '')
-                domain_averages[domain] = np.mean(scores)
-        
-        if domain_averages:
-            return max(domain_averages.items(), key=lambda x: x[1])[0]
-        else:
-            return "unknown"
-    
-    def _save_learning_state(self):
-        """Save learning state to persistent storage"""
-        
-        state = {
-            'event_history': list(self.event_history),
-            'pattern_library': {k: v.__dict__ for k, v in self.pattern_library.items()},
-            'performance_tracker': dict(self.performance_tracker),
-            'adaptation_rules': self.adaptation_rules,
-            'last_updated': datetime.now().isoformat()
-        }
-        
-        state_file = self.learning_store_path / "learning_state.json"
-        
-        try:
-            with open(state_file, 'w') as f:
-                json.dump(state, f, indent=2, default=str)
-        except Exception as e:
-            self.logger.warning(f"Failed to save learning state: {e}")
-    
-    def _load_learning_state(self):
-        """Load learning state from persistent storage"""
-        
-        state_file = self.learning_store_path / "learning_state.json"
-        
-        if not state_file.exists():
-            return
-        
-        try:
-            with open(state_file, 'r') as f:
-                state = json.load(f)
-            
-            # Restore event history
-            events = state.get('event_history', [])
-            for event_data in events:
-                event = LearningEvent(**event_data)
-                self.event_history.append(event)
-            
-            # Restore pattern library
-            patterns = state.get('pattern_library', {})
-            for pattern_id, pattern_data in patterns.items():
-                pattern_data['last_updated'] = datetime.fromisoformat(pattern_data['last_updated'])
-                self.pattern_library[pattern_id] = PatternInsight(**pattern_data)
-            
-            # Restore performance tracker
-            perf_data = state.get('performance_tracker', {})
-            for key, scores in perf_data.items():
-                self.performance_tracker[key] = scores
-            
-            # Restore adaptation rules
-            self.adaptation_rules = state.get('adaptation_rules', {})
-            
-            self.logger.info(f"Loaded learning state with {len(self.pattern_library)} patterns")
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to load learning state: {e}")
-    
-    def get_learning_summary(self) -> Dict[str, Any]:
-        """Get comprehensive learning system summary"""
-        
-        return {
-            'system_stats': {
-                'total_executions': len(self.event_history),
-                'patterns_discovered': len(self.pattern_library),
-                'adaptation_rules': len(self.adaptation_rules),
-                'domains_learned': len([k for k in self.performance_tracker.keys() if k.startswith('domain_')])
-            },
-            'performance_insights': {
-                'overall_trend': self._calculate_performance_trend(),
-                'best_domain': self._identify_best_performing_domain(),
-                'average_success_rate': np.mean(self.performance_tracker['overall']) if self.performance_tracker['overall'] else 0
-            },
-            'recent_patterns': [
+            'baseline_performance': self.baseline_performance,
+            'performance_history': self.performance_history,
+            'learning_events_summary': [
                 {
-                    'pattern_id': p.pattern_id,
-                    'description': p.description,
-                    'confidence': p.confidence,
-                    'frequency': p.frequency
+                    'event_id': e.event_id,
+                    'success': e.success,
+                    'improvement': e.improvement,
+                    'timestamp': e.timestamp
                 }
-                for p in sorted(self.pattern_library.values(), 
-                               key=lambda x: x.last_updated, reverse=True)[:5]
-            ]
+                for e in self.learning_events
+            ],
+            'config': self.config.__dict__,
+            'insights': self.get_learning_insights()
         }
+
+def create_adaptive_system(config: Optional[AdaptiveConfig] = None) -> AdaptiveLearningSystem:
+    return AdaptiveLearningSystem(config)
