@@ -1,546 +1,496 @@
-import logging
+"""Advanced Algorithm Portfolio with Intelligent Selection"""
+
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Optional, Tuple, Union
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
-import time
+from typing import Dict, List, Any, Optional, Tuple, Union
+from dataclasses import dataclass, field
+from enum import Enum
+import warnings
+warnings.filterwarnings('ignore')
 
-# Lazy imports to avoid memory issues
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.ensemble import AdaBoostClassifier, AdaBoostRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.naive_bayes import GaussianNB
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.neural_network import MLPClassifier, MLPRegressor
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.model_selection import cross_val_score
+from sklearn.preprocessing import StandardScaler
 
-XGBOOST_AVAILABLE = False
-LIGHTGBM_AVAILABLE = False
+class TaskType(Enum):
+    CLASSIFICATION = "classification"
+    REGRESSION = "regression"
+    CLUSTERING = "clustering"
 
-try:
-    import xgboost
-    XGBOOST_AVAILABLE = True
-except ImportError:
-    pass
-
-try:
-    import lightgbm
-    LIGHTGBM_AVAILABLE = True
-except ImportError:
-    pass
+class ComplexityLevel(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 @dataclass
-class AlgorithmConfig:
-    name: str
-    model_class: type
+class DataCharacteristics:
+    n_samples: int
+    n_features: int
+    n_classes: Optional[int]
+    has_categorical: bool
+    has_missing: bool
+    is_imbalanced: bool
+    feature_correlation: float
+    noise_level: float
+    complexity_level: ComplexityLevel
+    domain_hints: List[str] = field(default_factory=list)
+
+@dataclass
+class AlgorithmRecommendation:
+    algorithm_name: str
+    model_class: Any
     default_params: Dict[str, Any]
-    param_ranges: Dict[str, Tuple[Any, Any]]
-    complexity_tier: str  # 'fast', 'balanced', 'complex'
-    memory_requirement: str  # 'low', 'medium', 'high'
-    interpretability: str  # 'high', 'medium', 'low'
-    training_time: str  # 'fast', 'medium', 'slow'
-    best_for: List[str]  # Dataset characteristics this algorithm excels at
+    suitability_score: float
+    reasoning: List[str]
+    computational_cost: str
+    interpretability: str
 
-class BaseAlgorithm(ABC):
-    """Base class for algorithm wrappers"""
+class IntelligentAlgorithmPortfolio:
     
-    def __init__(self, config: AlgorithmConfig):
-        self.config = config
-        self.model = None
-        self.is_fitted = False
-        self.training_time = 0.0
+    def __init__(self):
+        self.classification_algorithms = self._init_classification_algorithms()
+        self.regression_algorithms = self._init_regression_algorithms()
+        self.clustering_algorithms = self._init_clustering_algorithms()
         
-    @abstractmethod
-    def fit(self, X: pd.DataFrame, y: pd.Series, **kwargs) -> 'BaseAlgorithm':
-        pass
-    
-    @abstractmethod
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        pass
-    
-    @abstractmethod
-    def predict_proba(self, X: pd.DataFrame) -> Optional[np.ndarray]:
-        pass
-
-class SklearnAlgorithm(BaseAlgorithm):
-    """Wrapper for sklearn-compatible algorithms"""
-    
-    def fit(self, X: pd.DataFrame, y: pd.Series, **kwargs) -> 'SklearnAlgorithm':
-        start_time = time.time()
-        
-        # Initialize model with parameters
-        params = {**self.config.default_params, **kwargs}
-        self.model = self.config.model_class(**params)
-        
-        # Fit model
-        self.model.fit(X, y)
-        self.is_fitted = True
-        self.training_time = time.time() - start_time
-        
-        return self
-    
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before prediction")
-        return self.model.predict(X)
-    
-    def predict_proba(self, X: pd.DataFrame) -> Optional[np.ndarray]:
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before prediction")
-        
-        if hasattr(self.model, 'predict_proba'):
-            return self.model.predict_proba(X)
-        elif hasattr(self.model, 'decision_function'):
-            # For binary classification, convert decision function to probabilities
-            decision_scores = self.model.decision_function(X)
-            if decision_scores.ndim == 1:  # Binary classification
-                exp_scores = np.exp(decision_scores)
-                proba_pos = exp_scores / (1 + exp_scores)
-                return np.column_stack([1 - proba_pos, proba_pos])
-        
-        return None
-
-class AlgorithmPortfolioManager:
-    """Intelligent algorithm selection and management system"""
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or {}
-        self.algorithms_registry = None  # Initialize lazily
-        self.performance_history: Dict[str, List[float]] = {}
-        
-    def _get_algorithms_registry(self):
-        """Get algorithms registry, initialize if needed"""
-        if self.algorithms_registry is None:
-            self.algorithms_registry = self._initialize_algorithms()
-        return self.algorithms_registry
-        
-    def _initialize_algorithms(self) -> Dict[str, AlgorithmConfig]:
-        """Initialize the portfolio of available algorithms"""
-        
-        # Import sklearn classes only when needed
-        from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
-        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
-        from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-        from sklearn.svm import SVC, SVR
-        from sklearn.naive_bayes import GaussianNB
-        from sklearn.neural_network import MLPClassifier, MLPRegressor
-        
-        algorithms = {
-            # Fast Algorithms
-            'logistic_regression': AlgorithmConfig(
-                name='logistic_regression',
-                model_class=LogisticRegression,
-                default_params={'random_state': 42, 'max_iter': 1000},
-                param_ranges={
-                    'C': (0.001, 100),
-                    'penalty': (['l1', 'l2', 'elasticnet', 'none'],),
-                    'solver': (['liblinear', 'newton-cg', 'lbfgs', 'sag', 'saga'],)
-                },
-                complexity_tier='fast',
-                memory_requirement='low',
-                interpretability='high',
-                training_time='fast',
-                best_for=['linear_separable', 'high_dimensional', 'sparse_data']
-            ),
-            
-            'linear_regression': AlgorithmConfig(
-                name='linear_regression',
-                model_class=LinearRegression,
-                default_params={},
-                param_ranges={
-                    'fit_intercept': ([True, False],),
-                    'normalize': ([True, False],)
-                },
-                complexity_tier='fast',
-                memory_requirement='low',
-                interpretability='high',
-                training_time='fast',
-                best_for=['linear_relationships', 'interpretable_models']
-            ),
-            
-            'naive_bayes': AlgorithmConfig(
-                name='naive_bayes',
-                model_class=GaussianNB,
-                default_params={},
-                param_ranges={
-                    'var_smoothing': (1e-12, 1e-1)
-                },
-                complexity_tier='fast',
-                memory_requirement='low',
-                interpretability='medium',
-                training_time='fast',
-                best_for=['small_datasets', 'text_data', 'categorical_features']
-            ),
-            
-            # Balanced Algorithms
-            'random_forest': AlgorithmConfig(
-                name='random_forest',
-                model_class=RandomForestClassifier,
-                default_params={'random_state': 42, 'n_jobs': -1},
-                param_ranges={
-                    'n_estimators': (10, 500),
-                    'max_depth': (3, 20),
-                    'min_samples_split': (2, 20),
-                    'min_samples_leaf': (1, 10),
-                    'max_features': (['auto', 'sqrt', 'log2'],)
-                },
-                complexity_tier='balanced',
-                memory_requirement='medium',
-                interpretability='medium',
-                training_time='medium',
-                best_for=['general_purpose', 'mixed_features', 'robust_performance']
-            ),
-            
-            'random_forest_regressor': AlgorithmConfig(
-                name='random_forest_regressor',
-                model_class=RandomForestRegressor,
-                default_params={'random_state': 42, 'n_jobs': -1},
-                param_ranges={
-                    'n_estimators': (10, 500),
-                    'max_depth': (3, 20),
-                    'min_samples_split': (2, 20),
-                    'min_samples_leaf': (1, 10),
-                    'max_features': (['auto', 'sqrt', 'log2'],)
-                },
-                complexity_tier='balanced',
-                memory_requirement='medium',
-                interpretability='medium',
-                training_time='medium',
-                best_for=['general_purpose', 'non_linear', 'robust_performance']
-            ),
-            
-            'decision_tree': AlgorithmConfig(
-                name='decision_tree',
-                model_class=DecisionTreeClassifier,
-                default_params={'random_state': 42},
-                param_ranges={
-                    'max_depth': (3, 15),
-                    'min_samples_split': (2, 20),
-                    'min_samples_leaf': (1, 10),
-                    'criterion': (['gini', 'entropy'],)
-                },
-                complexity_tier='balanced',
-                memory_requirement='low',
-                interpretability='high',
-                training_time='fast',
-                best_for=['interpretable_models', 'categorical_features', 'rule_extraction']
-            ),
-            
-            # Complex Algorithms
-            'gradient_boosting': AlgorithmConfig(
-                name='gradient_boosting',
-                model_class=GradientBoostingClassifier,
-                default_params={'random_state': 42},
-                param_ranges={
-                    'n_estimators': (50, 300),
-                    'learning_rate': (0.01, 0.3),
-                    'max_depth': (3, 8),
-                    'min_samples_split': (2, 20),
-                    'min_samples_leaf': (1, 10),
-                    'subsample': (0.6, 1.0)
-                },
-                complexity_tier='complex',
-                memory_requirement='medium',
-                interpretability='low',
-                training_time='slow',
-                best_for=['complex_patterns', 'high_performance', 'structured_data']
-            ),
-            
-            'svm': AlgorithmConfig(
-                name='svm',
-                model_class=SVC,
-                default_params={'random_state': 42, 'probability': True},
-                param_ranges={
-                    'C': (0.001, 100),
-                    'kernel': (['linear', 'rbf', 'poly'],),
-                    'gamma': (['scale', 'auto'],),
-                    'degree': (2, 5)
-                },
-                complexity_tier='complex',
-                memory_requirement='medium',
-                interpretability='low',
-                training_time='slow',
-                best_for=['high_dimensional', 'non_linear', 'small_datasets']
-            ),
-            
-            'neural_network': AlgorithmConfig(
-                name='neural_network',
-                model_class=MLPClassifier,
-                default_params={'random_state': 42, 'max_iter': 1000},
-                param_ranges={
-                    'hidden_layer_sizes': ([(50,), (100,), (50, 50), (100, 50)],),
-                    'activation': (['relu', 'tanh'],),
-                    'alpha': (0.0001, 0.1),
-                    'learning_rate': (['constant', 'adaptive'],),
-                    'learning_rate_init': (0.0001, 0.01)
-                },
-                complexity_tier='complex',
-                memory_requirement='high',
-                interpretability='low',
-                training_time='slow',
-                best_for=['complex_patterns', 'large_datasets', 'non_linear']
-            )
+    def _init_classification_algorithms(self) -> Dict[str, Dict]:
+        return {
+            'random_forest': {
+                'model': RandomForestClassifier,
+                'params': {'n_estimators': 100, 'random_state': 42},
+                'strengths': ['robust', 'handles_missing', 'feature_importance', 'non_linear'],
+                'weaknesses': ['memory_intensive'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            },
+            'gradient_boosting': {
+                'model': GradientBoostingClassifier,
+                'params': {'n_estimators': 100, 'random_state': 42},
+                'strengths': ['high_accuracy', 'handles_missing', 'non_linear'],
+                'weaknesses': ['overfitting_prone', 'slow_training'],
+                'cost': 'high',
+                'interpretability': 'low'
+            },
+            'logistic_regression': {
+                'model': LogisticRegression,
+                'params': {'random_state': 42, 'max_iter': 1000},
+                'strengths': ['fast', 'interpretable', 'probabilistic', 'linear'],
+                'weaknesses': ['assumes_linearity'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'svm': {
+                'model': SVC,
+                'params': {'random_state': 42, 'probability': True},
+                'strengths': ['high_accuracy', 'kernel_trick', 'robust'],
+                'weaknesses': ['slow_large_data', 'memory_intensive'],
+                'cost': 'high',
+                'interpretability': 'low'
+            },
+            'knn': {
+                'model': KNeighborsClassifier,
+                'params': {'n_neighbors': 5},
+                'strengths': ['simple', 'non_linear', 'no_assumptions'],
+                'weaknesses': ['curse_dimensionality', 'slow_prediction'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            },
+            'naive_bayes': {
+                'model': GaussianNB,
+                'params': {},
+                'strengths': ['fast', 'small_data', 'probabilistic'],
+                'weaknesses': ['independence_assumption'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'decision_tree': {
+                'model': DecisionTreeClassifier,
+                'params': {'random_state': 42, 'max_depth': 10},
+                'strengths': ['interpretable', 'handles_missing', 'non_linear'],
+                'weaknesses': ['overfitting_prone', 'unstable'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'neural_network': {
+                'model': MLPClassifier,
+                'params': {'random_state': 42, 'max_iter': 500},
+                'strengths': ['non_linear', 'flexible', 'high_capacity'],
+                'weaknesses': ['black_box', 'requires_scaling', 'overfitting_prone'],
+                'cost': 'high',
+                'interpretability': 'low'
+            },
+            'ada_boost': {
+                'model': AdaBoostClassifier,
+                'params': {'random_state': 42, 'n_estimators': 50},
+                'strengths': ['good_weak_learners', 'handles_noise'],
+                'weaknesses': ['sensitive_outliers'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            }
         }
-        
-        # Add regression variants
-        algorithms['ridge'] = AlgorithmConfig(
-            name='ridge',
-            model_class=Ridge,
-            default_params={'random_state': 42},
-            param_ranges={'alpha': (0.1, 100), 'solver': (['auto', 'svd', 'cholesky', 'lsqr', 'sparse_cg', 'sag', 'saga'],)},
-            complexity_tier='fast',
-            memory_requirement='low',
-            interpretability='high',
-            training_time='fast',
-            best_for=['regularization', 'multicollinearity', 'overfitting']
-        )
-        
-        algorithms['lasso'] = AlgorithmConfig(
-            name='lasso',
-            model_class=Lasso,
-            default_params={'random_state': 42, 'max_iter': 2000},
-            param_ranges={'alpha': (0.001, 10)},
-            complexity_tier='fast',
-            memory_requirement='low',
-            interpretability='high',
-            training_time='fast',
-            best_for=['feature_selection', 'sparse_solutions', 'high_dimensional']
-        )
-        
-        # Add XGBoost if available
-        if XGBOOST_AVAILABLE:
-            from xgboost import XGBClassifier, XGBRegressor
-            algorithms['xgboost'] = AlgorithmConfig(
-                name='xgboost',
-                model_class=XGBClassifier,
-                default_params={'random_state': 42, 'n_jobs': -1},
-                param_ranges={
-                    'n_estimators': (50, 300),
-                    'learning_rate': (0.01, 0.3),
-                    'max_depth': (3, 8),
-                    'min_child_weight': (1, 10),
-                    'subsample': (0.6, 1.0),
-                    'colsample_bytree': (0.6, 1.0)
-                },
-                complexity_tier='complex',
-                memory_requirement='medium',
-                interpretability='low',
-                training_time='medium',
-                best_for=['structured_data', 'competitions', 'high_performance']
-            )
-            
-            algorithms['xgboost_regressor'] = AlgorithmConfig(
-                name='xgboost_regressor',
-                model_class=XGBRegressor,
-                default_params={'random_state': 42, 'n_jobs': -1},
-                param_ranges={
-                    'n_estimators': (50, 300),
-                    'learning_rate': (0.01, 0.3),
-                    'max_depth': (3, 8),
-                    'min_child_weight': (1, 10),
-                    'subsample': (0.6, 1.0),
-                    'colsample_bytree': (0.6, 1.0)
-                },
-                complexity_tier='complex',
-                memory_requirement='medium',
-                interpretability='low',
-                training_time='medium',
-                best_for=['structured_data', 'competitions', 'high_performance']
-            )
-        
-        return algorithms
     
-    def select_algorithms(self, dataset_characteristics, constraints: Optional[Dict[str, Any]] = None) -> List[str]:
-        """Select optimal algorithms based on dataset characteristics and constraints"""
-        
-        constraints = constraints or {}
-        max_training_time = constraints.get('max_training_time_minutes', 60)
-        memory_limit_gb = constraints.get('memory_limit_gb', 8)
-        require_interpretability = constraints.get('require_interpretability', False)
-        require_probabilities = constraints.get('require_probabilities', False)
-        performance_priority = constraints.get('performance_priority', 'balanced')  # 'speed', 'accuracy', 'balanced'
-        
-        # Start with recommended algorithms from dataset analysis
-        candidates = dataset_characteristics.recommended_algorithms.copy()
-        
-        # Add algorithms based on specific criteria
-        task_type = dataset_characteristics.task_type
-        n_samples = dataset_characteristics.n_samples
-        n_features = dataset_characteristics.n_features
-        complexity_score = dataset_characteristics.complexity_score
-        
-        # Performance priority adjustments
-        if performance_priority == 'speed':
-            # Prioritize fast algorithms
-            fast_algorithms = [name for name, config in self.algorithms_registry.items() 
-                             if config.complexity_tier == 'fast' and self._is_compatible(config, task_type)]
-            candidates = fast_algorithms + candidates
-            
-        elif performance_priority == 'accuracy':
-            # Prioritize complex algorithms for better accuracy
-            complex_algorithms = [name for name, config in self.algorithms_registry.items() 
-                                if config.complexity_tier == 'complex' and self._is_compatible(config, task_type)]
-            candidates = complex_algorithms + candidates
-        
-        # Filter by constraints
-        filtered_candidates = []
-        algorithms_registry = self._get_algorithms_registry()
-        
-        for algorithm_name in candidates:
-            if algorithm_name not in algorithms_registry:
-                continue
-                
-            config = algorithms_registry[algorithm_name]
-            
-            # Check interpretability requirement
-            if require_interpretability and config.interpretability == 'low':
-                continue
-            
-            # Check training time constraint
-            if max_training_time < 10 and config.training_time == 'slow':
-                continue
-            
-            # Check memory constraint
-            memory_req = self._estimate_algorithm_memory_gb(config, n_samples, n_features)
-            if memory_req > memory_limit_gb:
-                continue
-            
-            # Check probability requirement
-            if require_probabilities and not self._supports_probabilities(config):
-                continue
-                
-            filtered_candidates.append(algorithm_name)
-        
-        # Remove duplicates while preserving order
-        filtered_candidates = list(dict.fromkeys(filtered_candidates))
-        
-        # Ensure we have at least some algorithms
-        if not filtered_candidates:
-            # Fallback to simple, fast algorithms
-            fallback_algorithms = ['logistic_regression' if task_type == 'classification' else 'linear_regression']
-            filtered_candidates = fallback_algorithms
-        
-        # Limit to top algorithms based on priority and historical performance
-        selected_algorithms = self._prioritize_algorithms(filtered_candidates, dataset_characteristics)
-        
-        return selected_algorithms[:5]  # Limit to top 5
-    
-    def _is_compatible(self, config: AlgorithmConfig, task_type: str) -> bool:
-        """Check if algorithm is compatible with task type"""
-        if task_type == 'classification':
-            return 'Classifier' in config.model_class.__name__ or config.name in ['naive_bayes', 'svm']
-        else:  # regression
-            return 'Regressor' in config.model_class.__name__ or config.name in ['linear_regression', 'ridge', 'lasso']
-    
-    def _supports_probabilities(self, config: AlgorithmConfig) -> bool:
-        """Check if algorithm supports probability predictions"""
-        prob_methods = ['predict_proba', 'decision_function']
-        return any(hasattr(config.model_class(), method) for method in prob_methods)
-    
-    def _estimate_algorithm_memory_gb(self, config: AlgorithmConfig, n_samples: int, n_features: int) -> float:
-        """Estimate memory requirement for algorithm in GB"""
-        base_memory_gb = (n_samples * n_features * 8) / (1024**3)  # Data in GB
-        
-        multipliers = {
-            'low': 1.5,
-            'medium': 3.0,
-            'high': 6.0
+    def _init_regression_algorithms(self) -> Dict[str, Dict]:
+        return {
+            'random_forest': {
+                'model': RandomForestRegressor,
+                'params': {'n_estimators': 100, 'random_state': 42},
+                'strengths': ['robust', 'handles_missing', 'feature_importance', 'non_linear'],
+                'weaknesses': ['memory_intensive'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            },
+            'gradient_boosting': {
+                'model': GradientBoostingRegressor,
+                'params': {'n_estimators': 100, 'random_state': 42},
+                'strengths': ['high_accuracy', 'handles_missing', 'non_linear'],
+                'weaknesses': ['overfitting_prone', 'slow_training'],
+                'cost': 'high',
+                'interpretability': 'low'
+            },
+            'linear_regression': {
+                'model': LinearRegression,
+                'params': {},
+                'strengths': ['fast', 'interpretable', 'simple'],
+                'weaknesses': ['assumes_linearity'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'ridge': {
+                'model': Ridge,
+                'params': {'alpha': 1.0, 'random_state': 42},
+                'strengths': ['handles_multicollinearity', 'regularized'],
+                'weaknesses': ['assumes_linearity'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'lasso': {
+                'model': Lasso,
+                'params': {'alpha': 1.0, 'random_state': 42},
+                'strengths': ['feature_selection', 'regularized'],
+                'weaknesses': ['assumes_linearity'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'svr': {
+                'model': SVR,
+                'params': {},
+                'strengths': ['kernel_trick', 'robust'],
+                'weaknesses': ['slow_large_data', 'parameter_sensitive'],
+                'cost': 'high',
+                'interpretability': 'low'
+            },
+            'knn': {
+                'model': KNeighborsRegressor,
+                'params': {'n_neighbors': 5},
+                'strengths': ['simple', 'non_linear', 'no_assumptions'],
+                'weaknesses': ['curse_dimensionality', 'slow_prediction'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            },
+            'decision_tree': {
+                'model': DecisionTreeRegressor,
+                'params': {'random_state': 42, 'max_depth': 10},
+                'strengths': ['interpretable', 'handles_missing', 'non_linear'],
+                'weaknesses': ['overfitting_prone', 'unstable'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'neural_network': {
+                'model': MLPRegressor,
+                'params': {'random_state': 42, 'max_iter': 500},
+                'strengths': ['non_linear', 'flexible', 'high_capacity'],
+                'weaknesses': ['black_box', 'requires_scaling', 'overfitting_prone'],
+                'cost': 'high',
+                'interpretability': 'low'
+            },
+            'ada_boost': {
+                'model': AdaBoostRegressor,
+                'params': {'random_state': 42, 'n_estimators': 50},
+                'strengths': ['good_weak_learners', 'handles_noise'],
+                'weaknesses': ['sensitive_outliers'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            }
         }
-        
-        multiplier = multipliers.get(config.memory_requirement, 3.0)
-        return base_memory_gb * multiplier
     
-    def _prioritize_algorithms(self, candidates: List[str], dataset_characteristics) -> List[str]:
-        """Prioritize algorithms based on dataset characteristics and historical performance"""
-        
-        scored_algorithms = []
-        
-        algorithms_registry = self._get_algorithms_registry()
-        
-        for algorithm_name in candidates:
-            if algorithm_name not in algorithms_registry:
-                continue
-                
-            config = algorithms_registry[algorithm_name]
-            score = self._calculate_algorithm_score(config, dataset_characteristics)
-            scored_algorithms.append((algorithm_name, score))
-        
-        # Sort by score (higher is better)
-        scored_algorithms.sort(key=lambda x: x[1], reverse=True)
-        
-        return [name for name, score in scored_algorithms]
+    def _init_clustering_algorithms(self) -> Dict[str, Dict]:
+        return {
+            'kmeans': {
+                'model': KMeans,
+                'params': {'n_clusters': 3, 'random_state': 42},
+                'strengths': ['fast', 'simple', 'spherical_clusters'],
+                'weaknesses': ['assumes_spherical', 'requires_k'],
+                'cost': 'low',
+                'interpretability': 'high'
+            },
+            'dbscan': {
+                'model': DBSCAN,
+                'params': {'eps': 0.5, 'min_samples': 5},
+                'strengths': ['arbitrary_shapes', 'handles_noise', 'auto_clusters'],
+                'weaknesses': ['parameter_sensitive', 'varying_density'],
+                'cost': 'medium',
+                'interpretability': 'medium'
+            },
+            'hierarchical': {
+                'model': AgglomerativeClustering,
+                'params': {'n_clusters': 3},
+                'strengths': ['no_k_assumption', 'deterministic', 'hierarchical'],
+                'weaknesses': ['slow_large_data', 'memory_intensive'],
+                'cost': 'high',
+                'interpretability': 'high'
+            }
+        }
     
-    def _calculate_algorithm_score(self, config: AlgorithmConfig, dataset_characteristics) -> float:
-        """Calculate suitability score for an algorithm"""
-        score = 0.0
+    def analyze_data_characteristics(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> DataCharacteristics:
+        n_samples, n_features = X.shape
+        n_classes = len(y.unique()) if y is not None else None
         
-        # Base score from characteristics match
-        if dataset_characteristics.linearity_score > 0.7 and 'linear' in config.name:
-            score += 0.3
+        has_categorical = any(X.dtypes == 'object') or any(X.dtypes == 'category')
+        has_missing = X.isnull().any().any()
         
-        if dataset_characteristics.complexity_score > 0.6 and config.complexity_tier == 'complex':
-            score += 0.2
+        is_imbalanced = False
+        if y is not None and n_classes is not None:
+            class_counts = y.value_counts()
+            min_class_ratio = class_counts.min() / class_counts.max()
+            is_imbalanced = min_class_ratio < 0.3
         
-        if dataset_characteristics.n_samples < 1000 and config.training_time == 'fast':
-            score += 0.2
+        numeric_cols = X.select_dtypes(include=[np.number]).columns
+        feature_correlation = 0
+        if len(numeric_cols) > 1:
+            corr_matrix = X[numeric_cols].corr().abs()
+            feature_correlation = (corr_matrix.values.sum() - len(corr_matrix)) / (len(corr_matrix) ** 2 - len(corr_matrix))
         
-        if dataset_characteristics.separability_score > 0.7 and 'tree' in config.name:
-            score += 0.2
+        noise_level = self._estimate_noise_level(X)
+        complexity_level = self._determine_complexity_level(n_samples, n_features, feature_correlation)
         
-        # Historical performance bonus
-        if config.name in self.performance_history:
-            avg_performance = np.mean(self.performance_history[config.name])
-            score += avg_performance * 0.3
-        
-        # Penalty for high complexity on simple datasets
-        if dataset_characteristics.complexity_score < 0.3 and config.complexity_tier == 'complex':
-            score -= 0.2
-        
-        return max(0.0, score)
+        return DataCharacteristics(
+            n_samples=n_samples,
+            n_features=n_features,
+            n_classes=n_classes,
+            has_categorical=has_categorical,
+            has_missing=has_missing,
+            is_imbalanced=is_imbalanced,
+            feature_correlation=feature_correlation,
+            noise_level=noise_level,
+            complexity_level=complexity_level
+        )
     
-    def create_algorithm(self, algorithm_name: str) -> BaseAlgorithm:
-        """Create an algorithm instance"""
-        algorithms_registry = self._get_algorithms_registry()
-        if algorithm_name not in algorithms_registry:
-            raise ValueError(f"Algorithm {algorithm_name} not found in registry")
+    def _estimate_noise_level(self, X: pd.DataFrame) -> float:
+        numeric_cols = X.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) == 0:
+            return 0.0
         
-        config = algorithms_registry[algorithm_name]
-        return SklearnAlgorithm(config)
-    
-    def get_algorithm_info(self, algorithm_name: str) -> Optional[AlgorithmConfig]:
-        """Get algorithm configuration information"""
-        algorithms_registry = self._get_algorithms_registry()
-        return algorithms_registry.get(algorithm_name)
-    
-    def update_performance_history(self, algorithm_name: str, performance_score: float):
-        """Update historical performance for an algorithm"""
-        if algorithm_name not in self.performance_history:
-            self.performance_history[algorithm_name] = []
+        noise_indicators = []
+        for col in numeric_cols:
+            series = X[col].dropna()
+            if len(series) > 10:
+                cv = series.std() / series.mean() if series.mean() != 0 else 0
+                noise_indicators.append(min(cv, 1.0))
         
-        self.performance_history[algorithm_name].append(performance_score)
-        
-        # Keep only recent performance (last 10 results)
-        if len(self.performance_history[algorithm_name]) > 10:
-            self.performance_history[algorithm_name] = self.performance_history[algorithm_name][-10:]
+        return np.mean(noise_indicators) if noise_indicators else 0.0
     
-    def get_portfolio_summary(self) -> Dict[str, Any]:
-        """Get summary of available algorithms in portfolio"""
-        algorithms_registry = self._get_algorithms_registry()
-        summary = {
-            'total_algorithms': len(algorithms_registry),
-            'by_complexity': {},
-            'by_task_type': {'classification': [], 'regression': []},
-            'external_dependencies': {
-                'xgboost': XGBOOST_AVAILABLE,
-                'lightgbm': LIGHTGBM_AVAILABLE
+    def _determine_complexity_level(self, n_samples: int, n_features: int, correlation: float) -> ComplexityLevel:
+        if n_samples < 1000 and n_features < 10:
+            return ComplexityLevel.LOW
+        elif n_samples < 10000 and n_features < 100:
+            return ComplexityLevel.MEDIUM
+        else:
+            return ComplexityLevel.HIGH
+    
+    def recommend_algorithms(self, data_chars: DataCharacteristics, 
+                           task_type: TaskType, 
+                           top_k: int = 5) -> List[AlgorithmRecommendation]:
+        
+        if task_type == TaskType.CLASSIFICATION:
+            algorithms = self.classification_algorithms
+        elif task_type == TaskType.REGRESSION:
+            algorithms = self.regression_algorithms
+        else:
+            algorithms = self.clustering_algorithms
+        
+        recommendations = []
+        for name, config in algorithms.items():
+            score, reasoning = self._calculate_suitability_score(name, config, data_chars, task_type)
+            
+            recommendation = AlgorithmRecommendation(
+                algorithm_name=name,
+                model_class=config['model'],
+                default_params=config['params'].copy(),
+                suitability_score=score,
+                reasoning=reasoning,
+                computational_cost=config['cost'],
+                interpretability=config['interpretability']
+            )
+            recommendations.append(recommendation)
+        
+        recommendations.sort(key=lambda x: x.suitability_score, reverse=True)
+        return recommendations[:top_k]
+    
+    def _calculate_suitability_score(self, algorithm_name: str, config: Dict, 
+                                   data_chars: DataCharacteristics, 
+                                   task_type: TaskType) -> Tuple[float, List[str]]:
+        
+        score = 50.0
+        reasoning = []
+        strengths = config['strengths']
+        weaknesses = config['weaknesses']
+        
+        if data_chars.n_samples < 1000:
+            if 'fast' in strengths or 'simple' in strengths:
+                score += 15
+                reasoning.append("Good for small datasets")
+            if 'slow_training' in weaknesses or 'memory_intensive' in weaknesses:
+                score -= 10
+                reasoning.append("May be overkill for small data")
+        
+        if data_chars.n_samples > 10000:
+            if 'slow_large_data' in weaknesses:
+                score -= 20
+                reasoning.append("Not optimal for large datasets")
+            if algorithm_name in ['random_forest', 'gradient_boosting']:
+                score += 10
+                reasoning.append("Scales well with large data")
+        
+        if data_chars.n_features > 50:
+            if 'curse_dimensionality' in weaknesses:
+                score -= 15
+                reasoning.append("Struggles with high dimensions")
+            if 'feature_selection' in strengths:
+                score += 10
+                reasoning.append("Handles high dimensions well")
+        
+        if data_chars.has_missing:
+            if 'handles_missing' in strengths:
+                score += 15
+                reasoning.append("Naturally handles missing values")
+            else:
+                score -= 5
+        
+        if data_chars.is_imbalanced and task_type == TaskType.CLASSIFICATION:
+            if algorithm_name in ['random_forest', 'gradient_boosting']:
+                score += 10
+                reasoning.append("Good for imbalanced data")
+        
+        if data_chars.feature_correlation > 0.7:
+            if 'handles_multicollinearity' in strengths:
+                score += 10
+                reasoning.append("Handles correlated features")
+            if algorithm_name == 'linear_regression':
+                score -= 10
+                reasoning.append("Sensitive to multicollinearity")
+        
+        if data_chars.noise_level > 0.3:
+            if 'robust' in strengths:
+                score += 10
+                reasoning.append("Robust to noise")
+            if 'sensitive_outliers' in weaknesses:
+                score -= 10
+                reasoning.append("Sensitive to noisy data")
+        
+        if data_chars.complexity_level == ComplexityLevel.HIGH:
+            if 'non_linear' in strengths:
+                score += 15
+                reasoning.append("Can capture complex patterns")
+            if 'assumes_linearity' in weaknesses:
+                score -= 15
+                reasoning.append("Too simple for complex data")
+        
+        if data_chars.complexity_level == ComplexityLevel.LOW:
+            if 'simple' in strengths or 'interpretable' in strengths:
+                score += 10
+                reasoning.append("Appropriate complexity level")
+            if algorithm_name in ['neural_network', 'svm']:
+                score -= 10
+                reasoning.append("May overcomplicate simple patterns")
+        
+        return max(0, min(100, score)), reasoning
+    
+    def get_ensemble_recommendations(self, base_recommendations: List[AlgorithmRecommendation]) -> Dict[str, Any]:
+        if len(base_recommendations) < 2:
+            return {}
+        
+        diverse_algorithms = []
+        for rec in base_recommendations:
+            if rec.interpretability != 'low' or len(diverse_algorithms) < 2:
+                diverse_algorithms.append(rec)
+            if len(diverse_algorithms) >= 3:
+                break
+        
+        ensemble_strategies = {
+            'voting': {
+                'algorithms': [rec.algorithm_name for rec in diverse_algorithms[:3]],
+                'reasoning': "Combines predictions from diverse algorithms",
+                'complexity': 'medium'
             }
         }
         
-        for name, config in algorithms_registry.items():
-            # Count by complexity
-            tier = config.complexity_tier
-            if tier not in summary['by_complexity']:
-                summary['by_complexity'][tier] = 0
-            summary['by_complexity'][tier] += 1
-            
-            # Categorize by task type
-            if 'Classifier' in config.model_class.__name__ or name in ['naive_bayes', 'svm']:
-                summary['by_task_type']['classification'].append(name)
-            else:
-                summary['by_task_type']['regression'].append(name)
+        if len([rec for rec in base_recommendations if rec.computational_cost != 'high']) >= 2:
+            ensemble_strategies['stacking'] = {
+                'algorithms': [rec.algorithm_name for rec in base_recommendations[:2]],
+                'meta_learner': 'logistic_regression',
+                'reasoning': "Uses meta-learner to combine base models",
+                'complexity': 'high'
+            }
         
-        return summary
+        return ensemble_strategies
+    
+    def create_model_instance(self, recommendation: AlgorithmRecommendation, custom_params: Optional[Dict] = None) -> Any:
+        params = recommendation.default_params.copy()
+        if custom_params:
+            params.update(custom_params)
+        
+        try:
+            return recommendation.model_class(**params)
+        except Exception as e:
+            fallback_params = {k: v for k, v in params.items() if k in ['random_state', 'n_estimators', 'max_iter']}
+            return recommendation.model_class(**fallback_params)
+    
+    def quick_evaluation(self, model: Any, X: pd.DataFrame, y: pd.Series, 
+                        task_type: TaskType, cv_folds: int = 3) -> Dict[str, float]:
+        
+        try:
+            if task_type == TaskType.CLASSIFICATION:
+                scores = cross_val_score(model, X, y, cv=cv_folds, scoring='accuracy')
+                return {
+                    'mean_accuracy': scores.mean(),
+                    'std_accuracy': scores.std(),
+                    'min_accuracy': scores.min(),
+                    'max_accuracy': scores.max()
+                }
+            else:
+                scores = cross_val_score(model, X, y, cv=cv_folds, scoring='r2')
+                return {
+                    'mean_r2': scores.mean(),
+                    'std_r2': scores.std(),
+                    'min_r2': scores.min(),
+                    'max_r2': scores.max()
+                }
+        except Exception:
+            return {'error': True, 'mean_score': 0.0}
+
+def select_best_algorithms(X: pd.DataFrame, y: Optional[pd.Series] = None, 
+                          task_type: Optional[TaskType] = None,
+                          top_k: int = 5) -> Tuple[List[AlgorithmRecommendation], DataCharacteristics]:
+    
+    portfolio = IntelligentAlgorithmPortfolio()
+    
+    if task_type is None:
+        if y is None:
+            task_type = TaskType.CLUSTERING
+        else:
+            task_type = TaskType.CLASSIFICATION if y.nunique() <= 20 else TaskType.REGRESSION
+    
+    data_chars = portfolio.analyze_data_characteristics(X, y)
+    recommendations = portfolio.recommend_algorithms(data_chars, task_type, top_k)
+    
+    return recommendations, data_chars
