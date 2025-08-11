@@ -1,467 +1,394 @@
-import logging
+"""Intelligent AutoML Model Selection System"""
+
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from enum import Enum
 import time
-import json
-import joblib
-import os
-from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
 
-from .dataset_analyzer import DatasetAnalyzer, DatasetCharacteristics
-from .algorithm_portfolio import AlgorithmPortfolioManager, SklearnAlgorithm
-from .hyperparameter_optimizer import HyperparameterOptimizer, OptimizationResult
-from .performance_validator import PerformanceValidator, ModelPerformance, ComparisonResult
+from .algorithm_portfolio import IntelligentAlgorithmPortfolio, TaskType, AlgorithmRecommendation
+from .hyperparameter_optimizer import IntelligentHyperparameterOptimizer, OptimizationResult
+from .performance_validator import ProductionModelValidator, ModelPerformance, TaskType as ValidatorTaskType
+from ..learning.adaptive_system import AdaptiveLearningSystem, AdaptiveConfig
 
 @dataclass
-class ModelSelectionResult:
+class AutoMLResult:
     best_model: Any
-    best_algorithm_name: str
-    best_hyperparameters: Dict[str, Any]
+    best_algorithm: str
     best_score: float
-    dataset_characteristics: DatasetCharacteristics
-    optimization_results: Dict[str, OptimizationResult]
-    performance_comparison: ComparisonResult
-    model_performances: List[ModelPerformance]
+    best_params: Dict[str, Any]
+    all_results: List[Dict[str, Any]]
     selection_time: float
     recommendation: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    performance_details: Dict[str, Any]
 
 @dataclass
-class ModelArtifact:
-    model: Any
-    algorithm_name: str
-    hyperparameters: Dict[str, Any]
-    performance_metrics: Dict[str, Any]
-    dataset_characteristics: DatasetCharacteristics
-    feature_names: List[str]
-    target_name: str
-    creation_timestamp: str
-    model_id: str
-    version: str = "1.0"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+class AutoMLConfig:
+    max_algorithms: int = 5
+    max_optimization_time: int = 300
+    cv_folds: int = 5
+    test_size: float = 0.2
+    enable_ensemble: bool = True
+    enable_adaptive_learning: bool = True
+    random_state: int = 42
 
-class IntelligentModelSelector:
-    """Production-grade intelligent model selection system"""
+class IntelligentAutoMLSystem:
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or {}
+    def __init__(self, config: Optional[AutoMLConfig] = None):
+        self.config = config or AutoMLConfig()
+        self.algorithm_portfolio = IntelligentAlgorithmPortfolio()
+        self.hyperparameter_optimizer = IntelligentHyperparameterOptimizer()
+        self.performance_validator = ProductionModelValidator()
         
-        # Initialize components
-        self.dataset_analyzer = DatasetAnalyzer(self.config.get('dataset_analyzer', {}))
-        self.portfolio_manager = AlgorithmPortfolioManager(self.config.get('portfolio_manager', {}))
-        self.hyperparameter_optimizer = HyperparameterOptimizer(self.config.get('hyperparameter_optimizer', {}))
-        self.performance_validator = PerformanceValidator(self.config.get('performance_validator', {}))
-        
-        # Model registry
-        self.model_registry: Dict[str, ModelArtifact] = {}
-        self.selection_history: List[ModelSelectionResult] = []
-        
-        # Configuration
-        self.max_algorithms_to_try = self.config.get('max_algorithms_to_try', 5)
-        self.optimization_budget = self.config.get('optimization_budget', 50)  # Max evaluations per algorithm
-        self.enable_caching = self.config.get('enable_caching', True)
-        self.model_storage_path = self.config.get('model_storage_path', './models')
-        
-        # Create storage directory
-        if self.model_storage_path and not os.path.exists(self.model_storage_path):
-            os.makedirs(self.model_storage_path)
+        if self.config.enable_adaptive_learning:
+            self.adaptive_system = AdaptiveLearningSystem()
+        else:
+            self.adaptive_system = None
     
-    def select_best_model(self, X: pd.DataFrame, y: pd.Series,
-                         constraints: Optional[Dict[str, Any]] = None,
-                         validation_config: Optional[Dict[str, Any]] = None,
-                         optimization_config: Optional[Dict[str, Any]] = None) -> ModelSelectionResult:
-        """Main entry point for intelligent model selection"""
+    def select_best_model(self, X: pd.DataFrame, y: pd.Series, 
+                         task_type: Optional[TaskType] = None) -> AutoMLResult:
         
         start_time = time.time()
-        constraints = constraints or {}
-        validation_config = validation_config or {}
-        optimization_config = optimization_config or {}
         
-        logging.info("Starting intelligent model selection...")
+        if task_type is None:
+            task_type = TaskType.CLASSIFICATION if y.nunique() <= 20 else TaskType.REGRESSION
         
-        # Step 1: Analyze dataset characteristics
-        logging.info("Step 1: Analyzing dataset characteristics...")
-        dataset_characteristics = self.dataset_analyzer.analyze_dataset(X, y, constraints)
-        
-        logging.info(f"Dataset analysis complete: {dataset_characteristics.n_samples} samples, "
-                    f"{dataset_characteristics.n_features} features, "
-                    f"complexity={dataset_characteristics.complexity_score:.3f}")
-        
-        # Step 2: Select candidate algorithms
-        logging.info("Step 2: Selecting candidate algorithms...")
-        selected_algorithms = self.portfolio_manager.select_algorithms(dataset_characteristics, constraints)
-        selected_algorithms = selected_algorithms[:self.max_algorithms_to_try]
-        
-        logging.info(f"Selected algorithms: {selected_algorithms}")
-        
-        # Step 3: Hyperparameter optimization for each algorithm
-        logging.info("Step 3: Optimizing hyperparameters...")
-        optimization_results = {}
-        optimized_models = []
-        
-        for algorithm_name in selected_algorithms:
-            try:
-                logging.info(f"Optimizing {algorithm_name}...")
-                
-                # Create algorithm instance
-                algorithm = self.portfolio_manager.create_algorithm(algorithm_name)
-                algorithm_config = self.portfolio_manager.get_algorithm_info(algorithm_name)
-                
-                # Set optimization budget based on algorithm complexity
-                budget = self._get_optimization_budget(algorithm_config)
-                optimization_config['n_calls'] = budget
-                
-                # Optimize hyperparameters
-                optimization_result = self.hyperparameter_optimizer.optimize_algorithm(
-                    algorithm, X, y, algorithm_config.param_ranges, optimization_config
-                )
-                
-                optimization_results[algorithm_name] = optimization_result
-                
-                # Create optimized model instance
-                optimized_model = algorithm_config.model_class(
-                    **{**algorithm_config.default_params, **optimization_result.best_params}
-                )
-                optimized_models.append((optimized_model, algorithm_name, optimization_result.best_params))
-                
-                # Update portfolio manager performance history
-                self.portfolio_manager.update_performance_history(algorithm_name, optimization_result.best_score)
-                
-            except Exception as e:
-                logging.error(f"Optimization failed for {algorithm_name}: {e}")
-                # Create model with default parameters as fallback
-                algorithm_config = self.portfolio_manager.get_algorithm_info(algorithm_name)
-                default_model = algorithm_config.model_class(**algorithm_config.default_params)
-                optimized_models.append((default_model, algorithm_name, algorithm_config.default_params))
-                
-                # Create dummy optimization result
-                optimization_results[algorithm_name] = OptimizationResult(
-                    best_params=algorithm_config.default_params,
-                    best_score=0.0,
-                    optimization_history=[],
-                    total_evaluations=0,
-                    optimization_time=0.0,
-                    convergence_info={'converged': False, 'error': str(e)}
-                )
-        
-        # Step 4: Performance validation and comparison
-        logging.info("Step 4: Validating and comparing models...")
-        model_performances = self.performance_validator.validate_multiple_models(
-            optimized_models, X, y, validation_config
+        data_characteristics = self.algorithm_portfolio.analyze_data_characteristics(X, y)
+        algorithm_recommendations = self.algorithm_portfolio.recommend_algorithms(
+            data_characteristics, task_type, self.config.max_algorithms
         )
         
-        if not model_performances:
-            raise RuntimeError("No models could be successfully validated")
+        all_results = []
+        best_model = None
+        best_score = -np.inf if task_type == TaskType.REGRESSION else 0
+        best_algorithm = ""
+        best_params = {}
         
-        # Compare models
-        comparison_result = self.performance_validator.compare_models(model_performances)
+        for i, recommendation in enumerate(algorithm_recommendations):
+            try:
+                result = self._evaluate_algorithm(
+                    recommendation, X, y, task_type, data_characteristics
+                )
+                all_results.append(result)
+                
+                if result['final_score'] > best_score:
+                    best_score = result['final_score']
+                    best_model = result['optimized_model']
+                    best_algorithm = result['algorithm_name']
+                    best_params = result['best_params']
+                    
+            except Exception as e:
+                logging.warning(f"Failed to evaluate {recommendation.algorithm_name}: {e}")
+                continue
         
-        # Step 5: Select best model
-        best_performance = max(model_performances, key=lambda p: p.validation_metrics.primary_score)
-        best_model_info = next((m for m in optimized_models if m[1] == best_performance.algorithm_name), None)
-        
-        if best_model_info is None:
-            raise RuntimeError("Could not find best model info")
-        
-        best_model, best_algorithm_name, best_hyperparameters = best_model_info
-        
-        # Train best model on full dataset
-        logging.info(f"Training final model: {best_algorithm_name}")
-        best_model.fit(X, y)
+        if self.config.enable_ensemble and len(all_results) >= 2:
+            ensemble_result = self._create_ensemble(all_results, X, y, task_type)
+            if ensemble_result['final_score'] > best_score:
+                best_model = ensemble_result['model']
+                best_score = ensemble_result['final_score']
+                best_algorithm = "ensemble"
+                best_params = ensemble_result['params']
+                all_results.append(ensemble_result)
         
         selection_time = time.time() - start_time
+        recommendation = self._generate_recommendation(best_algorithm, best_score, all_results)
+        performance_details = self._compile_performance_details(all_results, best_algorithm)
         
-        # Generate final recommendation
-        recommendation = self._generate_final_recommendation(
-            dataset_characteristics, comparison_result, best_performance, selection_time
-        )
-        
-        # Create result
-        result = ModelSelectionResult(
+        return AutoMLResult(
             best_model=best_model,
-            best_algorithm_name=best_algorithm_name,
-            best_hyperparameters=best_hyperparameters,
-            best_score=best_performance.validation_metrics.primary_score,
-            dataset_characteristics=dataset_characteristics,
-            optimization_results=optimization_results,
-            performance_comparison=comparison_result,
-            model_performances=model_performances,
+            best_algorithm=best_algorithm,
+            best_score=best_score,
+            best_params=best_params,
+            all_results=all_results,
             selection_time=selection_time,
             recommendation=recommendation,
-            metadata={
-                'feature_names': X.columns.tolist(),
-                'target_name': y.name or 'target',
-                'selection_timestamp': datetime.now().isoformat(),
-                'config_used': self.config.copy()
-            }
+            performance_details=performance_details
+        )
+    
+    def _evaluate_algorithm(self, recommendation: AlgorithmRecommendation,
+                           X: pd.DataFrame, y: pd.Series, task_type: TaskType,
+                           data_characteristics) -> Dict[str, Any]:
+        
+        model = self.algorithm_portfolio.create_model_instance(recommendation)
+        algorithm_name = recommendation.algorithm_name
+        
+        baseline_performance = self.algorithm_portfolio.quick_evaluation(
+            model, X, y, task_type
         )
         
-        # Store in history
-        self.selection_history.append(result)
-        
-        logging.info(f"Model selection complete! Best model: {best_algorithm_name} "
-                    f"(score: {best_performance.validation_metrics.primary_score:.4f}, "
-                    f"time: {selection_time:.2f}s)")
-        
-        return result
-    
-    def save_model(self, result: ModelSelectionResult, model_id: Optional[str] = None) -> str:
-        """Save model to disk and register in model registry"""
-        
-        if model_id is None:
-            model_id = f"{result.best_algorithm_name}_{int(time.time())}"
-        
-        # Create model artifact
-        artifact = ModelArtifact(
-            model=result.best_model,
-            algorithm_name=result.best_algorithm_name,
-            hyperparameters=result.best_hyperparameters,
-            performance_metrics=result.model_performances[0].validation_metrics.all_metrics,
-            dataset_characteristics=result.dataset_characteristics,
-            feature_names=result.metadata['feature_names'],
-            target_name=result.metadata['target_name'],
-            creation_timestamp=datetime.now().isoformat(),
-            model_id=model_id,
-            metadata=result.metadata
+        optimization_result = self.hyperparameter_optimizer.optimize(
+            model, X, y, algorithm_name, task_type.value
         )
         
-        # Save to disk
-        if self.model_storage_path:
-            model_path = os.path.join(self.model_storage_path, f"{model_id}.pkl")
-            metadata_path = os.path.join(self.model_storage_path, f"{model_id}_metadata.json")
-            
-            # Save model
-            joblib.dump(result.best_model, model_path)
-            
-            # Save metadata
-            metadata = {
-                'model_id': model_id,
-                'algorithm_name': result.best_algorithm_name,
-                'hyperparameters': result.best_hyperparameters,
-                'performance_metrics': artifact.performance_metrics,
-                'dataset_characteristics': result.dataset_characteristics.__dict__,
-                'feature_names': artifact.feature_names,
-                'target_name': artifact.target_name,
-                'creation_timestamp': artifact.creation_timestamp,
-                'version': artifact.version
-            }
-            
-            with open(metadata_path, 'w') as f:
-                json.dump(metadata, f, indent=2, default=str)
-            
-            logging.info(f"Model saved: {model_path}")
+        if optimization_result.best_params:
+            optimized_model = self.algorithm_portfolio.create_model_instance(
+                recommendation, optimization_result.best_params
+            )
+        else:
+            optimized_model = model
         
-        # Register in memory
-        self.model_registry[model_id] = artifact
-        
-        return model_id
-    
-    def load_model(self, model_id: str) -> Optional[ModelArtifact]:
-        """Load model from disk or registry"""
-        
-        # Check memory registry first
-        if model_id in self.model_registry:
-            return self.model_registry[model_id]
-        
-        # Try to load from disk
-        if self.model_storage_path:
-            model_path = os.path.join(self.model_storage_path, f"{model_id}.pkl")
-            metadata_path = os.path.join(self.model_storage_path, f"{model_id}_metadata.json")
-            
-            if os.path.exists(model_path) and os.path.exists(metadata_path):
-                try:
-                    # Load model
-                    model = joblib.load(model_path)
-                    
-                    # Load metadata
-                    with open(metadata_path, 'r') as f:
-                        metadata = json.load(f)
-                    
-                    # Reconstruct dataset characteristics
-                    dataset_chars_dict = metadata['dataset_characteristics']
-                    dataset_characteristics = DatasetCharacteristics(**dataset_chars_dict)
-                    
-                    # Create artifact
-                    artifact = ModelArtifact(
-                        model=model,
-                        algorithm_name=metadata['algorithm_name'],
-                        hyperparameters=metadata['hyperparameters'],
-                        performance_metrics=metadata['performance_metrics'],
-                        dataset_characteristics=dataset_characteristics,
-                        feature_names=metadata['feature_names'],
-                        target_name=metadata['target_name'],
-                        creation_timestamp=metadata['creation_timestamp'],
-                        model_id=model_id,
-                        version=metadata.get('version', '1.0')
-                    )
-                    
-                    # Cache in registry
-                    self.model_registry[model_id] = artifact
-                    
-                    return artifact
-                    
-                except Exception as e:
-                    logging.error(f"Failed to load model {model_id}: {e}")
-        
-        return None
-    
-    def get_model_recommendations(self, X: pd.DataFrame, 
-                                constraints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Get model recommendations without full optimization (fast preview)"""
-        
-        constraints = constraints or {}
-        
-        # Quick dataset analysis
-        y_dummy = pd.Series([0] * len(X))  # Dummy target for analysis
-        dataset_characteristics = self.dataset_analyzer.analyze_dataset(X, y_dummy, constraints)
-        
-        # Get algorithm recommendations
-        recommended_algorithms = self.portfolio_manager.select_algorithms(dataset_characteristics, constraints)
-        
-        # Get expected performance
-        performance_expectations = self.dataset_analyzer.get_performance_expectations(dataset_characteristics)
+        validator_task_type = ValidatorTaskType.CLASSIFICATION if task_type == TaskType.CLASSIFICATION else ValidatorTaskType.REGRESSION
+        performance = self.performance_validator.validate_model(
+            optimized_model, X, y, validator_task_type, algorithm_name
+        )
         
         return {
-            'dataset_characteristics': dataset_characteristics.__dict__,
-            'recommended_algorithms': recommended_algorithms,
-            'performance_expectations': performance_expectations,
-            'estimated_training_time_minutes': performance_expectations['training_time_range'],
-            'complexity_assessment': self._assess_task_complexity(dataset_characteristics),
-            'resource_requirements': self._estimate_resource_requirements(dataset_characteristics)
+            'algorithm_name': algorithm_name,
+            'baseline_score': baseline_performance.get('mean_accuracy', baseline_performance.get('mean_r2', 0)),
+            'optimized_model': optimized_model,
+            'best_params': optimization_result.best_params,
+            'optimization_score': optimization_result.best_score,
+            'final_score': performance.validation_metrics.primary_score,
+            'suitability_score': recommendation.suitability_score,
+            'reasoning': recommendation.reasoning,
+            'computational_cost': recommendation.computational_cost,
+            'interpretability': recommendation.interpretability,
+            'stability': performance.stability_score,
+            'robustness': performance.robustness_score,
+            'training_time': performance.training_time,
+            'memory_usage': performance.memory_usage_mb,
+            'optimization_history': optimization_result.optimization_history
         }
     
-    def _get_optimization_budget(self, algorithm_config) -> int:
-        """Get optimization budget based on algorithm complexity"""
-        base_budget = self.optimization_budget
+    def _create_ensemble(self, algorithm_results: List[Dict[str, Any]],
+                        X: pd.DataFrame, y: pd.Series, task_type: TaskType) -> Dict[str, Any]:
         
-        if algorithm_config.complexity_tier == 'fast':
-            return max(10, base_budget // 3)
-        elif algorithm_config.complexity_tier == 'balanced':
-            return base_budget // 2
-        else:  # complex
-            return base_budget
-    
-    def _generate_final_recommendation(self, dataset_characteristics: DatasetCharacteristics,
-                                     comparison_result: ComparisonResult,
-                                     best_performance: ModelPerformance,
-                                     selection_time: float) -> str:
-        """Generate final recommendation text"""
+        top_models = sorted(algorithm_results, key=lambda x: x['final_score'], reverse=True)[:3]
         
-        algorithm_name = best_performance.algorithm_name
-        score = best_performance.validation_metrics.primary_score
-        metric = best_performance.validation_metrics.primary_metric
+        models = [result['optimized_model'] for result in top_models]
+        model_names = [result['algorithm_name'] for result in top_models]
         
-        complexity_desc = self._get_complexity_description(dataset_characteristics.complexity_score)
+        ensemble = VotingEnsemble(models, model_names, task_type)
         
-        recommendation = (
-            f"Recommended model: {algorithm_name} "
-            f"({metric}: {score:.4f})\n\n"
-            f"Dataset complexity: {complexity_desc}\n"
-            f"Selection completed in {selection_time:.1f} seconds\n\n"
-            f"{comparison_result.recommendation}\n\n"
+        validator_task_type = ValidatorTaskType.CLASSIFICATION if task_type == TaskType.CLASSIFICATION else ValidatorTaskType.REGRESSION
+        performance = self.performance_validator.validate_model(
+            ensemble, X, y, validator_task_type, "ensemble"
         )
         
-        # Add practical considerations
-        if best_performance.training_time > 60:  # More than 1 minute
-            recommendation += "Note: This model requires significant training time. "
-        
-        if best_performance.model_size_mb > 100:  # Large model
-            recommendation += "Note: This model has a large memory footprint. "
-        
-        if dataset_characteristics.imbalance_ratio < 0.3:
-            recommendation += "Note: Dataset is imbalanced - consider additional sampling techniques. "
-        
-        return recommendation.strip()
-    
-    def _assess_task_complexity(self, characteristics: DatasetCharacteristics) -> str:
-        """Assess task complexity level"""
-        score = characteristics.complexity_score
-        
-        if score < 0.3:
-            return "Low complexity - simple patterns, well-separated data"
-        elif score < 0.6:
-            return "Medium complexity - moderate patterns, some noise"
-        else:
-            return "High complexity - complex patterns, noisy data, challenging"
-    
-    def _get_complexity_description(self, complexity_score: float) -> str:
-        """Get human-readable complexity description"""
-        if complexity_score < 0.3:
-            return "Low (simple patterns)"
-        elif complexity_score < 0.6:
-            return "Medium (moderate complexity)"
-        else:
-            return "High (complex patterns)"
-    
-    def _estimate_resource_requirements(self, characteristics: DatasetCharacteristics) -> Dict[str, str]:
-        """Estimate resource requirements"""
-        
-        memory_req = characteristics.memory_requirement_mb
-        n_samples = characteristics.n_samples
-        
-        if memory_req < 100:
-            memory_desc = "Low (< 100MB)"
-        elif memory_req < 1000:
-            memory_desc = "Medium (100MB - 1GB)"
-        else:
-            memory_desc = "High (> 1GB)"
-        
-        if n_samples < 1000:
-            compute_desc = "Low (fast training)"
-        elif n_samples < 10000:
-            compute_desc = "Medium (moderate training time)"
-        else:
-            compute_desc = "High (long training time)"
-        
         return {
-            'memory': memory_desc,
-            'compute': compute_desc,
-            'storage': f"~{memory_req:.1f}MB for model storage"
+            'algorithm_name': 'ensemble',
+            'model': ensemble,
+            'final_score': performance.validation_metrics.primary_score,
+            'params': {'component_algorithms': model_names},
+            'stability': performance.stability_score,
+            'robustness': performance.robustness_score,
+            'training_time': performance.training_time,
+            'memory_usage': performance.memory_usage_mb,
+            'component_scores': [result['final_score'] for result in top_models]
         }
     
-    def get_system_summary(self) -> Dict[str, Any]:
-        """Get comprehensive system summary"""
+    def _generate_recommendation(self, best_algorithm: str, best_score: float,
+                               all_results: List[Dict[str, Any]]) -> str:
         
-        portfolio_summary = self.portfolio_manager.get_portfolio_summary()
-        validation_summary = self.performance_validator.get_validation_summary()
-        optimization_cache_info = self.hyperparameter_optimizer.get_cache_info()
+        if not all_results:
+            return "No models could be evaluated successfully"
+        
+        best_result = next(r for r in all_results if r['algorithm_name'] == best_algorithm)
+        
+        recommendation = f"Recommend {best_algorithm} (score: {best_score:.3f})"
+        
+        if best_result.get('stability', 0) > 0.8:
+            recommendation += " - highly stable"
+        elif best_result.get('stability', 0) < 0.5:
+            recommendation += " - low stability, monitor carefully"
+        
+        if best_result.get('training_time', 0) > 30:
+            recommendation += " - long training time"
+        
+        if best_result.get('interpretability') == 'high':
+            recommendation += " - interpretable"
+        elif best_result.get('interpretability') == 'low':
+            recommendation += " - black box model"
+        
+        score_gap = best_score - sorted([r['final_score'] for r in all_results], reverse=True)[1] if len(all_results) > 1 else 0
+        if score_gap < 0.02:
+            recommendation += " - marginal improvement over alternatives"
+        
+        return recommendation
+    
+    def _compile_performance_details(self, all_results: List[Dict[str, Any]],
+                                   best_algorithm: str) -> Dict[str, Any]:
+        
+        if not all_results:
+            return {}
+        
+        performance_summary = {
+            'algorithms_evaluated': len(all_results),
+            'best_algorithm': best_algorithm,
+            'performance_ranking': sorted(
+                [(r['algorithm_name'], r['final_score']) for r in all_results],
+                key=lambda x: x[1], reverse=True
+            ),
+            'optimization_efficiency': {
+                r['algorithm_name']: {
+                    'improvement': r['optimization_score'] - r['baseline_score']
+                    if r.get('optimization_score') and r.get('baseline_score') else 0,
+                    'evaluations': len(r.get('optimization_history', []))
+                }
+                for r in all_results
+            },
+            'computational_costs': {
+                r['algorithm_name']: {
+                    'training_time': r.get('training_time', 0),
+                    'memory_mb': r.get('memory_usage', 0),
+                    'cost_category': r.get('computational_cost', 'unknown')
+                }
+                for r in all_results
+            },
+            'reliability_scores': {
+                r['algorithm_name']: {
+                    'stability': r.get('stability', 0),
+                    'robustness': r.get('robustness', 0),
+                    'interpretability': r.get('interpretability', 'unknown')
+                }
+                for r in all_results
+            }
+        }
+        
+        return performance_summary
+    
+    def continuous_learning(self, current_model, X_new: pd.DataFrame, y_new: pd.Series,
+                           algorithm_name: str, task_type: TaskType) -> Dict[str, Any]:
+        
+        if not self.adaptive_system:
+            return {'status': 'adaptive_learning_disabled'}
+        
+        validator_task_type = ValidatorTaskType.CLASSIFICATION if task_type == TaskType.CLASSIFICATION else ValidatorTaskType.REGRESSION
+        
+        adaptation_results = self.adaptive_system.monitor_and_adapt(
+            current_model, X_new, y_new, validator_task_type, algorithm_name
+        )
+        
+        if adaptation_results.get('success'):
+            logging.info(f"Model adapted successfully: {adaptation_results.get('improvement', 0):.4f} improvement")
+        
+        return adaptation_results
+    
+    def get_model_insights(self, model, X: pd.DataFrame, algorithm_name: str) -> Dict[str, Any]:
+        
+        insights = {
+            'algorithm_name': algorithm_name,
+            'feature_count': len(X.columns),
+            'sample_count': len(X),
+            'model_complexity': self._assess_model_complexity(model, algorithm_name)
+        }
+        
+        if hasattr(model, 'feature_importances_'):
+            feature_importance = dict(zip(X.columns, model.feature_importances_))
+            insights['feature_importance'] = dict(sorted(feature_importance.items(), 
+                                                        key=lambda x: x[1], reverse=True)[:10])
+        
+        if hasattr(model, 'coef_'):
+            coef_dict = dict(zip(X.columns, model.coef_.flatten() if model.coef_.ndim > 1 else model.coef_))
+            insights['coefficients'] = dict(sorted(coef_dict.items(), 
+                                                  key=lambda x: abs(x[1]), reverse=True)[:10])
+        
+        insights['memory_footprint_mb'] = self._estimate_model_size(model)
+        insights['prediction_complexity'] = self._assess_prediction_complexity(model, algorithm_name)
+        
+        return insights
+    
+    def _assess_model_complexity(self, model, algorithm_name: str) -> str:
+        
+        if algorithm_name in ['linear_regression', 'logistic_regression']:
+            return 'low'
+        elif algorithm_name in ['decision_tree', 'naive_bayes']:
+            return 'low'
+        elif algorithm_name in ['random_forest', 'knn']:
+            return 'medium'
+        elif algorithm_name in ['gradient_boosting', 'svm', 'neural_network']:
+            return 'high'
+        else:
+            return 'medium'
+    
+    def _assess_prediction_complexity(self, model, algorithm_name: str) -> str:
+        
+        if algorithm_name in ['linear_regression', 'logistic_regression']:
+            return 'O(n)'
+        elif algorithm_name in ['decision_tree']:
+            return 'O(log n)'
+        elif algorithm_name in ['random_forest']:
+            return 'O(k * log n)'
+        elif algorithm_name in ['knn']:
+            return 'O(n * d)'
+        else:
+            return 'O(n)'
+    
+    def _estimate_model_size(self, model) -> float:
+        
+        try:
+            import sys
+            return sys.getsizeof(model) / (1024 * 1024)
+        except:
+            return 0.0
+    
+    def export_model_config(self, automl_result: AutoMLResult) -> Dict[str, Any]:
         
         return {
-            'model_selection_runs': len(self.selection_history),
-            'models_in_registry': len(self.model_registry),
-            'algorithm_portfolio': portfolio_summary,
-            'validation_history': validation_summary,
-            'optimization_cache': optimization_cache_info,
-            'configuration': self.config,
-            'storage_path': self.model_storage_path,
-            'recent_selections': [
+            'model_selection': {
+                'best_algorithm': automl_result.best_algorithm,
+                'best_score': automl_result.best_score,
+                'best_parameters': automl_result.best_params,
+                'selection_time': automl_result.selection_time
+            },
+            'alternatives': [
                 {
-                    'algorithm': result.best_algorithm_name,
-                    'score': result.best_score,
-                    'timestamp': result.metadata.get('selection_timestamp', 'unknown')
-                } for result in self.selection_history[-5:]  # Last 5 selections
-            ]
+                    'algorithm': result['algorithm_name'],
+                    'score': result['final_score'],
+                    'parameters': result.get('best_params', {}),
+                    'reasoning': result.get('reasoning', [])
+                }
+                for result in automl_result.all_results[:5]
+            ],
+            'recommendation': automl_result.recommendation,
+            'performance_analysis': automl_result.performance_details,
+            'config_used': self.config.__dict__,
+            'timestamp': time.time()
         }
+
+class VotingEnsemble:
     
-    def clear_cache(self):
-        """Clear all caches"""
-        self.hyperparameter_optimizer.clear_cache()
-        logging.info("All caches cleared")
+    def __init__(self, models: List, model_names: List[str], task_type: TaskType):
+        self.models = models
+        self.model_names = model_names
+        self.task_type = task_type
     
-    def list_models(self) -> List[Dict[str, Any]]:
-        """List all registered models"""
-        models = []
+    def predict(self, X):
+        predictions = []
         
-        for model_id, artifact in self.model_registry.items():
-            models.append({
-                'model_id': model_id,
-                'algorithm_name': artifact.algorithm_name,
-                'creation_timestamp': artifact.creation_timestamp,
-                'performance_metrics': artifact.performance_metrics,
-                'dataset_size': f"{artifact.dataset_characteristics.n_samples}x{artifact.dataset_characteristics.n_features}",
-                'version': artifact.version
-            })
+        for model in self.models:
+            try:
+                pred = model.predict(X)
+                predictions.append(pred)
+            except:
+                continue
         
-        return sorted(models, key=lambda x: x['creation_timestamp'], reverse=True)
+        if not predictions:
+            return np.zeros(len(X))
+        
+        predictions = np.array(predictions)
+        
+        if self.task_type == TaskType.CLASSIFICATION:
+            from scipy import stats
+            ensemble_pred = stats.mode(predictions, axis=0)[0].flatten()
+        else:
+            ensemble_pred = np.mean(predictions, axis=0)
+        
+        return ensemble_pred
+    
+    def get_params(self, deep=True):
+        return {
+            'models': self.model_names,
+            'ensemble_type': 'voting',
+            'task_type': self.task_type.value
+        }
+
+def run_automl(X: pd.DataFrame, y: pd.Series, 
+              task_type: Optional[TaskType] = None,
+              config: Optional[AutoMLConfig] = None) -> AutoMLResult:
+    
+    automl = IntelligentAutoMLSystem(config)
+    return automl.select_best_model(X, y, task_type)
