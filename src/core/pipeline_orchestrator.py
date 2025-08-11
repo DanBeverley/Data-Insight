@@ -25,6 +25,7 @@ from ..data_quality.quality_assessor import ContextAwareQualityAssessor
 from ..data_quality.anomaly_detector import MultiLayerAnomalyDetector
 from ..data_quality.drift_monitor import ComprehensiveDriftMonitor
 from ..data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
+from ..mlops.mlops_orchestrator import MLOpsOrchestrator
 
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
@@ -37,6 +38,7 @@ class PipelineStage(Enum):
     MODEL_SELECTION = "model_selection"
     VALIDATION = "validation"
     EXPORT = "export"
+    MLOPS_DEPLOYMENT = "mlops_deployment"
 
 @dataclass
 class PipelineConfig:
@@ -48,6 +50,9 @@ class PipelineConfig:
     max_workers: int = 4
     checkpoint_enabled: bool = True
     auto_recovery: bool = True
+    enable_mlops: bool = False
+    mlops_environment: str = "staging"
+    enable_monitoring: bool = False
     validation_threshold: float = 0.95
 
 @dataclass
@@ -81,6 +86,12 @@ class RobustPipelineOrchestrator:
         self.auto_fe = AutomatedFeatureEngineer()
         self.feature_selector = IntelligentFeatureSelector()
         self.model_selector = None  # Will initialize when needed
+        
+        # MLOps integration
+        if self.config.enable_mlops:
+            self.mlops = MLOpsOrchestrator()
+        else:
+            self.mlops = None
         
         # Pipeline state
         self.execution_history: List[StageResult] = []
@@ -211,6 +222,13 @@ class RobustPipelineOrchestrator:
                 PipelineStage.EXPORT,
                 lambda: self._execute_export(modeling_result, validation_result)
             )
+            
+            # Stage 11: MLOps Deployment (if enabled)
+            if self.config.enable_mlops and self.mlops:
+                mlops_result = self._execute_stage_with_recovery(
+                    PipelineStage.MLOPS_DEPLOYMENT,
+                    lambda: self._execute_mlops_deployment(modeling_result, validation_result, ingestion_result)
+                )
             
             return self._compile_final_results()
             
@@ -829,5 +847,84 @@ class RobustPipelineOrchestrator:
                 stage=PipelineStage.MISSING_VALUE_INTELLIGENCE,
                 status="failed",
                 data=df,  # Return original data if imputation fails
+                error_message=str(e)
+            )
+    
+    def _execute_mlops_deployment(self, modeling_result: StageResult, 
+                                 validation_result: StageResult, 
+                                 ingestion_result: StageResult) -> StageResult:
+        """Execute MLOps deployment stage"""
+        try:
+            if not self.mlops:
+                raise ValueError("MLOps orchestrator not initialized")
+            
+            # Extract model and performance metrics
+            model = modeling_result.artifacts.get('best_model')
+            algorithm = modeling_result.metadata.get('best_algorithm', 'unknown')
+            performance_metrics = validation_result.metadata.get('validation_metrics', {})
+            
+            if not model:
+                raise ValueError("No model found in modeling results")
+            
+            # Create pipeline configuration
+            pipeline_config = {
+                'stages': [stage.value for stage in PipelineStage if stage != PipelineStage.MLOPS_DEPLOYMENT],
+                'config': {
+                    'session_id': self.session_id,
+                    'pipeline_config': self.config.__dict__
+                },
+                'dependencies': {
+                    'pandas': 'latest',
+                    'scikit-learn': 'latest',
+                    'numpy': 'latest'
+                }
+            }
+            
+            # Deploy to MLOps platform
+            deployment_id = self.mlops.deploy_model_pipeline(
+                model=model,
+                pipeline_config=pipeline_config,
+                data_df=ingestion_result.data.head(100),  # Sample for versioning
+                algorithm=algorithm,
+                performance_metrics=performance_metrics,
+                environment=self.config.mlops_environment
+            )
+            
+            # Start monitoring if enabled
+            if self.config.enable_monitoring:
+                self.mlops.monitor_deployment(
+                    deployment_id=deployment_id,
+                    prediction_latency=0.0,
+                    accuracy=performance_metrics.get('overall_score', 0.0),
+                    error_rate=0.0
+                )
+            
+            # Get deployment health status
+            health_status = self.mlops.get_deployment_health(deployment_id)
+            
+            return StageResult(
+                stage=PipelineStage.MLOPS_DEPLOYMENT,
+                status="success",
+                data=modeling_result.data,  # Pass through the model data
+                metadata={
+                    'deployment_id': deployment_id,
+                    'environment': self.config.mlops_environment,
+                    'health_status': health_status.get('health_status', 'unknown'),
+                    'deployment_timestamp': datetime.now().isoformat(),
+                    'monitoring_enabled': self.config.enable_monitoring
+                },
+                artifacts={
+                    'deployment_config': pipeline_config,
+                    'deployment_health': health_status,
+                    'mlops_environment': self.config.mlops_environment
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"MLOps deployment failed: {e}")
+            return StageResult(
+                stage=PipelineStage.MLOPS_DEPLOYMENT,
+                status="failed",
+                data=modeling_result.data,
                 error_message=str(e)
             )
