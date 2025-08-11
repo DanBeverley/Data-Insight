@@ -21,10 +21,16 @@ from ..supervised.pipeline import SupervisedPipeline
 from ..unsupervised.pipeline import UnsupervisedPipeline
 from ..timeseries.pipeline import TimeSeriesPipeline
 from ..nlp.pipeline import NLPPipeline
+from ..data_quality.quality_assessor import ContextAwareQualityAssessor
+from ..data_quality.anomaly_detector import MultiLayerAnomalyDetector
+from ..data_quality.drift_monitor import ComprehensiveDriftMonitor
+from ..data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
 
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
     PROFILING = "data_profiling"
+    QUALITY_ASSESSMENT = "quality_assessment"
+    MISSING_VALUE_INTELLIGENCE = "missing_value_intelligence"
     CLEANING = "data_cleaning"
     FEATURE_ENGINEERING = "feature_engineering"
     FEATURE_SELECTION = "feature_selection"
@@ -67,6 +73,10 @@ class RobustPipelineOrchestrator:
         self.data_ingestion = DataIngestion()
         self.data_profiler = IntelligentDataProfiler()
         self.feature_intelligence = AdvancedFeatureIntelligence()
+        self.quality_assessor = ContextAwareQualityAssessor()
+        self.anomaly_detector = MultiLayerAnomalyDetector()
+        self.drift_monitor = ComprehensiveDriftMonitor()
+        self.missing_value_intelligence = AdvancedMissingValueIntelligence()
         self.data_cleaner = DataCleaner()
         self.auto_fe = AutomatedFeatureEngineer()
         self.feature_selector = IntelligentFeatureSelector()
@@ -123,16 +133,34 @@ class RobustPipelineOrchestrator:
             if profiling_result.status != "success":
                 return self._handle_pipeline_failure(profiling_result)
             
-            # Stage 3: Data Cleaning
+            # Stage 3: Data Quality Assessment
+            quality_result = self._execute_stage_with_recovery(
+                PipelineStage.QUALITY_ASSESSMENT,
+                lambda: self._execute_quality_assessment(ingestion_result.data, profiling_result.metadata)
+            )
+            
+            if quality_result.status != "success":
+                self.logger.warning("Quality assessment failed, continuing with caution")
+            
+            # Stage 4: Missing Value Intelligence
+            missing_value_result = self._execute_stage_with_recovery(
+                PipelineStage.MISSING_VALUE_INTELLIGENCE,
+                lambda: self._execute_missing_value_intelligence(ingestion_result.data, quality_result.metadata if quality_result.status == "success" else {})
+            )
+            
+            # Use imputed data if available, otherwise use original
+            current_data = missing_value_result.data if missing_value_result.status == "success" and missing_value_result.data is not None else ingestion_result.data
+            
+            # Stage 5: Data Cleaning
             cleaning_result = self._execute_stage_with_recovery(
                 PipelineStage.CLEANING,
-                lambda: self._execute_cleaning(ingestion_result.data, profiling_result.metadata)
+                lambda: self._execute_cleaning(current_data, profiling_result.metadata)
             )
             
             if cleaning_result.status != "success":
                 return self._handle_pipeline_failure(cleaning_result)
             
-            # Stage 4: Intelligent Feature Engineering
+            # Stage 6: Intelligent Feature Engineering
             fe_result = self._execute_stage_with_recovery(
                 PipelineStage.FEATURE_ENGINEERING,
                 lambda: self._execute_feature_engineering(
@@ -145,7 +173,7 @@ class RobustPipelineOrchestrator:
             if fe_result.status != "success":
                 return self._handle_pipeline_failure(fe_result)
             
-            # Stage 5: Intelligent Feature Selection
+            # Stage 7: Intelligent Feature Selection
             fs_result = self._execute_stage_with_recovery(
                 PipelineStage.FEATURE_SELECTION,
                 lambda: self._execute_feature_selection(
@@ -158,7 +186,7 @@ class RobustPipelineOrchestrator:
             if fs_result.status != "success":
                 return self._handle_pipeline_failure(fs_result)
             
-            # Stage 6: Intelligent Model Selection
+            # Stage 8: Intelligent Model Selection
             modeling_result = self._execute_stage_with_recovery(
                 PipelineStage.MODEL_SELECTION,
                 lambda: self._execute_model_selection(
@@ -172,13 +200,13 @@ class RobustPipelineOrchestrator:
             if modeling_result.status != "success":
                 return self._handle_pipeline_failure(modeling_result)
             
-            # Stage 7: Validation & Quality Assurance
+            # Stage 9: Validation & Quality Assurance
             validation_result = self._execute_stage_with_recovery(
                 PipelineStage.VALIDATION,
                 lambda: self._execute_validation(modeling_result)
             )
             
-            # Stage 8: Export Results
+            # Stage 10: Export Results
             export_result = self._execute_stage_with_recovery(
                 PipelineStage.EXPORT,
                 lambda: self._execute_export(modeling_result, validation_result)
@@ -721,3 +749,85 @@ class RobustPipelineOrchestrator:
             },
             'pipeline_metadata': self._compile_pipeline_metadata()
         }
+    
+    def _execute_quality_assessment(self, df: pd.DataFrame, profiling_metadata: Dict) -> StageResult:
+        """Execute comprehensive data quality assessment stage"""
+        try:
+            # Extract context from profiling
+            context = {
+                'domain': profiling_metadata.get('intelligence_profile', {}).get('domain_analysis', {}).get('likely_domain', 'general'),
+                'data_type': 'structured'
+            }
+            
+            # Perform quality assessment
+            quality_report = self.quality_assessor.assess_quality(df, context=context)
+            
+            return StageResult(
+                stage=PipelineStage.QUALITY_ASSESSMENT,
+                status="success",
+                data=df,  # Original data unchanged
+                metadata={
+                    'quality_report': quality_report,
+                    'overall_score': quality_report.overall_score,
+                    'critical_issues': quality_report.critical_issues,
+                    'recommendations': quality_report.recommendations
+                },
+                artifacts={
+                    'quality_scores': {dim.name: score.score for dim, score in quality_report.dimension_scores.items()},
+                    'anomaly_count': quality_report.anomaly_count,
+                    'drift_detected': quality_report.drift_detected
+                }
+            )
+        except Exception as e:
+            self.logger.error(f"Quality assessment failed: {e}")
+            return StageResult(
+                stage=PipelineStage.QUALITY_ASSESSMENT,
+                status="failed",
+                data=df,
+                error_message=str(e)
+            )
+    
+    def _execute_missing_value_intelligence(self, df: pd.DataFrame, quality_metadata: Dict) -> StageResult:
+        """Execute intelligent missing value analysis and imputation stage"""
+        try:
+            # Analyze missing value patterns
+            missing_analyses = self.missing_value_intelligence.analyze_missing_patterns(df)
+            
+            # Perform intelligent imputation if missing values found
+            imputed_df = df
+            imputation_results = {}
+            
+            if missing_analyses:
+                self.logger.info(f"Found missing values in {len(missing_analyses)} columns")
+                imputed_df, imputation_results = self.missing_value_intelligence.intelligent_imputation(df)
+                self.logger.info(f"Successfully imputed missing values")
+            
+            # Generate comprehensive report
+            missing_report = self.missing_value_intelligence.get_missing_value_report()
+            imputation_summary = self.missing_value_intelligence.get_imputation_summary()
+            
+            return StageResult(
+                stage=PipelineStage.MISSING_VALUE_INTELLIGENCE,
+                status="success",
+                data=imputed_df,
+                metadata={
+                    'missing_analysis': missing_report,
+                    'imputation_summary': imputation_summary,
+                    'values_imputed': sum(r.values_imputed for r in imputation_results.values()) if imputation_results else 0,
+                    'columns_processed': len(missing_analyses),
+                    'imputation_quality': np.mean([r.imputation_quality for r in imputation_results.values()]) if imputation_results else 1.0
+                },
+                artifacts={
+                    'missing_patterns': {col: analysis.pattern_type.value for col, analysis in missing_analyses.items()},
+                    'recommended_strategies': {col: analysis.recommended_strategy.value for col, analysis in missing_analyses.items()},
+                    'imputation_applied': bool(imputation_results)
+                }
+            )
+        except Exception as e:
+            self.logger.error(f"Missing value intelligence failed: {e}")
+            return StageResult(
+                stage=PipelineStage.MISSING_VALUE_INTELLIGENCE,
+                status="failed",
+                data=df,  # Return original data if imputation fails
+                error_message=str(e)
+            )
