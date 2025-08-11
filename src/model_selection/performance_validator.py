@@ -1,20 +1,35 @@
-import logging
+"""Production Model Validation and Performance Assessment System"""
+
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from enum import Enum
 import time
-from abc import ABC, abstractmethod
-
-from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold, cross_validate
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, 
-    mean_squared_error, mean_absolute_error, r2_score, confusion_matrix,
-    classification_report, roc_curve, precision_recall_curve
-)
-from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
+
+from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold, cross_validate
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
+    mean_squared_error, mean_absolute_error, r2_score, confusion_matrix,
+    classification_report, mean_absolute_percentage_error
+)
+from sklearn.base import clone
+from scipy import stats
+
+class ValidationStrategy(Enum):
+    CROSS_VALIDATION = "cross_validation"
+    HOLDOUT = "holdout"
+    TIME_SERIES = "time_series"
+    BOOTSTRAP = "bootstrap"
+    ADAPTIVE = "adaptive"
+
+class TaskType(Enum):
+    CLASSIFICATION = "classification"
+    REGRESSION = "regression"
+    CLUSTERING = "clustering"
 
 @dataclass
 class ValidationMetrics:
@@ -24,511 +39,497 @@ class ValidationMetrics:
     all_metrics: Dict[str, float]
     all_std: Dict[str, float]
     cv_scores: Dict[str, List[float]]
-    confusion_matrix: Optional[np.ndarray] = None
-    classification_report: Optional[Dict] = None
-    feature_importance: Optional[Dict[str, float]] = None
-    
-@dataclass 
+    confidence_intervals: Dict[str, Tuple[float, float]]
+
+@dataclass
 class ModelPerformance:
     algorithm_name: str
     validation_metrics: ValidationMetrics
     training_time: float
     prediction_time: float
-    model_size_mb: float
+    memory_usage_mb: float
     hyperparameters: Dict[str, Any]
-    validation_method: str
-    dataset_info: Dict[str, Any] = field(default_factory=dict)
-    
+    validation_strategy: str
+    stability_score: float
+    robustness_score: float
+
 @dataclass
-class ComparisonResult:
-    best_algorithm: str
-    performance_ranking: List[Tuple[str, float]]
-    statistical_tests: Dict[str, Dict[str, Any]]
-    significance_level: float
-    recommendation: str
-    confidence_interval: Dict[str, Tuple[float, float]]
+class ValidationConfig:
+    strategy: ValidationStrategy = ValidationStrategy.ADAPTIVE
+    cv_folds: int = 5
+    test_size: float = 0.2
+    random_state: int = 42
+    scoring_metrics: Optional[List[str]] = None
+    confidence_level: float = 0.95
+    stability_threshold: float = 0.1
+    min_samples_per_fold: int = 30
 
-class BaseValidator(ABC):
-    """Base class for performance validation strategies"""
+class ProductionModelValidator:
     
-    @abstractmethod
-    def validate_model(self, model, X: pd.DataFrame, y: pd.Series, **kwargs) -> ValidationMetrics:
-        pass
-
-class CrossValidationValidator(BaseValidator):
-    """Cross-validation based performance validation"""
-    
-    def __init__(self, cv_folds: int = 5, random_state: int = 42):
-        self.cv_folds = cv_folds
-        self.random_state = random_state
-    
+    def __init__(self, config: Optional[ValidationConfig] = None):
+        self.config = config or ValidationConfig()
+        
     def validate_model(self, model, X: pd.DataFrame, y: pd.Series, 
-                      task_type: str = 'auto', **kwargs) -> ValidationMetrics:
-        """Validate model using cross-validation with multiple metrics"""
+                      task_type: TaskType, algorithm_name: str = "") -> ModelPerformance:
         
-        # Determine task type
-        if task_type == 'auto':
-            task_type = 'classification' if len(y.unique()) <= 20 else 'regression'
+        validation_strategy = self._select_validation_strategy(X, y, task_type)
+        scoring_metrics = self._get_scoring_metrics(task_type)
         
-        # Create CV strategy
-        if task_type == 'classification':
-            cv = StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
-        else:
-            cv = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
-        
-        # Define scoring metrics based on task type
-        if task_type == 'classification':
-            if len(y.unique()) == 2:  # Binary classification
-                scoring_metrics = {
-                    'accuracy': 'accuracy',
-                    'precision': 'precision',
-                    'recall': 'recall', 
-                    'f1': 'f1',
-                    'roc_auc': 'roc_auc'
-                }
-                primary_metric = 'f1'
-            else:  # Multiclass classification
-                scoring_metrics = {
-                    'accuracy': 'accuracy',
-                    'precision_weighted': 'precision_weighted',
-                    'recall_weighted': 'recall_weighted',
-                    'f1_weighted': 'f1_weighted'
-                }
-                primary_metric = 'f1_weighted'
-        else:  # Regression
-            scoring_metrics = {
-                'r2': 'r2',
-                'neg_mean_squared_error': 'neg_mean_squared_error',
-                'neg_mean_absolute_error': 'neg_mean_absolute_error',
-                'neg_root_mean_squared_error': 'neg_root_mean_squared_error'
-            }
-            primary_metric = 'r2'
-        
-        # Perform cross-validation
-        cv_results = cross_validate(
-            model, X, y, cv=cv, scoring=scoring_metrics, 
-            return_train_score=False, n_jobs=-1
-        )
-        
-        # Extract results
-        all_metrics = {}
-        all_std = {}
-        cv_scores = {}
-        
-        for metric_name, sklearn_name in scoring_metrics.items():
-            test_scores = cv_results[f'test_{sklearn_name}']
-            cv_scores[metric_name] = test_scores.tolist()
-            all_metrics[metric_name] = np.mean(test_scores)
-            all_std[metric_name] = np.std(test_scores)
-        
-        # Handle negative metrics (convert to positive)
-        for metric in ['neg_mean_squared_error', 'neg_mean_absolute_error', 'neg_root_mean_squared_error']:
-            if metric in all_metrics:
-                all_metrics[metric] = -all_metrics[metric]  # Convert to positive
-        
-        # Get additional metrics for classification
-        confusion_mat = None
-        class_report = None
-        
-        if task_type == 'classification':
-            # Fit model on full data for additional metrics
-            model.fit(X, y)
-            y_pred = model.predict(X)
-            
-            confusion_mat = confusion_matrix(y, y_pred)
-            class_report = classification_report(y, y_pred, output_dict=True)
-        
-        # Get feature importance if available
-        feature_importance = None
-        if hasattr(model, 'feature_importances_'):
-            feature_importance = dict(zip(X.columns, model.feature_importances_))
-        elif hasattr(model, 'coef_'):
-            if model.coef_.ndim == 1:
-                feature_importance = dict(zip(X.columns, np.abs(model.coef_)))
-            else:  # Multiclass case
-                feature_importance = dict(zip(X.columns, np.abs(model.coef_).mean(axis=0)))
-        
-        return ValidationMetrics(
-            primary_metric=primary_metric,
-            primary_score=all_metrics[primary_metric],
-            primary_std=all_std[primary_metric],
-            all_metrics=all_metrics,
-            all_std=all_std,
-            cv_scores=cv_scores,
-            confusion_matrix=confusion_mat,
-            classification_report=class_report,
-            feature_importance=feature_importance
-        )
-
-class HoldoutValidator(BaseValidator):
-    """Holdout validation for large datasets"""
-    
-    def __init__(self, test_size: float = 0.2, random_state: int = 42):
-        self.test_size = test_size
-        self.random_state = random_state
-    
-    def validate_model(self, model, X: pd.DataFrame, y: pd.Series, 
-                      task_type: str = 'auto', **kwargs) -> ValidationMetrics:
-        """Validate model using holdout method"""
-        
-        from sklearn.model_selection import train_test_split
-        
-        # Determine task type
-        if task_type == 'auto':
-            task_type = 'classification' if len(y.unique()) <= 20 else 'regression'
-        
-        # Split data
-        if task_type == 'classification':
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=self.test_size, random_state=self.random_state, 
-                stratify=y
-            )
-        else:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=self.test_size, random_state=self.random_state
-            )
-        
-        # Train and predict
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-        
-        # Calculate metrics
-        all_metrics = {}
-        
-        if task_type == 'classification':
-            all_metrics['accuracy'] = accuracy_score(y_test, y_pred)
-            
-            if len(y.unique()) == 2:  # Binary classification
-                all_metrics['precision'] = precision_score(y_test, y_pred)
-                all_metrics['recall'] = recall_score(y_test, y_pred)
-                all_metrics['f1'] = f1_score(y_test, y_pred)
-                
-                if hasattr(model, 'predict_proba'):
-                    y_proba = model.predict_proba(X_test)[:, 1]
-                    all_metrics['roc_auc'] = roc_auc_score(y_test, y_proba)
-                
-                primary_metric = 'f1'
-            else:  # Multiclass
-                all_metrics['precision_weighted'] = precision_score(y_test, y_pred, average='weighted')
-                all_metrics['recall_weighted'] = recall_score(y_test, y_pred, average='weighted')
-                all_metrics['f1_weighted'] = f1_score(y_test, y_pred, average='weighted')
-                primary_metric = 'f1_weighted'
-                
-            confusion_mat = confusion_matrix(y_test, y_pred)
-            class_report = classification_report(y_test, y_pred, output_dict=True)
-            
-        else:  # Regression
-            all_metrics['r2'] = r2_score(y_test, y_pred)
-            all_metrics['neg_mean_squared_error'] = mean_squared_error(y_test, y_pred)
-            all_metrics['neg_mean_absolute_error'] = mean_absolute_error(y_test, y_pred)
-            all_metrics['neg_root_mean_squared_error'] = np.sqrt(mean_squared_error(y_test, y_pred))
-            primary_metric = 'r2'
-            confusion_mat = None
-            class_report = None
-        
-        # Since this is single split, std is 0
-        all_std = {metric: 0.0 for metric in all_metrics}
-        cv_scores = {metric: [score] for metric, score in all_metrics.items()}
-        
-        # Feature importance
-        feature_importance = None
-        if hasattr(model, 'feature_importances_'):
-            feature_importance = dict(zip(X.columns, model.feature_importances_))
-        elif hasattr(model, 'coef_'):
-            if model.coef_.ndim == 1:
-                feature_importance = dict(zip(X.columns, np.abs(model.coef_)))
-            else:
-                feature_importance = dict(zip(X.columns, np.abs(model.coef_).mean(axis=0)))
-        
-        return ValidationMetrics(
-            primary_metric=primary_metric,
-            primary_score=all_metrics[primary_metric],
-            primary_std=all_std[primary_metric],
-            all_metrics=all_metrics,
-            all_std=all_std,
-            cv_scores=cv_scores,
-            confusion_matrix=confusion_mat,
-            classification_report=class_report,
-            feature_importance=feature_importance
-        )
-
-class PerformanceValidator:
-    """Comprehensive performance validation and comparison system"""
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or {}
-        self.validation_history: List[ModelPerformance] = []
-        
-    def validate_single_model(self, model, algorithm_name: str, X: pd.DataFrame, y: pd.Series,
-                            hyperparameters: Dict[str, Any], validation_method: str = 'cv',
-                            **kwargs) -> ModelPerformance:
-        """Validate a single model comprehensively"""
-        
-        # Choose validation strategy
-        if validation_method == 'cv':
-            cv_folds = kwargs.get('cv_folds', 5)
-            validator = CrossValidationValidator(cv_folds=cv_folds)
-        elif validation_method == 'holdout':
-            test_size = kwargs.get('test_size', 0.2)
-            validator = HoldoutValidator(test_size=test_size)
-        else:
-            raise ValueError(f"Unknown validation method: {validation_method}")
-        
-        # Measure training time
         start_time = time.time()
-        validation_metrics = validator.validate_model(model, X, y, **kwargs)
+        validation_metrics = self._execute_validation(
+            model, X, y, validation_strategy, scoring_metrics, task_type
+        )
         training_time = time.time() - start_time
         
-        # Measure prediction time
-        start_pred_time = time.time()
-        _ = model.predict(X.iloc[:min(100, len(X))])  # Sample for speed
-        prediction_time_per_sample = (time.time() - start_pred_time) / min(100, len(X))
+        prediction_time = self._measure_prediction_time(model, X.head(100))
+        memory_usage = self._estimate_memory_usage(model)
+        stability_score = self._calculate_stability_score(validation_metrics)
+        robustness_score = self._assess_robustness(model, X, y, task_type)
         
-        # Estimate model size
-        model_size_mb = self._estimate_model_size(model)
-        
-        # Create dataset info
-        dataset_info = {
-            'n_samples': len(X),
-            'n_features': len(X.columns),
-            'task_type': 'classification' if len(y.unique()) <= 20 else 'regression',
-            'target_distribution': y.value_counts().to_dict() if len(y.unique()) <= 20 else {'mean': float(y.mean()), 'std': float(y.std())}
-        }
-        
-        performance = ModelPerformance(
+        return ModelPerformance(
             algorithm_name=algorithm_name,
             validation_metrics=validation_metrics,
             training_time=training_time,
-            prediction_time=prediction_time_per_sample,
-            model_size_mb=model_size_mb,
-            hyperparameters=hyperparameters,
-            validation_method=validation_method,
-            dataset_info=dataset_info
+            prediction_time=prediction_time,
+            memory_usage_mb=memory_usage,
+            hyperparameters=model.get_params(),
+            validation_strategy=validation_strategy.value,
+            stability_score=stability_score,
+            robustness_score=robustness_score
         )
-        
-        # Store in history
-        self.validation_history.append(performance)
-        
-        return performance
     
-    def validate_multiple_models(self, models_info: List[Tuple], X: pd.DataFrame, y: pd.Series,
-                                validation_config: Optional[Dict[str, Any]] = None) -> List[ModelPerformance]:
-        """Validate multiple models and return performance comparison"""
+    def _select_validation_strategy(self, X: pd.DataFrame, y: pd.Series, 
+                                   task_type: TaskType) -> ValidationStrategy:
         
-        validation_config = validation_config or {}
-        results = []
+        if self.config.strategy != ValidationStrategy.ADAPTIVE:
+            return self.config.strategy
         
-        for model, algorithm_name, hyperparameters in models_info:
-            logging.info(f"Validating {algorithm_name}...")
-            
+        n_samples = len(X)
+        
+        if n_samples < 100:
+            return ValidationStrategy.BOOTSTRAP
+        elif n_samples < 500:
+            return ValidationStrategy.HOLDOUT
+        elif self._is_time_series_data(X):
+            return ValidationStrategy.TIME_SERIES
+        else:
+            return ValidationStrategy.CROSS_VALIDATION
+    
+    def _is_time_series_data(self, X: pd.DataFrame) -> bool:
+        date_columns = []
+        for col in X.columns:
+            if 'date' in col.lower() or 'time' in col.lower():
+                date_columns.append(col)
+        
+        if date_columns:
             try:
-                performance = self.validate_single_model(
-                    model, algorithm_name, X, y, hyperparameters, **validation_config
-                )
-                results.append(performance)
-                
-            except Exception as e:
-                logging.error(f"Validation failed for {algorithm_name}: {e}")
+                for col in date_columns:
+                    pd.to_datetime(X[col].head(10))
+                    return True
+            except:
                 continue
         
-        return results
+        return False
     
-    def compare_models(self, performances: List[ModelPerformance], 
-                      significance_level: float = 0.05) -> ComparisonResult:
-        """Compare multiple models with statistical significance testing"""
+    def _get_scoring_metrics(self, task_type: TaskType) -> List[str]:
+        if self.config.scoring_metrics:
+            return self.config.scoring_metrics
         
-        if len(performances) < 2:
-            raise ValueError("Need at least 2 models for comparison")
+        if task_type == TaskType.CLASSIFICATION:
+            return ['accuracy', 'f1', 'precision', 'recall']
+        elif task_type == TaskType.REGRESSION:
+            return ['r2', 'neg_mean_squared_error', 'neg_mean_absolute_error']
+        else:
+            return ['silhouette']
+    
+    def _execute_validation(self, model, X: pd.DataFrame, y: pd.Series,
+                           strategy: ValidationStrategy, metrics: List[str],
+                           task_type: TaskType) -> ValidationMetrics:
         
-        # Extract primary scores
-        primary_scores = []
-        model_names = []
-        cv_scores_dict = {}
+        if strategy == ValidationStrategy.CROSS_VALIDATION:
+            return self._cross_validation(model, X, y, metrics, task_type)
+        elif strategy == ValidationStrategy.HOLDOUT:
+            return self._holdout_validation(model, X, y, metrics, task_type)
+        elif strategy == ValidationStrategy.TIME_SERIES:
+            return self._time_series_validation(model, X, y, metrics, task_type)
+        elif strategy == ValidationStrategy.BOOTSTRAP:
+            return self._bootstrap_validation(model, X, y, metrics, task_type)
+        else:
+            return self._cross_validation(model, X, y, metrics, task_type)
+    
+    def _cross_validation(self, model, X: pd.DataFrame, y: pd.Series,
+                         metrics: List[str], task_type: TaskType) -> ValidationMetrics:
         
-        for perf in performances:
-            model_names.append(perf.algorithm_name)
-            primary_scores.append(perf.validation_metrics.primary_score)
-            cv_scores_dict[perf.algorithm_name] = perf.validation_metrics.cv_scores[perf.validation_metrics.primary_metric]
+        if task_type == TaskType.CLASSIFICATION and len(y.unique()) > 1:
+            cv = StratifiedKFold(n_splits=self.config.cv_folds, shuffle=True, 
+                               random_state=self.config.random_state)
+        else:
+            cv = KFold(n_splits=self.config.cv_folds, shuffle=True, 
+                      random_state=self.config.random_state)
         
-        # Rank models by performance
-        performance_ranking = list(zip(model_names, primary_scores))
-        performance_ranking.sort(key=lambda x: x[1], reverse=True)
+        cv_results = cross_validate(model, X, y, cv=cv, scoring=metrics, 
+                                  return_train_score=False, n_jobs=1)
         
-        best_algorithm = performance_ranking[0][0]
-        
-        # Statistical significance testing
-        statistical_tests = self._perform_statistical_tests(cv_scores_dict, significance_level)
-        
-        # Generate recommendation
-        recommendation = self._generate_recommendation(performances, statistical_tests, significance_level)
-        
-        # Calculate confidence intervals
+        all_metrics = {}
+        all_std = {}
+        cv_scores = {}
         confidence_intervals = {}
-        for perf in performances:
-            scores = perf.validation_metrics.cv_scores[perf.validation_metrics.primary_metric]
-            mean_score = np.mean(scores)
-            sem = stats.sem(scores)
-            ci = stats.t.interval(1-significance_level, len(scores)-1, loc=mean_score, scale=sem)
-            confidence_intervals[perf.algorithm_name] = ci
         
-        return ComparisonResult(
-            best_algorithm=best_algorithm,
-            performance_ranking=performance_ranking,
-            statistical_tests=statistical_tests,
-            significance_level=significance_level,
-            recommendation=recommendation,
-            confidence_interval=confidence_intervals
+        primary_metric = metrics[0]
+        primary_key = f'test_{primary_metric}'
+        
+        for metric in metrics:
+            key = f'test_{metric}'
+            if key in cv_results:
+                scores = cv_results[key]
+                all_metrics[metric] = scores.mean()
+                all_std[metric] = scores.std()
+                cv_scores[metric] = scores.tolist()
+                
+                ci_lower, ci_upper = self._calculate_confidence_interval(
+                    scores, self.config.confidence_level
+                )
+                confidence_intervals[metric] = (ci_lower, ci_upper)
+        
+        return ValidationMetrics(
+            primary_metric=primary_metric,
+            primary_score=all_metrics.get(primary_metric, 0.0),
+            primary_std=all_std.get(primary_metric, 0.0),
+            all_metrics=all_metrics,
+            all_std=all_std,
+            cv_scores=cv_scores,
+            confidence_intervals=confidence_intervals
         )
     
-    def _perform_statistical_tests(self, cv_scores_dict: Dict[str, List[float]], 
-                                 significance_level: float) -> Dict[str, Dict[str, Any]]:
-        """Perform statistical significance tests between models"""
+    def _holdout_validation(self, model, X: pd.DataFrame, y: pd.Series,
+                           metrics: List[str], task_type: TaskType) -> ValidationMetrics:
         
-        statistical_tests = {}
-        model_names = list(cv_scores_dict.keys())
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=self.config.test_size, 
+            random_state=self.config.random_state,
+            stratify=y if task_type == TaskType.CLASSIFICATION and len(y.unique()) > 1 else None
+        )
         
-        # Pairwise t-tests
-        for i, model1 in enumerate(model_names):
-            for j, model2 in enumerate(model_names[i+1:], i+1):
-                scores1 = cv_scores_dict[model1]
-                scores2 = cv_scores_dict[model2]
-                
-                # Paired t-test (since same CV folds)
-                t_stat, p_value = stats.ttest_rel(scores1, scores2)
-                
-                test_key = f"{model1}_vs_{model2}"
-                statistical_tests[test_key] = {
-                    'test_type': 'paired_t_test',
-                    't_statistic': float(t_stat),
-                    'p_value': float(p_value),
-                    'significant': p_value < significance_level,
-                    'effect_size': float(np.mean(scores1) - np.mean(scores2)),
-                    'winner': model1 if np.mean(scores1) > np.mean(scores2) else model2
-                }
+        model_clone = clone(model)
+        model_clone.fit(X_train, y_train)
+        y_pred = model_clone.predict(X_test)
         
-        # ANOVA test if more than 2 models
-        if len(model_names) > 2:
-            scores_lists = [cv_scores_dict[name] for name in model_names]
-            f_stat, p_value = stats.f_oneway(*scores_lists)
+        all_metrics = {}
+        all_std = {}
+        cv_scores = {}
+        confidence_intervals = {}
+        
+        for metric in metrics:
+            score = self._calculate_single_metric(y_test, y_pred, metric, task_type)
+            all_metrics[metric] = score
+            all_std[metric] = 0.0
+            cv_scores[metric] = [score]
+            confidence_intervals[metric] = (score, score)
+        
+        return ValidationMetrics(
+            primary_metric=metrics[0],
+            primary_score=all_metrics.get(metrics[0], 0.0),
+            primary_std=0.0,
+            all_metrics=all_metrics,
+            all_std=all_std,
+            cv_scores=cv_scores,
+            confidence_intervals=confidence_intervals
+        )
+    
+    def _time_series_validation(self, model, X: pd.DataFrame, y: pd.Series,
+                               metrics: List[str], task_type: TaskType) -> ValidationMetrics:
+        
+        cv = TimeSeriesSplit(n_splits=min(5, len(X) // 100))
+        cv_results = cross_validate(model, X, y, cv=cv, scoring=metrics, 
+                                  return_train_score=False, n_jobs=1)
+        
+        return self._process_cv_results(cv_results, metrics)
+    
+    def _bootstrap_validation(self, model, X: pd.DataFrame, y: pd.Series,
+                             metrics: List[str], task_type: TaskType) -> ValidationMetrics:
+        
+        n_bootstrap = min(self.config.cv_folds, 20)
+        bootstrap_scores = {metric: [] for metric in metrics}
+        
+        for i in range(n_bootstrap):
+            indices = np.random.choice(len(X), size=len(X), replace=True)
+            X_boot = X.iloc[indices]
+            y_boot = y.iloc[indices]
             
-            statistical_tests['anova'] = {
-                'test_type': 'one_way_anova',
-                'f_statistic': float(f_stat),
-                'p_value': float(p_value),
-                'significant': p_value < significance_level
-            }
+            oob_indices = list(set(range(len(X))) - set(indices))
+            if len(oob_indices) < 10:
+                continue
+                
+            X_oob = X.iloc[oob_indices]
+            y_oob = y.iloc[oob_indices]
+            
+            model_clone = clone(model)
+            model_clone.fit(X_boot, y_boot)
+            y_pred = model_clone.predict(X_oob)
+            
+            for metric in metrics:
+                score = self._calculate_single_metric(y_oob, y_pred, metric, task_type)
+                bootstrap_scores[metric].append(score)
         
-        return statistical_tests
+        all_metrics = {}
+        all_std = {}
+        cv_scores = {}
+        confidence_intervals = {}
+        
+        for metric in metrics:
+            scores = bootstrap_scores[metric]
+            if scores:
+                all_metrics[metric] = np.mean(scores)
+                all_std[metric] = np.std(scores)
+                cv_scores[metric] = scores
+                ci_lower, ci_upper = self._calculate_confidence_interval(
+                    np.array(scores), self.config.confidence_level
+                )
+                confidence_intervals[metric] = (ci_lower, ci_upper)
+        
+        return ValidationMetrics(
+            primary_metric=metrics[0],
+            primary_score=all_metrics.get(metrics[0], 0.0),
+            primary_std=all_std.get(metrics[0], 0.0),
+            all_metrics=all_metrics,
+            all_std=all_std,
+            cv_scores=cv_scores,
+            confidence_intervals=confidence_intervals
+        )
+    
+    def _process_cv_results(self, cv_results: Dict, metrics: List[str]) -> ValidationMetrics:
+        all_metrics = {}
+        all_std = {}
+        cv_scores = {}
+        confidence_intervals = {}
+        
+        for metric in metrics:
+            key = f'test_{metric}'
+            if key in cv_results:
+                scores = cv_results[key]
+                all_metrics[metric] = scores.mean()
+                all_std[metric] = scores.std()
+                cv_scores[metric] = scores.tolist()
+                
+                ci_lower, ci_upper = self._calculate_confidence_interval(
+                    scores, self.config.confidence_level
+                )
+                confidence_intervals[metric] = (ci_lower, ci_upper)
+        
+        return ValidationMetrics(
+            primary_metric=metrics[0],
+            primary_score=all_metrics.get(metrics[0], 0.0),
+            primary_std=all_std.get(metrics[0], 0.0),
+            all_metrics=all_metrics,
+            all_std=all_std,
+            cv_scores=cv_scores,
+            confidence_intervals=confidence_intervals
+        )
+    
+    def _calculate_single_metric(self, y_true, y_pred, metric: str, task_type: TaskType) -> float:
+        try:
+            if task_type == TaskType.CLASSIFICATION:
+                if metric == 'accuracy':
+                    return accuracy_score(y_true, y_pred)
+                elif metric == 'f1':
+                    return f1_score(y_true, y_pred, average='weighted')
+                elif metric == 'precision':
+                    return precision_score(y_true, y_pred, average='weighted')
+                elif metric == 'recall':
+                    return recall_score(y_true, y_pred, average='weighted')
+            
+            elif task_type == TaskType.REGRESSION:
+                if metric == 'r2':
+                    return r2_score(y_true, y_pred)
+                elif metric in ['neg_mean_squared_error', 'mse']:
+                    return -mean_squared_error(y_true, y_pred)
+                elif metric in ['neg_mean_absolute_error', 'mae']:
+                    return -mean_absolute_error(y_true, y_pred)
+                elif metric == 'mape':
+                    return -mean_absolute_percentage_error(y_true, y_pred)
+            
+            return 0.0
+        except Exception:
+            return 0.0
+    
+    def _calculate_confidence_interval(self, scores: np.ndarray, confidence_level: float) -> Tuple[float, float]:
+        alpha = 1 - confidence_level
+        return stats.t.interval(confidence_level, len(scores) - 1,
+                              loc=scores.mean(), scale=stats.sem(scores))
+    
+    def _measure_prediction_time(self, model, sample_data: pd.DataFrame) -> float:
+        if len(sample_data) == 0:
+            return 0.0
+        
+        try:
+            start_time = time.time()
+            model.predict(sample_data)
+            end_time = time.time()
+            
+            time_per_sample = (end_time - start_time) / len(sample_data)
+            return time_per_sample * 1000
+        except Exception:
+            return 0.0
+    
+    def _estimate_memory_usage(self, model) -> float:
+        try:
+            import sys
+            return sys.getsizeof(model) / (1024 * 1024)
+        except Exception:
+            return 0.0
+    
+    def _calculate_stability_score(self, metrics: ValidationMetrics) -> float:
+        cv_scores = metrics.cv_scores
+        if not cv_scores:
+            return 0.0
+        
+        stability_scores = []
+        for metric, scores in cv_scores.items():
+            if len(scores) > 1:
+                cv = np.std(scores) / np.mean(scores) if np.mean(scores) != 0 else 1
+                stability = max(0, 1 - cv)
+                stability_scores.append(stability)
+        
+        return np.mean(stability_scores) if stability_scores else 0.0
+    
+    def _assess_robustness(self, model, X: pd.DataFrame, y: pd.Series, 
+                          task_type: TaskType) -> float:
+        try:
+            if len(X) < 100:
+                return 0.5
+            
+            original_score = self._quick_score(model, X, y, task_type)
+            
+            X_noisy = X.copy()
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            
+            if len(numeric_cols) > 0:
+                for col in numeric_cols:
+                    noise = np.random.normal(0, X_noisy[col].std() * 0.1, len(X_noisy))
+                    X_noisy[col] = X_noisy[col] + noise
+            
+            noisy_score = self._quick_score(model, X_noisy, y, task_type)
+            
+            robustness = 1 - abs(original_score - noisy_score) / max(abs(original_score), 0.01)
+            return max(0, min(1, robustness))
+            
+        except Exception:
+            return 0.5
+    
+    def _quick_score(self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType) -> float:
+        try:
+            model_clone = clone(model)
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.3, random_state=42
+            )
+            
+            model_clone.fit(X_train, y_train)
+            y_pred = model_clone.predict(X_test)
+            
+            if task_type == TaskType.CLASSIFICATION:
+                return accuracy_score(y_test, y_pred)
+            else:
+                return r2_score(y_test, y_pred)
+        except Exception:
+            return 0.0
+    
+    def compare_models(self, performances: List[ModelPerformance]) -> Dict[str, Any]:
+        if len(performances) < 2:
+            return {'error': 'Need at least 2 models to compare'}
+        
+        performance_ranking = []
+        for perf in performances:
+            score = perf.validation_metrics.primary_score
+            performance_ranking.append((perf.algorithm_name, score))
+        
+        performance_ranking.sort(key=lambda x: x[1], reverse=True)
+        best_algorithm = performance_ranking[0][0]
+        
+        statistical_tests = self._perform_statistical_tests(performances)
+        recommendation = self._generate_recommendation(performances, performance_ranking)
+        
+        return {
+            'best_algorithm': best_algorithm,
+            'performance_ranking': performance_ranking,
+            'statistical_tests': statistical_tests,
+            'recommendation': recommendation,
+            'detailed_comparison': self._detailed_comparison(performances)
+        }
+    
+    def _perform_statistical_tests(self, performances: List[ModelPerformance]) -> Dict[str, Any]:
+        if len(performances) < 2:
+            return {}
+        
+        tests = {}
+        primary_metric = performances[0].validation_metrics.primary_metric
+        
+        for i, perf1 in enumerate(performances[:-1]):
+            for j, perf2 in enumerate(performances[i+1:], i+1):
+                scores1 = perf1.validation_metrics.cv_scores.get(primary_metric, [])
+                scores2 = perf2.validation_metrics.cv_scores.get(primary_metric, [])
+                
+                if len(scores1) > 1 and len(scores2) > 1:
+                    try:
+                        t_stat, p_value = stats.ttest_ind(scores1, scores2)
+                        test_key = f"{perf1.algorithm_name}_vs_{perf2.algorithm_name}"
+                        tests[test_key] = {
+                            'p_value': p_value,
+                            'significant': p_value < 0.05,
+                            'effect_size': abs(np.mean(scores1) - np.mean(scores2))
+                        }
+                    except Exception:
+                        continue
+        
+        return tests
     
     def _generate_recommendation(self, performances: List[ModelPerformance], 
-                               statistical_tests: Dict[str, Dict[str, Any]],
-                               significance_level: float) -> str:
-        """Generate human-readable recommendation"""
+                               ranking: List[Tuple[str, float]]) -> str:
         
-        if len(performances) == 1:
-            return f"Single model evaluated: {performances[0].algorithm_name}"
+        if not performances:
+            return "No models to evaluate"
         
-        # Find best performing model
-        best_perf = max(performances, key=lambda p: p.validation_metrics.primary_score)
-        best_name = best_perf.algorithm_name
-        best_score = best_perf.validation_metrics.primary_score
+        best_perf = next(p for p in performances if p.algorithm_name == ranking[0][0])
         
-        # Check if best model is significantly better than others
-        significant_wins = 0
-        total_comparisons = 0
-        
-        for test_key, test_result in statistical_tests.items():
-            if test_key.startswith(best_name) or test_key.endswith(best_name):
-                if test_result.get('winner') == best_name and test_result.get('significant', False):
-                    significant_wins += 1
-                total_comparisons += 1
-        
-        if significant_wins == total_comparisons and total_comparisons > 0:
-            recommendation = (f"Strong recommendation: {best_name} (score: {best_score:.4f}) "
-                            f"significantly outperforms all other models.")
-        elif significant_wins > total_comparisons / 2:
-            recommendation = (f"Moderate recommendation: {best_name} (score: {best_score:.4f}) "
-                            f"outperforms most other models significantly.")
+        if best_perf.stability_score > 0.8 and best_perf.robustness_score > 0.7:
+            reliability = "highly reliable"
+        elif best_perf.stability_score > 0.6 and best_perf.robustness_score > 0.5:
+            reliability = "moderately reliable"
         else:
-            # Look at practical considerations
-            fastest_model = min(performances, key=lambda p: p.training_time)
-            smallest_model = min(performances, key=lambda p: p.model_size_mb)
-            
-            if best_perf.training_time < np.median([p.training_time for p in performances]):
-                recommendation = (f"Balanced recommendation: {best_name} (score: {best_score:.4f}) "
-                                f"offers best performance with reasonable training time.")
-            else:
-                recommendation = (f"Performance vs Speed tradeoff: {best_name} (score: {best_score:.4f}) "
-                                f"has highest accuracy, but {fastest_model.algorithm_name} "
-                                f"is fastest to train. Consider use case requirements.")
+            reliability = "less reliable"
+        
+        primary_score = best_perf.validation_metrics.primary_score
+        
+        recommendation = f"Recommend {best_perf.algorithm_name} "
+        recommendation += f"(score: {primary_score:.3f}, {reliability})"
+        
+        if best_perf.training_time > 10:
+            recommendation += ". Note: High training time"
+        
+        if best_perf.memory_usage_mb > 100:
+            recommendation += ". Note: High memory usage"
         
         return recommendation
     
-    def _estimate_model_size(self, model) -> float:
-        """Estimate model size in MB"""
-        try:
-            import pickle
-            import sys
+    def _detailed_comparison(self, performances: List[ModelPerformance]) -> Dict[str, Dict[str, float]]:
+        comparison = {}
+        
+        for perf in performances:
+            comparison[perf.algorithm_name] = {
+                'primary_score': perf.validation_metrics.primary_score,
+                'stability': perf.stability_score,
+                'robustness': perf.robustness_score,
+                'training_time': perf.training_time,
+                'prediction_time': perf.prediction_time,
+                'memory_mb': perf.memory_usage_mb
+            }
             
-            # Serialize model to estimate size
-            pickled_model = pickle.dumps(model)
-            size_bytes = len(pickled_model)
-            size_mb = size_bytes / (1024 * 1024)
-            
-            return size_mb
-            
-        except Exception as e:
-            logging.debug(f"Could not estimate model size: {e}")
-            return 0.0
+            comparison[perf.algorithm_name].update(perf.validation_metrics.all_metrics)
+        
+        return comparison
+
+def validate_model_performance(model, X: pd.DataFrame, y: pd.Series,
+                             task_type: TaskType, algorithm_name: str = "",
+                             config: Optional[ValidationConfig] = None) -> ModelPerformance:
     
-    def get_validation_summary(self) -> Dict[str, Any]:
-        """Get summary of all validation history"""
-        
-        if not self.validation_history:
-            return {'message': 'No validation history available'}
-        
-        summary = {
-            'total_validations': len(self.validation_history),
-            'algorithms_evaluated': list(set(p.algorithm_name for p in self.validation_history)),
-            'best_performance': None,
-            'average_metrics': {},
-            'training_time_stats': {},
-            'model_size_stats': {}
-        }
-        
-        # Find best performance
-        best_perf = max(self.validation_history, key=lambda p: p.validation_metrics.primary_score)
-        summary['best_performance'] = {
-            'algorithm': best_perf.algorithm_name,
-            'score': best_perf.validation_metrics.primary_score,
-            'metric': best_perf.validation_metrics.primary_metric
-        }
-        
-        # Calculate average metrics across all validations
-        all_primary_scores = [p.validation_metrics.primary_score for p in self.validation_history]
-        summary['average_metrics'] = {
-            'mean_primary_score': np.mean(all_primary_scores),
-            'std_primary_score': np.std(all_primary_scores),
-            'min_primary_score': np.min(all_primary_scores),
-            'max_primary_score': np.max(all_primary_scores)
-        }
-        
-        # Training time statistics
-        training_times = [p.training_time for p in self.validation_history]
-        summary['training_time_stats'] = {
-            'mean_seconds': np.mean(training_times),
-            'std_seconds': np.std(training_times),
-            'min_seconds': np.min(training_times),
-            'max_seconds': np.max(training_times)
-        }
-        
-        # Model size statistics
-        model_sizes = [p.model_size_mb for p in self.validation_history]
-        summary['model_size_stats'] = {
-            'mean_mb': np.mean(model_sizes),
-            'std_mb': np.std(model_sizes),
-            'min_mb': np.min(model_sizes),
-            'max_mb': np.max(model_sizes)
-        }
-        
-        return summary
+    validator = ProductionModelValidator(config)
+    return validator.validate_model(model, X, y, task_type, algorithm_name)
