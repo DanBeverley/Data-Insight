@@ -36,9 +36,9 @@ def generate_cluster_report(preprocessed_data:pd.DataFrame, labels:pd.Series) ->
     if labels.nunique() <= 1:
         logging.warning("Cannot calculate clustering metrics with 1 or fewer clusters")
         return {"Number of Clusters": labels.nunique(),
-                "Silhoutte Score": "N/A",
-                "Calinski-Harabazz Score":"N/A",
-                "Davies-Bouldin Score:":"N/A"}
+                "Silhouette Score": "N/A",
+                "Calinski-Harabasz Score":"N/A",
+                "Davies-Bouldin Score":"N/A"}
     report = {"Number of Clusters":int(labels[labels != -1].nunique()),
               "Number of Noise Points":int((labels == -1).sum()),
               "Silhouette Score": silhouette_score(preprocessed_data, labels),
@@ -58,7 +58,7 @@ def plot_elbow_method(inertia_results:Dict[int, float]) -> go.Figure:
     Returns:
         A Plotly Figure object.
     """
-    k_values = list(inertia_results.key())
+    k_values = list(inertia_results.keys())
     inertia_values = list(inertia_results.values())
 
     fig = go.Figure(data=go.Scatter(x=k_values, y=inertia_values, mode="lines+markers"))
@@ -83,8 +83,8 @@ def plot_cluster_results_2d(data_2d:pd.DataFrame, labels:pd.Series, title:str = 
     Returns:
         A Plotly Figure object.
     """
-    if data_2d.shapep[1] != 2:
-        raise ValueError(f"Input data must have exactly 2 columns for 2D plotting, but got {data_2d.shape[[1]]}")
+    if data_2d.shape[1] != 2:
+        raise ValueError(f"Input data must have exactly 2 columns for 2D plotting, but got {data_2d.shape[1]}")
     plot_df = data_2d.copy()
     plot_df.columns = ["Dimension 1", "Dimension 2"]
     plot_df["Cluster"] = labels.astype(str)
@@ -97,5 +97,5 @@ def plot_cluster_results_2d(data_2d:pd.DataFrame, labels:pd.Series, title:str = 
                      template="plotly_white",
                      color_discrete_sequence=px.colors.qualitative.Plotly)
     fig.update_traces(marker=dict(size=8, opacity = 0.8))
-    fig.update_layour(legend_title_text="Cluster")
+    fig.update_layout(legend_title_text="Cluster")
     return fig

@@ -1,112 +1,210 @@
-"""
-Time-Series Feature Engineering Transformers for DataInsight AI
+"""Time-Series Feature Engineering Transformers for DataInsight AI"""
 
-This module provides a collection of custom scikit-learn transformers specifically
-designed for creating features from time-series data. These transformers can be
-seamlessly integrated into scikit-learn pipelines.
-
-Key Components:
-- DateTimeFeatureTransformer: Extracts features from datetime columns (e.g.,
-  day of week, month, year, is_weekend).
-- LagFeatureTransformer: Creates lagged versions of a time-series variable.
-- RollingWindowTransformer: Creates rolling window statistics (e.g., moving
-  average, moving standard deviation).
-"""
 import logging
-from typing import List, Union, Dict, Any
+from typing import List, Union, Dict, Any, Optional
 
+import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-class DateTimeFeatureTransfomer(BaseEstimator, TransformerMixin):
-    """Extract features from a datetime column"""
-    def __init__(self, features:List[str]):
-        if not features:
-            raise ValueError("The 'features' list cannot be empty.")
-        self.features = features
+class DateTimeFeatureTransformer(BaseEstimator, TransformerMixin):
+    """Extract temporal features from datetime columns."""
+    
+    def __init__(self, features: List[str] = None, datetime_column: str = None):
+        self.features = features or ['year', 'month', 'day', 'dayofweek', 'hour', 'is_weekend']
+        self.datetime_column = datetime_column
         self.feature_names_ = []
-    
-    def fit(self, X:pd.DataFrame, y=None):
-        self.feature_names_ = [f"date_{feat}" for feat in self.features]
-        return self
-    
-    def transform(self, X:pd.DataFrame) -> pd.DataFrame:
-        X_copy = X.copy()
-        datetime_series = pd.to_datetime(X_copy.iloc[:,0])
-        for feature in self.features:
-            new_col_name = f"date_{feature}"
-            try:
-                X_copy[new_col_name] = getattr(datetime_series.dt, feature)
-            except AttributeError:
-                # Handle boolean attributes
-                if feature.startswith("is_"):
-                    X_copy[new_col_name] = getattr(datetime_series.dt, feature)
-                else:
-                    raise AttributeError(f"'{feature}' is not a valid pandas dt accessor")
-        # Convert boolean flags to integers
-        for col in X_copy.columns:
-            if X_copy[col].dtype == "bool":
-                X_copy[col] = X_copy[col].astype(int)
-
-        return X_copy.drop(columns = X.columns)
-    
-    def get_feature_names_out(self, input_features=None):
-        return self.feature_names_
-    
-class LagFeatureTransformer(BaseEstimator, TransformerMixin):
-    """
-    Creates lagged features for a time-series.
-    """
-    def __init__(self, lags: List[int]):
-        if not all(isinstance(lag, int) and lag > 0 for lag in lags):
-            raise ValueError("All lag values must be positive integers.")
-        self.lags = lags
-        self.feature_names_ = []
+        self.datetime_col_index_ = None
 
     def fit(self, X: pd.DataFrame, y=None):
-        base_name = X.columns[0]
+        if self.datetime_column:
+            if self.datetime_column not in X.columns:
+                raise ValueError(f"Datetime column '{self.datetime_column}' not found")
+            self.datetime_col_index_ = X.columns.tolist().index(self.datetime_column)
+        else:
+            datetime_cols = X.select_dtypes(include=['datetime64']).columns
+            if len(datetime_cols) == 0:
+                raise ValueError("No datetime columns found")
+            self.datetime_col_index_ = X.columns.tolist().index(datetime_cols[0])
+            
+        self.feature_names_ = [f"dt_{feat}" for feat in self.features]
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        datetime_series = pd.to_datetime(X.iloc[:, self.datetime_col_index_])
+        result = pd.DataFrame(index=X.index)
+        
+        for feature in self.features:
+            col_name = f"dt_{feature}"
+            
+            if feature == 'is_weekend':
+                result[col_name] = (datetime_series.dt.dayofweek >= 5).astype(int)
+            elif feature == 'is_month_start':
+                result[col_name] = datetime_series.dt.is_month_start.astype(int)
+            elif feature == 'is_month_end':
+                result[col_name] = datetime_series.dt.is_month_end.astype(int)
+            elif feature == 'quarter':
+                result[col_name] = datetime_series.dt.quarter
+            elif hasattr(datetime_series.dt, feature):
+                value = getattr(datetime_series.dt, feature)
+                result[col_name] = value.astype(int) if value.dtype == bool else value
+            else:
+                raise ValueError(f"Unknown datetime feature: {feature}")
+                
+        return result
+
+    def get_feature_names_out(self, input_features=None):
+        return self.feature_names_
+
+class LagFeatureTransformer(BaseEstimator, TransformerMixin):
+    """Create lagged features for time-series forecasting."""
+    
+    def __init__(self, lags: List[int], target_column: str = None):
+        self.lags = sorted([abs(lag) for lag in lags if lag != 0])
+        self.target_column = target_column
+        self.feature_names_ = []
+        self.target_col_index_ = None
+
+    def fit(self, X: pd.DataFrame, y=None):
+        if self.target_column:
+            if self.target_column not in X.columns:
+                raise ValueError(f"Target column '{self.target_column}' not found")
+            self.target_col_index_ = X.columns.tolist().index(self.target_column)
+            base_name = self.target_column
+        else:
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) == 0:
+                raise ValueError("No numeric columns found for lag features")
+            self.target_col_index_ = X.columns.tolist().index(numeric_cols[0])
+            base_name = numeric_cols[0]
+            
         self.feature_names_ = [f"{base_name}_lag_{lag}" for lag in self.lags]
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        X_copy = X.copy()
-        base_name = X.columns[0]
+        target_series = X.iloc[:, self.target_col_index_]
+        base_name = X.columns[self.target_col_index_]
+        result = pd.DataFrame(index=X.index)
+        
         for lag in self.lags:
-            X_copy[f"{base_name}_lag_{lag}"] = X_copy[base_name].shift(lag)
-        return X_copy.drop(columns=[base_name]) # Return only the new features
+            result[f"{base_name}_lag_{lag}"] = target_series.shift(lag)
+            
+        return result
 
     def get_feature_names_out(self, input_features=None):
         return self.feature_names_
 
-
 class RollingWindowTransformer(BaseEstimator, TransformerMixin):
-    """
-    Creates rolling window aggregate features for a time-series.
-    """
-    def __init__(self, window_size: int, aggregations: List[str]):
-        if not isinstance(window_size, int) or window_size <= 0:
-            raise ValueError("window_size must be a positive integer.")
-        self.window_size = window_size
-        self.aggregations = aggregations
+    """Create rolling window statistical features."""
+    
+    def __init__(self, window_size: int, aggregations: List[str] = None, target_column: str = None):
+        self.window_size = max(1, int(window_size))
+        self.aggregations = aggregations or ['mean', 'std', 'min', 'max']
+        self.target_column = target_column
         self.feature_names_ = []
+        self.target_col_index_ = None
 
     def fit(self, X: pd.DataFrame, y=None):
-        base_name = X.columns[0]
-        self.feature_names_ = [f"{base_name}_rolling_{agg}_{self.window_size}" for agg in self.aggregations]
+        if self.target_column:
+            if self.target_column not in X.columns:
+                raise ValueError(f"Target column '{self.target_column}' not found")
+            self.target_col_index_ = X.columns.tolist().index(self.target_column)
+            base_name = self.target_column
+        else:
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) == 0:
+                raise ValueError("No numeric columns found for rolling features")
+            self.target_col_index_ = X.columns.tolist().index(numeric_cols[0])
+            base_name = numeric_cols[0]
+            
+        self.feature_names_ = [f"{base_name}_roll_{agg}_{self.window_size}" for agg in self.aggregations]
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        X_copy = X.copy()
-        base_name = X.columns[0]
-        rolling_series = X_copy[base_name].rolling(window=self.window_size)
-
+        target_series = X.iloc[:, self.target_col_index_]
+        base_name = X.columns[self.target_col_index_]
+        result = pd.DataFrame(index=X.index)
+        
+        rolling = target_series.rolling(window=self.window_size, min_periods=1)
+        
         for agg in self.aggregations:
-            new_col_name = f"{base_name}_rolling_{agg}_{self.window_size}"
-            X_copy[new_col_name] = rolling_series.agg(agg)
+            col_name = f"{base_name}_roll_{agg}_{self.window_size}"
+            try:
+                result[col_name] = getattr(rolling, agg)()
+            except AttributeError:
+                result[col_name] = rolling.apply(agg)
+                
+        return result
 
-        return X_copy.drop(columns=[base_name])
+    def get_feature_names_out(self, input_features=None):
+        return self.feature_names_
+
+class SeasonalDecompositionTransformer(BaseEstimator, TransformerMixin):
+    """Extract seasonal components from time-series data."""
+    
+    def __init__(self, period: int = None, model: str = 'additive', target_column: str = None):
+        self.period = period
+        self.model = model
+        self.target_column = target_column
+        self.feature_names_ = []
+        self.target_col_index_ = None
+
+    def fit(self, X: pd.DataFrame, y=None):
+        if self.target_column:
+            if self.target_column not in X.columns:
+                raise ValueError(f"Target column '{self.target_column}' not found")
+            self.target_col_index_ = X.columns.tolist().index(self.target_column)
+            base_name = self.target_column
+        else:
+            numeric_cols = X.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) == 0:
+                raise ValueError("No numeric columns found for seasonal decomposition")
+            self.target_col_index_ = X.columns.tolist().index(numeric_cols[0])
+            base_name = numeric_cols[0]
+            
+        if self.period is None:
+            self.period = min(12, len(X) // 4)  # Default to monthly or quarterly
+            
+        self.feature_names_ = [f"{base_name}_trend", f"{base_name}_seasonal", f"{base_name}_residual"]
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        try:
+            from statsmodels.tsa.seasonal import seasonal_decompose
+        except ImportError:
+            logging.warning("statsmodels not available, skipping seasonal decomposition")
+            return pd.DataFrame(index=X.index)
+            
+        target_series = X.iloc[:, self.target_col_index_]
+        base_name = X.columns[self.target_col_index_]
+        result = pd.DataFrame(index=X.index)
+        
+        if len(target_series.dropna()) < 2 * self.period:
+            logging.warning("Insufficient data for seasonal decomposition")
+            result[f"{base_name}_trend"] = target_series
+            result[f"{base_name}_seasonal"] = 0
+            result[f"{base_name}_residual"] = 0
+            return result
+        
+        try:
+            decomposition = seasonal_decompose(
+                target_series.dropna(), 
+                model=self.model, 
+                period=self.period,
+                extrapolate_trend='freq'
+            )
+            
+            result[f"{base_name}_trend"] = decomposition.trend.reindex(X.index)
+            result[f"{base_name}_seasonal"] = decomposition.seasonal.reindex(X.index)
+            result[f"{base_name}_residual"] = decomposition.resid.reindex(X.index)
+            
+        except Exception as e:
+            logging.warning(f"Seasonal decomposition failed: {e}")
+            result[f"{base_name}_trend"] = target_series
+            result[f"{base_name}_seasonal"] = 0
+            result[f"{base_name}_residual"] = 0
+            
+        return result.fillna(method='ffill').fillna(method='bfill').fillna(0)
 
     def get_feature_names_out(self, input_features=None):
         return self.feature_names_

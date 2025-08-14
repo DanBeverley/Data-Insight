@@ -15,9 +15,10 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent))
 
-from automator import WorkflowOrchestrator
-from config import settings
-from common.data_ingestion import ingest_data
+from .automator import WorkflowOrchestrator
+from .config import settings
+from .common.data_ingestion import ingest_data
+from .data_quality.validator import DataQualityValidator, ValidationReport, ValidationCheck
 
 st.set_page_config(
     page_title="DataInsight AI",
@@ -25,6 +26,20 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+def display_validation_report(report:ValidationReport):
+    """Renders the data quality report in an intuitive way"""
+    st.subheader("Data Quality Report")
+    if report.is_valid:
+        st.success("All data quality checks passed!")
+        return
+    st.warning("Data quality issues found. Review the details below.")
+    for check in report.checks:
+        if not check.passed:
+            with st.expander(f"⚠️ {check.name}: FAILED"):
+                st.markdown(f"**Message:** {check.message}")
+                if check.details:
+                    st.json(check.details)
 
 @st.cache_data
 def load_data_from_upload(uploaded_file):
@@ -40,6 +55,17 @@ def show_lineage_report(roles: dict):
             with st.expander(f"**{role.replace('_', ' ').title()}** ({len(columns)} columns)"):
                 st.write(columns)
 
+def initialize_session_state():
+    defaults = {"df":None,
+                "validation_report":None,
+                "orchestrator_result":None,
+                "task":"classification",
+                "target_column":None}
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+initialize_session_state()
 
 st.title("🤖 DataInsight AI")
 st.markdown("Your intelligent partner for automated data preprocessing and feature engineering.")
@@ -47,18 +73,19 @@ st.markdown("Your intelligent partner for automated data preprocessing and featu
 with st.sidebar:
     st.header("1. Upload Your Data")
     uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=['csv', 'xlsx', 'xls'])
-    
-    st.markdown("---")
-    
-    # Initialize session state for dataframe
-    if 'df' not in st.session_state:
-        st.session_state.df = None
-
     if uploaded_file:
-        df = load_data_from_upload(uploaded_file)
-        if df is not None:
-            st.session_state.df = df
-            st.success("File loaded successfully!")
+        if st.session_state.df is None:
+            with st.spinner("Loading and validating data..."):
+                df = ingest_data(uploaded_file)
+                if df is not None:
+                    st.session_state.df = df
+                    validator = DataQualityValidator(df)
+                    st.session_state.validation_report = validator.validate()
+                    st.success("Data loaded and validated")
+                else:
+                    st.error("Failed to load data from uploaded file")
+
+    st.markdown("---")
     
     if st.session_state.df is not None:
         st.header("2. Configure Your Task")
@@ -88,6 +115,8 @@ with st.sidebar:
 if st.session_state.df is None:
     st.info("Please upload a dataset using the sidebar to get started.")
 else:
+    if st.session_state.validation_report:
+        display_validation_report(st.session_state.validation_report)
     st.header("Data Preview")
     st.dataframe(st.session_state.df.head())
     
