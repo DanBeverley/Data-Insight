@@ -1,128 +1,133 @@
-# DataInsight AI
+# Data Insight
 
-Automated data preprocessing and feature engineering platform with intelligent data understanding capabilities.
+Intelligent data processing platform with automated ML pipeline, explainability, and enterprise security.
 
-## Current Implementation
+## Features
 
-### Core Features
-- **Intelligent Data Profiling**: Detects 27 semantic data types beyond basic dtypes
-- **Domain Detection**: Identifies 10 business domains (ecommerce, finance, healthcare, etc.)  
-- **Relationship Discovery**: Discovers 7 types of column relationships with statistical validation
-- **Automated Feature Engineering**: Context-aware feature generation and selection
-- **Robust Pipeline**: Production-grade orchestration with error recovery
-- **Adaptive Learning**: Learns from execution patterns to improve recommendations
+### Intelligence & Automation
+- **Intelligent Data Profiling**: 27 semantic data types, domain detection, relationship discovery
+- **Automated Feature Engineering**: Context-aware feature generation and selection  
+- **Model Selection**: Intelligent algorithm selection based on data characteristics
+- **Pipeline Orchestration**: Production-grade execution with error recovery and caching
 
-### Architecture
+### Explainability & Trust
+- **Model Explanations**: SHAP/LIME explanations with intelligent fallbacks
+- **Bias Detection**: Multi-dimensional fairness assessment across demographic groups
+- **Trust Metrics**: Reliability, consistency, robustness, and calibration scoring
 
-**Backend (FastAPI)**
-- REST API with comprehensive intelligence endpoints
-- Session-based data management
-- Real-time pipeline monitoring
-- Adaptive learning integration
+### Security & Compliance
+- **Data Protection**: PII detection, masking, and anonymization (k-anonymity, differential privacy)
+- **Access Control**: Role-based permissions with session management and audit logging
+- **Compliance**: GDPR/CCPA automation with violation detection and reporting
+- **Privacy Engine**: Risk assessment and comprehensive privacy protection
 
-**Frontend (HTML/CSS/JS)**
-- Modern minimalistic interface (black/grey/green)
-- Interactive intelligence tabs (semantic types, relationships, recommendations)
-- Real-time pipeline status monitoring
-- Relationship graph visualization with D3.js
+## Architecture
 
-**Intelligence System**
-- `IntelligentDataProfiler`: Semantic type detection and column profiling
-- `DomainDetector`: Business domain identification with confidence scoring
-- `RelationshipDiscovery`: Statistical relationship detection between columns
-- `AdvancedFeatureIntelligence`: Context-aware feature engineering recommendations
-- `AdaptiveLearningSystem`: Pattern learning from execution feedback
+### Core Components
+- **Pipeline Orchestrator**: Stage-based execution with error handling and recovery
+- **Intelligence Engine**: Data profiling, domain detection, relationship discovery
+- **Feature Engineering**: Automated feature generation and intelligent selection
+- **Model Selection**: Algorithm recommendation based on data characteristics
+- **Explainability Engine**: SHAP/LIME explanations with business insights
+- **Security Manager**: PII detection, data masking, access control
+- **Compliance Manager**: GDPR/CCPA automation and violation monitoring
+- **Privacy Engine**: Risk assessment and privacy-preserving transformations
 
-**Pipeline Architecture**
-- `RobustPipelineOrchestrator`: Production-grade pipeline with error handling
-- Stage-based execution (ingestion → profiling → cleaning → feature engineering → modeling)
-- Automatic fallback to legacy orchestrator
-- Manual recovery triggers
+### Pipeline Stages
+1. **Data Ingestion** - Load and validate data sources
+2. **Profiling** - Semantic analysis and domain detection  
+3. **Quality Assessment** - Data quality scoring and anomaly detection
+4. **Cleaning** - Intelligent data cleaning and preprocessing
+5. **Feature Engineering** - Automated feature generation and selection
+6. **Model Selection** - Algorithm selection and hyperparameter optimization
+7. **Validation** - Performance assessment and quality metrics
+8. **Explainability** - Model interpretation and business insights
+9. **Bias Assessment** - Fairness evaluation across sensitive attributes
+10. **Security Scan** - PII detection and data protection
+11. **Privacy Protection** - Risk assessment and anonymization
+12. **Compliance Check** - Regulatory compliance validation
 
-### API Endpoints
+## API
 
-**Core Workflow**
-- `POST /api/upload` - Upload with intelligent profiling
-- `POST /api/ingest-url` - URL ingestion with intelligence
-- `POST /api/data/{session_id}/process` - Robust pipeline execution
-- `GET /api/data/{session_id}/download/{artifact}` - Download results
+### Core Endpoints
+- `POST /api/upload` - Data upload with intelligence profiling
+- `POST /api/data/{session_id}/process` - Execute complete pipeline
+- `GET /api/data/{session_id}/results` - Retrieve results and artifacts
+- `GET /api/data/{session_id}/status` - Pipeline execution status
 
-**Intelligence Features**
-- `POST /api/data/{session_id}/profile` - On-demand deep profiling
-- `GET /api/data/{session_id}/feature-recommendations` - AI feature suggestions
-- `POST /api/data/{session_id}/apply-features` - Apply recommendations
-- `GET /api/data/{session_id}/relationship-graph` - Interactive graph data
+### Intelligence & Analysis
+- `POST /api/data/{session_id}/profile` - Intelligent data profiling
+- `GET /api/data/{session_id}/explanations` - Model explanations and insights
+- `GET /api/data/{session_id}/bias-report` - Fairness assessment report
+- `GET /api/data/{session_id}/trust-metrics` - Trust and reliability scores
 
-**Monitoring & Learning**
-- `GET /api/data/{session_id}/pipeline-status` - Real-time monitoring
-- `POST /api/data/{session_id}/pipeline-recovery` - Manual recovery
-- `POST /api/learning/feedback` - Learning system feedback
-- `GET /api/learning/insights` - Learning system status
+### Security & Compliance
+- `GET /api/data/{session_id}/security-scan` - Security assessment results
+- `GET /api/data/{session_id}/privacy-report` - Privacy risk analysis
+- `GET /api/data/{session_id}/compliance-status` - Regulatory compliance report
 
 ## Installation
 
-1. Install dependencies:
+1. **Clone repository**
+```bash
+git clone <repository-url>
+cd Data-Insight
+```
+
+2. **Install dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the application:
+3. **Run application**
 ```bash
 python run_app.py
 ```
 
-3. Access the interface at `http://localhost:8000`
+4. **Access interface** - `http://localhost:8000`
 
 ## Usage
 
-1. **Upload Data**: Upload CSV/Excel files or provide URLs
-2. **Review Intelligence**: Examine semantic types, domain detection, and relationships
-3. **Configure Task**: Select ML task type and advanced options
-4. **Process**: Execute robust pipeline with real-time monitoring
-5. **Download Results**: Access processed data and intelligence reports
+1. **Upload data** - CSV/Excel files or provide data URLs
+2. **Configure pipeline** - Select task type and security/privacy settings
+3. **Execute processing** - Automated pipeline with intelligence and security
+4. **Review results** - Model performance, explanations, bias, and compliance reports
+5. **Download artifacts** - Processed data, models, and comprehensive reports
 
-## Technical Details
+## Configuration
 
-**Supported Data Types**
-- CSV, Excel files
-- URL data sources
-- Time series data
-- Text/NLP data
+### Security Levels
+- `basic` - Standard protection with PII detection
+- `standard` - Enhanced security with access control  
+- `high` - Strong encryption and audit logging
+- `maximum` - Maximum protection with strict policies
 
-**ML Tasks**
-- Classification
-- Regression  
-- Clustering
-- Time-series forecasting
-- NLP text analysis
+### Privacy Levels
+- `low` - Basic anonymization
+- `medium` - K-anonymity and data masking
+- `high` - Differential privacy and l-diversity
+- `maximum` - Comprehensive privacy protection
 
-**Intelligence Capabilities**
-- 27 semantic types (email, currency, keys, temporal, geographic, etc.)
-- 10 business domains with pattern matching
-- 7 relationship types (correlations, associations, dependencies, hierarchies)
-- Domain-specific feature engineering strategies
-- Statistical validation and confidence scoring
+### Compliance
+- GDPR - EU General Data Protection Regulation
+- CCPA - California Consumer Privacy Act  
+- HIPAA - Health Insurance Portability and Accountability Act
 
-**Export Formats**
-- Processed data (CSV)
-- Enhanced data with engineered features (CSV)
-- ML pipeline (Joblib)
-- Intelligence reports (JSON)
-- Pipeline metadata (JSON)
+## Supported Data
+- **Formats**: CSV, Excel, Parquet, JSON
+- **Sources**: File upload, URLs, databases
+- **Types**: Tabular, time-series, text data
+- **Tasks**: Classification, regression, clustering, forecasting, NLP
 
-## Development Status
+## Output Artifacts
+- Processed datasets with feature engineering
+- Trained models with hyperparameter optimization
+- Explanation reports with SHAP/LIME analysis
+- Bias assessment with fairness metrics
+- Security scan results with PII detection
+- Privacy protection reports with risk analysis
+- Compliance reports with violation detection
 
-**Completed**
-- ✅ Phase 1: Core data processing and basic automation
-- ✅ Phase 2A: Enhanced pipelines (time-series, NLP, automated FE)
-- ✅ Phase 2B: Intelligence & robustness (semantic understanding, domain detection)
-- ✅ Phase 3A-1: API integration with intelligence features
-- ✅ Phase 3A-2: Dedicated intelligence endpoints and monitoring
-- ✅ Phase 3A-3: Frontend integration with intelligence UI
+## MVP Status
 
-**Current Focus**
-- Enhanced JavaScript functionality for intelligence features
-- Comprehensive testing and validation
-- Performance optimization
-
-The system operates as an intelligent data preprocessing platform that automatically understands data context and applies appropriate transformations without manual intervention.
+✅ **Complete** - Intelligent pipeline with explainability and enterprise security ready for deployment
