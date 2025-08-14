@@ -26,6 +26,9 @@ from ..data_quality.anomaly_detector import MultiLayerAnomalyDetector
 from ..data_quality.drift_monitor import ComprehensiveDriftMonitor
 from ..data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
 from ..mlops.mlops_orchestrator import MLOpsOrchestrator
+from ..explainability.explanation_engine import ExplanationEngine
+from ..explainability.bias_detector import BiasDetector
+from ..explainability.trust_metrics import TrustMetricsCalculator
 
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
@@ -37,6 +40,8 @@ class PipelineStage(Enum):
     FEATURE_SELECTION = "feature_selection"
     MODEL_SELECTION = "model_selection"
     VALIDATION = "validation"
+    EXPLAINABILITY_ANALYSIS = "explainability_analysis"
+    BIAS_ASSESSMENT = "bias_assessment"
     EXPORT = "export"
     MLOPS_DEPLOYMENT = "mlops_deployment"
 
@@ -53,6 +58,10 @@ class PipelineConfig:
     enable_mlops: bool = False
     mlops_environment: str = "staging"
     enable_monitoring: bool = False
+    enable_explainability: bool = True
+    enable_bias_detection: bool = True
+    sensitive_attributes: List[str] = field(default_factory=list)
+    explanation_sample_size: int = 100
     validation_threshold: float = 0.95
 
 @dataclass
@@ -217,13 +226,27 @@ class RobustPipelineOrchestrator:
                 lambda: self._execute_validation(modeling_result)
             )
             
-            # Stage 10: Export Results
+            # Stage 10: Explainability Analysis (if enabled)
+            if self.config.enable_explainability:
+                explainability_result = self._execute_stage_with_recovery(
+                    PipelineStage.EXPLAINABILITY_ANALYSIS,
+                    lambda: self._execute_explainability_analysis(modeling_result, fs_result, validation_result)
+                )
+            
+            # Stage 11: Bias Assessment (if enabled)
+            if self.config.enable_bias_detection and self.config.sensitive_attributes:
+                bias_result = self._execute_stage_with_recovery(
+                    PipelineStage.BIAS_ASSESSMENT,
+                    lambda: self._execute_bias_assessment(modeling_result, fs_result, validation_result)
+                )
+            
+            # Stage 12: Export Results
             export_result = self._execute_stage_with_recovery(
                 PipelineStage.EXPORT,
                 lambda: self._execute_export(modeling_result, validation_result)
             )
             
-            # Stage 11: MLOps Deployment (if enabled)
+            # Stage 13: MLOps Deployment (if enabled)
             if self.config.enable_mlops and self.mlops:
                 mlops_result = self._execute_stage_with_recovery(
                     PipelineStage.MLOPS_DEPLOYMENT,
@@ -926,5 +949,191 @@ class RobustPipelineOrchestrator:
                 stage=PipelineStage.MLOPS_DEPLOYMENT,
                 status="failed",
                 data=modeling_result.data,
+                error_message=str(e)
+            )
+    
+    def _execute_explainability_analysis(self, modeling_result: StageResult,
+                                       feature_result: StageResult,
+                                       validation_result: StageResult) -> StageResult:
+        try:
+            model = modeling_result.artifacts.get('best_model')
+            if not model:
+                raise ValueError("No model found for explainability analysis")
+            
+            X_processed = feature_result.data
+            task_type = modeling_result.metadata.get('task_type', 'classification')
+            
+            explanation_engine = ExplanationEngine(
+                model=model,
+                X_train=X_processed.sample(min(self.config.explanation_sample_size, len(X_processed))),
+                task_type=task_type
+            )
+            
+            global_explanation = explanation_engine.explain_global()
+            
+            sample_instances = X_processed.sample(min(10, len(X_processed)))
+            local_explanations = []
+            for idx, instance in sample_instances.iterrows():
+                local_exp = explanation_engine.explain_local(instance)
+                local_explanations.append({
+                    'instance_id': local_exp.instance_id,
+                    'prediction': local_exp.prediction,
+                    'top_features': dict(sorted(local_exp.feature_contributions.items(), 
+                                              key=lambda x: abs(x[1]), reverse=True)[:5]),
+                    'confidence': local_exp.confidence
+                })
+            
+            business_insights = explanation_engine.generate_business_insights(
+                global_explanation, sample_instances
+            )
+            
+            trust_calculator = TrustMetricsCalculator()
+            y_pred = model.predict(X_processed)
+            y_pred_proba = model.predict_proba(X_processed) if hasattr(model, 'predict_proba') else None
+            
+            trust_score = trust_calculator.calculate_trust_score(
+                model=model,
+                X=X_processed,
+                y_true=y_pred,
+                y_pred=y_pred,
+                y_pred_proba=y_pred_proba,
+                explanation_engine=explanation_engine
+            )
+            
+            return StageResult(
+                stage=PipelineStage.EXPLAINABILITY_ANALYSIS,
+                status="success",
+                data=feature_result.data,
+                metadata={
+                    'global_explanation': {
+                        'method': global_explanation.explanation_method,
+                        'top_features': dict(sorted(global_explanation.feature_importance.items(),
+                                                  key=lambda x: x[1], reverse=True)[:10]),
+                        'feature_interactions': global_explanation.feature_interactions or {}
+                    },
+                    'trust_metrics': {
+                        'overall_trust': trust_score.overall_trust,
+                        'trust_level': trust_score.trust_level.value,
+                        'reliability_score': trust_score.reliability_score,
+                        'robustness_score': trust_score.robustness_score
+                    },
+                    'business_insights': [
+                        {
+                            'type': insight.insight_type,
+                            'message': insight.message,
+                            'confidence': insight.confidence,
+                            'recommendation': insight.recommendation
+                        }
+                        for insight in business_insights
+                    ],
+                    'explanation_summary': explanation_engine.get_explanation_summary()
+                },
+                artifacts={
+                    'explanation_engine': explanation_engine,
+                    'local_explanations': local_explanations,
+                    'trust_calculator': trust_calculator
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Explainability analysis failed: {e}")
+            return StageResult(
+                stage=PipelineStage.EXPLAINABILITY_ANALYSIS,
+                status="failed",
+                data=feature_result.data,
+                error_message=str(e)
+            )
+    
+    def _execute_bias_assessment(self, modeling_result: StageResult,
+                               feature_result: StageResult,
+                               validation_result: StageResult) -> StageResult:
+        try:
+            model = modeling_result.artifacts.get('best_model')
+            if not model:
+                raise ValueError("No model found for bias assessment")
+            
+            X_processed = feature_result.data
+            y_pred = model.predict(X_processed)
+            y_pred_proba = model.predict_proba(X_processed) if hasattr(model, 'predict_proba') else None
+            
+            available_sensitive_attrs = [attr for attr in self.config.sensitive_attributes 
+                                       if attr in X_processed.columns]
+            
+            if not available_sensitive_attrs:
+                self.logger.warning("No sensitive attributes found in processed data")
+                return StageResult(
+                    stage=PipelineStage.BIAS_ASSESSMENT,
+                    status="skipped",
+                    data=feature_result.data,
+                    metadata={'message': 'No sensitive attributes available for bias assessment'}
+                )
+            
+            bias_detector = BiasDetector(
+                sensitive_attributes=available_sensitive_attrs,
+                fairness_threshold=0.1
+            )
+            
+            bias_results = bias_detector.detect_bias(
+                model=model,
+                X=X_processed,
+                y_true=y_pred,
+                y_pred=y_pred,
+                y_pred_proba=y_pred_proba
+            )
+            
+            fairness_metrics = bias_detector.calculate_fairness_metrics(
+                model=model,
+                X=X_processed,
+                y_true=y_pred,
+                y_pred=y_pred,
+                y_pred_proba=y_pred_proba
+            )
+            
+            mitigation_strategies = bias_detector.suggest_mitigation_strategies(bias_results)
+            
+            bias_summary = {
+                'total_biases_detected': len(bias_results),
+                'critical_biases': len([b for b in bias_results if b.severity.value == 'critical']),
+                'high_biases': len([b for b in bias_results if b.severity.value == 'high']),
+                'overall_fairness_score': fairness_metrics.overall_fairness_score,
+                'attributes_analyzed': available_sensitive_attrs
+            }
+            
+            return StageResult(
+                stage=PipelineStage.BIAS_ASSESSMENT,
+                status="success",
+                data=feature_result.data,
+                metadata={
+                    'bias_summary': bias_summary,
+                    'fairness_metrics': {
+                        'demographic_parity': fairness_metrics.demographic_parity,
+                        'equalized_opportunity': fairness_metrics.equalized_opportunity,
+                        'equalized_odds': fairness_metrics.equalized_odds,
+                        'overall_fairness_score': fairness_metrics.overall_fairness_score
+                    },
+                    'bias_details': [
+                        {
+                            'bias_type': result.bias_type.value,
+                            'severity': result.severity.value,
+                            'metric_value': result.metric_value,
+                            'affected_groups': result.affected_groups,
+                            'description': result.description
+                        }
+                        for result in bias_results
+                    ],
+                    'mitigation_strategies': mitigation_strategies
+                },
+                artifacts={
+                    'bias_detector': bias_detector,
+                    'detailed_bias_results': bias_results
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Bias assessment failed: {e}")
+            return StageResult(
+                stage=PipelineStage.BIAS_ASSESSMENT,
+                status="failed",
+                data=feature_result.data,
                 error_message=str(e)
             )
