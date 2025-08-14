@@ -8,6 +8,7 @@ import traceback
 from pathlib import Path
 import pickle
 import json
+import time
 from datetime import datetime
 
 from ..intelligence.data_profiler import IntelligentDataProfiler
@@ -29,6 +30,9 @@ from ..mlops.mlops_orchestrator import MLOpsOrchestrator
 from ..explainability.explanation_engine import ExplanationEngine
 from ..explainability.bias_detector import BiasDetector
 from ..explainability.trust_metrics import TrustMetricsCalculator
+from ..security.security_manager import SecurityManager, SecurityLevel
+from ..security.compliance_manager import ComplianceManager, ComplianceRegulation
+from ..security.privacy_engine import PrivacyEngine, PrivacyLevel
 
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
@@ -42,6 +46,9 @@ class PipelineStage(Enum):
     VALIDATION = "validation"
     EXPLAINABILITY_ANALYSIS = "explainability_analysis"
     BIAS_ASSESSMENT = "bias_assessment"
+    SECURITY_SCAN = "security_scan"
+    PRIVACY_PROTECTION = "privacy_protection"
+    COMPLIANCE_CHECK = "compliance_check"
     EXPORT = "export"
     MLOPS_DEPLOYMENT = "mlops_deployment"
 
@@ -63,6 +70,12 @@ class PipelineConfig:
     sensitive_attributes: List[str] = field(default_factory=list)
     explanation_sample_size: int = 100
     validation_threshold: float = 0.95
+    enable_security: bool = True
+    security_level: str = "standard"
+    enable_privacy_protection: bool = True
+    privacy_level: str = "medium"
+    enable_compliance: bool = True
+    applicable_regulations: List[str] = field(default_factory=lambda: ["gdpr", "ccpa"])
 
 @dataclass
 class StageResult:
@@ -101,6 +114,28 @@ class RobustPipelineOrchestrator:
             self.mlops = MLOpsOrchestrator()
         else:
             self.mlops = None
+        
+        # Security components
+        if self.config.enable_security:
+            security_level = SecurityLevel(self.config.security_level)
+            self.security_manager = SecurityManager(security_level)
+        else:
+            self.security_manager = None
+        
+        if self.config.enable_privacy_protection:
+            from ..security.privacy_engine import PrivacyConfiguration
+            privacy_config = PrivacyConfiguration(
+                target_privacy_level=PrivacyLevel(self.config.privacy_level)
+            )
+            self.privacy_engine = PrivacyEngine(privacy_config)
+        else:
+            self.privacy_engine = None
+        
+        if self.config.enable_compliance:
+            regulations = [ComplianceRegulation(reg) for reg in self.config.applicable_regulations]
+            self.compliance_manager = ComplianceManager(regulations)
+        else:
+            self.compliance_manager = None
         
         # Pipeline state
         self.execution_history: List[StageResult] = []
@@ -240,7 +275,31 @@ class RobustPipelineOrchestrator:
                     lambda: self._execute_bias_assessment(modeling_result, fs_result, validation_result)
                 )
             
-            # Stage 12: Export Results
+            # Stage 12: Security Scan (if enabled)
+            if self.config.enable_security:
+                security_result = self._execute_stage_with_recovery(
+                    PipelineStage.SECURITY_SCAN,
+                    lambda: self._execute_security_scan(fs_result.data)
+                )
+            
+            # Stage 13: Privacy Protection (if enabled)
+            protected_data = fs_result.data
+            if self.config.enable_privacy_protection:
+                privacy_result = self._execute_stage_with_recovery(
+                    PipelineStage.PRIVACY_PROTECTION,
+                    lambda: self._execute_privacy_protection(fs_result.data, self.config.sensitive_attributes)
+                )
+                if privacy_result.status == "success" and privacy_result.data is not None:
+                    protected_data = privacy_result.data
+            
+            # Stage 14: Compliance Check (if enabled)
+            if self.config.enable_compliance:
+                compliance_result = self._execute_stage_with_recovery(
+                    PipelineStage.COMPLIANCE_CHECK,
+                    lambda: self._execute_compliance_check(protected_data)
+                )
+            
+            # Stage 15: Export Results
             export_result = self._execute_stage_with_recovery(
                 PipelineStage.EXPORT,
                 lambda: self._execute_export(modeling_result, validation_result)
@@ -1135,5 +1194,177 @@ class RobustPipelineOrchestrator:
                 stage=PipelineStage.BIAS_ASSESSMENT,
                 status="failed",
                 data=feature_result.data,
+                error_message=str(e)
+            )
+    
+    def _execute_security_scan(self, df: pd.DataFrame) -> StageResult:
+        try:
+            start_time = time.time()
+            self.logger.info("Starting security scan")
+            
+            if not self.security_manager:
+                return StageResult(
+                    stage=PipelineStage.SECURITY_SCAN,
+                    status="skipped",
+                    data=df,
+                    metadata={"reason": "Security manager not initialized"}
+                )
+            
+            pii_results = self.security_manager.detect_pii(df)
+            security_assessment = self.security_manager.scan_data_security(df)
+            
+            if pii_results:
+                self.logger.warning(f"PII detected in {len(pii_results)} columns")
+                masked_df = self.security_manager.mask_pii_data(df, pii_results)
+            else:
+                masked_df = df
+            
+            execution_time = time.time() - start_time
+            
+            return StageResult(
+                stage=PipelineStage.SECURITY_SCAN,
+                status="success",
+                data=masked_df,
+                execution_time=execution_time,
+                metadata={
+                    'security_score': security_assessment['security_score'],
+                    'pii_detected': security_assessment['pii_detected'],
+                    'pii_details': security_assessment['pii_details'],
+                    'security_risks': security_assessment['security_risks'],
+                    'recommendations': security_assessment['recommendations'],
+                    'masked_columns': [result.column for result in pii_results if result.masking_applied]
+                },
+                artifacts={
+                    'security_manager': self.security_manager,
+                    'pii_results': pii_results
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Security scan failed: {e}")
+            return StageResult(
+                stage=PipelineStage.SECURITY_SCAN,
+                status="failed",
+                data=df,
+                error_message=str(e)
+            )
+    
+    def _execute_privacy_protection(self, df: pd.DataFrame, 
+                                  sensitive_attributes: List[str]) -> StageResult:
+        try:
+            start_time = time.time()
+            self.logger.info("Starting privacy protection")
+            
+            if not self.privacy_engine:
+                return StageResult(
+                    stage=PipelineStage.PRIVACY_PROTECTION,
+                    status="skipped",
+                    data=df,
+                    metadata={"reason": "Privacy engine not initialized"}
+                )
+            
+            privacy_assessment = self.privacy_engine.assess_privacy_risk(
+                df, sensitive_attributes=sensitive_attributes
+            )
+            
+            if privacy_assessment.risk_level in ["high", "critical"]:
+                self.logger.warning(f"High privacy risk detected: {privacy_assessment.risk_level}")
+                
+                protected_df, protection_metadata = self.privacy_engine.apply_comprehensive_privacy_protection(
+                    df, sensitive_attributes=sensitive_attributes
+                )
+            else:
+                protected_df = df
+                protection_metadata = {"protection_applied": False}
+            
+            utility_tradeoff = self.privacy_engine.evaluate_privacy_utility_tradeoff(df, protected_df)
+            
+            execution_time = time.time() - start_time
+            
+            return StageResult(
+                stage=PipelineStage.PRIVACY_PROTECTION,
+                status="success",
+                data=protected_df,
+                execution_time=execution_time,
+                metadata={
+                    'privacy_assessment': {
+                        'privacy_score': privacy_assessment.privacy_score,
+                        'risk_level': privacy_assessment.risk_level,
+                        'reidentification_risk': privacy_assessment.reidentification_risk,
+                        'recommendations': privacy_assessment.recommendations
+                    },
+                    'protection_metadata': protection_metadata,
+                    'utility_tradeoff': utility_tradeoff
+                },
+                artifacts={
+                    'privacy_engine': self.privacy_engine,
+                    'original_data': df
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Privacy protection failed: {e}")
+            return StageResult(
+                stage=PipelineStage.PRIVACY_PROTECTION,
+                status="failed",
+                data=df,
+                error_message=str(e)
+            )
+    
+    def _execute_compliance_check(self, df: pd.DataFrame) -> StageResult:
+        try:
+            start_time = time.time()
+            self.logger.info("Starting compliance check")
+            
+            if not self.compliance_manager:
+                return StageResult(
+                    stage=PipelineStage.COMPLIANCE_CHECK,
+                    status="skipped",
+                    data=df,
+                    metadata={"reason": "Compliance manager not initialized"}
+                )
+            
+            violations = self.compliance_manager.scan_compliance_violations(df)
+            compliance_report = self.compliance_manager.generate_compliance_report()
+            
+            critical_violations = [v for v in violations if v.severity == "high" or v.severity == "critical"]
+            
+            if critical_violations:
+                self.logger.warning(f"Critical compliance violations detected: {len(critical_violations)}")
+                compliance_status = "violations_detected"
+            elif violations:
+                self.logger.info(f"Minor compliance issues detected: {len(violations)}")
+                compliance_status = "minor_issues"
+            else:
+                compliance_status = "compliant"
+            
+            execution_time = time.time() - start_time
+            
+            return StageResult(
+                stage=PipelineStage.COMPLIANCE_CHECK,
+                status="success",
+                data=df,
+                execution_time=execution_time,
+                metadata={
+                    'compliance_status': compliance_status,
+                    'violations_count': len(violations),
+                    'critical_violations_count': len(critical_violations),
+                    'compliance_overview': compliance_report['compliance_overview'],
+                    'violation_summary': compliance_report['violation_summary'],
+                    'recommendations': compliance_report['recommendations']
+                },
+                artifacts={
+                    'compliance_manager': self.compliance_manager,
+                    'violations': violations,
+                    'full_report': compliance_report
+                }
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Compliance check failed: {e}")
+            return StageResult(
+                stage=PipelineStage.COMPLIANCE_CHECK,
+                status="failed",
+                data=df,
                 error_message=str(e)
             )
