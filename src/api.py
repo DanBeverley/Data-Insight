@@ -151,7 +151,13 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
             "validation": {
                 "is_valid": validation_report.is_valid,
                 "issues": [
-                    {"name": check.name, "message": check.message, "passed": check.passed}
+                    {
+                        "type": check.name,
+                        "description": check.message,
+                        "severity": "high" if "missing" in check.message.lower() or "null" in check.message.lower() else "medium",
+                        "affected_columns": getattr(check, 'affected_columns', []),
+                        "passed": check.passed
+                    }
                     for check in validation_report.checks if not check.passed
                 ]
             }
@@ -228,7 +234,13 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
             "validation": {
                 "is_valid": validation_report.is_valid,
                 "issues": [
-                    {"name": check.name, "message": check.message, "passed": check.passed}
+                    {
+                        "type": check.name,
+                        "description": check.message,
+                        "severity": "high" if "missing" in check.message.lower() or "null" in check.message.lower() else "medium",
+                        "affected_columns": getattr(check, 'affected_columns', []),
+                        "passed": check.passed
+                    }
                     for check in validation_report.checks if not check.passed
                 ]
             }
@@ -293,13 +305,12 @@ async def get_data_preview(session_id: str, rows: int = 10):
 async def generate_eda(session_id: str):
     """Generate comprehensive EDA report."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         df = session_store[session_id]["dataframe"]
         eda_report = generate_eda_report(df)
         
-        # Store EDA report
         session_store[session_id]["eda_report"] = eda_report
         
         return {
@@ -309,7 +320,7 @@ async def generate_eda(session_id: str):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating EDA: {str(e)}")
+        return {"status": "error", "detail": f"Error generating EDA: {str(e)}"}
 
 @app.post("/api/data/{session_id}/process")
 async def process_data(session_id: str, config: TaskConfig):
@@ -614,7 +625,7 @@ async def get_feature_recommendations(session_id: str,
                                     priority_filter: Optional[str] = None):
     """Get AI-powered feature engineering recommendations."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         df = session_store[session_id]["dataframe"]
@@ -675,7 +686,7 @@ async def get_feature_recommendations(session_id: str,
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Feature recommendation error: {str(e)}")
+        return {"status": "error", "detail": f"Feature recommendation error: {str(e)}"}
 
 @app.post("/api/data/{session_id}/apply-features")
 async def apply_feature_recommendations(session_id: str, request: FeatureRecommendationRequest):
@@ -981,7 +992,7 @@ async def trigger_pipeline_recovery(session_id: str):
 async def get_relationship_graph(session_id: str):
     """Get interactive relationship graph data for visualization."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         session_data = session_store[session_id]
@@ -1056,7 +1067,7 @@ async def get_relationship_graph(session_id: str):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Relationship graph error: {str(e)}")
+        return {"status": "error", "detail": f"Relationship graph error: {str(e)}"}
 
 @app.get("/api/health")
 async def health_check():
