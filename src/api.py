@@ -40,8 +40,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Serve static files with explicit routes
+static_dir = Path(__file__).parent.parent / "static"
+
+@app.get("/static/script.js")
+async def get_script():
+    """Serve JavaScript file with correct MIME type."""
+    script_path = static_dir / "script.js"
+    return FileResponse(script_path, media_type="application/javascript")
+
+@app.get("/static/styles.css") 
+async def get_styles():
+    """Serve CSS file with correct MIME type."""
+    css_path = static_dir / "styles.css"
+    return FileResponse(css_path, media_type="text/css")
+
+# Mount remaining static files
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Data models
 class TaskConfig(BaseModel):
@@ -100,7 +115,8 @@ class LearningFeedback(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main application interface."""
-    return HTMLResponse(open("static/index.html").read())
+    html_path = Path(__file__).parent.parent / "static" / "index.html"
+    return HTMLResponse(html_path.read_text())
 
 @app.post("/api/upload")
 async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True)):
