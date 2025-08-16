@@ -688,6 +688,21 @@ body {
     font-size: var(--font-size-xl);
 }
 
+/* Processing Actions */
+.processing-actions {
+    text-align: center;
+    margin-top: var(--spacing-2xl);
+    padding-top: var(--spacing-xl);
+    border-top: 1px solid var(--color-light-grey);
+}
+
+.btn-large {
+    padding: var(--spacing-lg) var(--spacing-2xl);
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    min-width: 200px;
+}
+
 .download-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -876,6 +891,94 @@ body {
     background-color: var(--color-warning) !important;
 }
 
+/* Data Quality Issues */
+.validation-issues {
+    margin-top: var(--spacing-lg);
+    border: 1px solid var(--color-light-grey);
+    border-radius: var(--border-radius-md);
+    background: var(--color-dark-grey);
+    overflow: hidden;
+}
+
+.quality-issues-header {
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: var(--color-medium-grey);
+    cursor: pointer;
+    transition: all var(--transition-normal);
+    border-bottom: 1px solid var(--color-light-grey);
+}
+
+.quality-issues-header:hover {
+    background: rgba(0, 255, 136, 0.05);
+}
+
+.quality-issues-header h4 {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    color: var(--color-warning);
+}
+
+.expand-icon {
+    margin-left: auto;
+    transition: transform var(--transition-normal);
+}
+
+.validation-issues.expanded .expand-icon {
+    transform: rotate(180deg);
+}
+
+.quality-issues-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out;
+}
+
+.validation-issues.expanded .quality-issues-content {
+    max-height: 600px;
+}
+
+.issues-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--spacing-md);
+    padding: var(--spacing-lg);
+}
+
+.issue-card {
+    display: flex;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: var(--color-medium-grey);
+    border-radius: var(--border-radius-md);
+    border-left: 4px solid var(--color-warning);
+}
+
+.issue-severity {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    font-size: var(--font-size-lg);
+}
+
+.issue-details h5 {
+    margin: 0 0 var(--spacing-xs) 0;
+    color: var(--color-white);
+    font-size: var(--font-size-md);
+}
+
+.issue-details p {
+    margin: 0 0 var(--spacing-xs) 0;
+    color: var(--color-muted-grey);
+    font-size: var(--font-size-sm);
+}
+
+.issue-details small {
+    color: var(--color-accent-green);
+    font-size: var(--font-size-xs);
+}
+
 /* Intelligence UI Components */
 
 /* Intelligence Tabs */
@@ -1022,6 +1125,13 @@ body {
 .relationships-list {
     max-height: 400px;
     overflow-y: auto;
+}
+
+.no-relationships {
+    text-align: center;
+    color: var(--color-muted-grey);
+    padding: var(--spacing-xl);
+    font-style: italic;
 }
 
 .relationship-item {
