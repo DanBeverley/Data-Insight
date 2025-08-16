@@ -28,23 +28,13 @@ class DataInsightApp {
     }
 
     setupEventListeners() {
-        // File upload with elegant interactions
         this.setupFileUpload();
-        
-        // Intelligence tabs
         this.setupIntelligenceTabs();
-        
-        // Task configuration
         this.setupTaskConfiguration();
-        
-        // Processing and monitoring
         this.setupProcessing();
-        
-        // Downloads
         this.setupDownloads();
-        
-        // Intelligence features
         this.setupIntelligenceFeatures();
+        this.setupContinueButton();
     }
 
     setupFileUpload() {
@@ -184,7 +174,6 @@ class DataInsightApp {
     }
 
     setupIntelligenceFeatures() {
-        // Deep profiling
         const deepProfileButton = document.getElementById('deepProfile');
         if (deepProfileButton) {
             deepProfileButton.addEventListener('click', (e) => {
@@ -193,7 +182,6 @@ class DataInsightApp {
             });
         }
         
-        // Feature recommendations
         const getRecommendations = document.getElementById('getRecommendations');
         if (getRecommendations) {
             getRecommendations.addEventListener('click', (e) => {
@@ -202,7 +190,6 @@ class DataInsightApp {
             });
         }
         
-        // Relationship graph
         const generateGraph = document.getElementById('generateGraph');
         if (generateGraph) {
             generateGraph.addEventListener('click', (e) => {
@@ -211,12 +198,22 @@ class DataInsightApp {
             });
         }
         
-        // EDA generation with smooth effects
         const generateEDA = document.getElementById('generateEDA');
         if (generateEDA) {
             generateEDA.addEventListener('click', (e) => {
                 this.addButtonEffect(generateEDA);
                 this.generateEDA();
+            });
+        }
+    }
+
+    setupContinueButton() {
+        const continueButton = document.getElementById('continueToConfig');
+        if (continueButton) {
+            continueButton.addEventListener('click', (e) => {
+                this.addButtonEffect(continueButton);
+                this.showSection('taskConfigSection');
+                this.showElegantSuccess('Ready for configuration! Select your task type below.');
             });
         }
     }
@@ -536,10 +533,12 @@ class DataInsightApp {
                 this.displayFeatureRecommendations(data);
                 this.showElegantSuccess(`Generated ${data.recommendations.length} recommendations`);
             } else {
-                this.showElegantError('Failed to generate recommendations');
+                const errorMessage = data.detail || data.message || JSON.stringify(data);
+                this.showElegantError('Failed to generate recommendations: ' + errorMessage);
             }
         } catch (error) {
-            this.showElegantError('Network error during recommendation generation');
+            console.error('Recommendation generation error:', error);
+            this.showElegantError('Network error during recommendation generation: ' + error.message);
         } finally {
             this.hideElegantLoading();
         }
@@ -560,10 +559,12 @@ class DataInsightApp {
                 this.displayRelationshipDetails(data.graph_data);
                 this.showElegantSuccess('Relationship graph generated');
             } else {
-                this.showElegantError('Failed to generate relationship graph');
+                const errorMessage = data.detail || data.message || JSON.stringify(data);
+                this.showElegantError('Failed to generate relationship graph: ' + errorMessage);
             }
         } catch (error) {
-            this.showElegantError('Network error during graph generation');
+            console.error('Graph generation error:', error);
+            this.showElegantError('Network error during graph generation: ' + error.message);
         } finally {
             this.hideElegantLoading();
         }
@@ -658,10 +659,12 @@ class DataInsightApp {
                 this.showSection('edaSection');
                 this.showElegantSuccess('EDA report generated successfully');
             } else {
-                this.showElegantError('EDA generation failed: ' + data.detail);
+                const errorMessage = data.detail || data.message || JSON.stringify(data);
+                this.showElegantError('EDA generation failed: ' + errorMessage);
             }
         } catch (error) {
-            this.showElegantError('Network error during EDA generation');
+            console.error('EDA generation error:', error);
+            this.showElegantError('Network error during EDA generation: ' + error.message);
         } finally {
             this.hideElegantLoading();
         }
@@ -704,15 +707,22 @@ class DataInsightApp {
             const data = await response.json();
             
             if (data.status === 'success') {
-                this.displayProcessingResults(data);
-                this.startPipelineMonitoring(data.execution_id);
-                this.showSection('resultsSection');
+                this.showSection('processingSection');
                 this.showElegantSuccess('Processing pipeline started');
+                this.startPipelineMonitoring(data.execution_id);
+                
+                setTimeout(() => {
+                    this.displayProcessingResults(data);
+                    this.showSection('resultsSection');
+                    this.showElegantSuccess('Processing completed successfully!');
+                }, 3000);
             } else {
-                this.showElegantError('Processing failed: ' + data.detail);
+                const errorMessage = data.detail || data.message || JSON.stringify(data);
+                this.showElegantError('Processing failed: ' + errorMessage);
             }
         } catch (error) {
-            this.showElegantError('Network error during processing');
+            console.error('Processing error:', error);
+            this.showElegantError('Network error during processing: ' + error.message);
         } finally {
             this.hideElegantLoading();
         }
@@ -850,13 +860,6 @@ class DataInsightApp {
                 this.populateTargetSelect(data.columns);
                 this.showSection('dataPreviewSection');
                 this.showElegantSuccess(`File uploaded successfully: ${file.name}`);
-                
-                // Auto-advance to configuration after 2 seconds
-                setTimeout(() => {
-                    console.log('Auto-advancing to task configuration...');
-                    this.showSection('taskConfigSection');
-                    this.showElegantSuccess('Ready for configuration! Select your task type below.');
-                }, 2000);
             } else {
                 this.showElegantError('Upload failed: ' + data.detail);
             }
@@ -900,13 +903,6 @@ class DataInsightApp {
                 this.populateTargetSelect(data.columns);
                 this.showSection('dataPreviewSection');
                 this.showElegantSuccess('Data fetched successfully from URL');
-                
-                // Auto-advance to configuration after 2 seconds
-                setTimeout(() => {
-                    console.log('Auto-advancing to task configuration...');
-                    this.showSection('taskConfigSection');
-                    this.showElegantSuccess('Ready for configuration! Select your task type below.');
-                }, 2000);
             } else {
                 this.showElegantError('URL ingestion failed: ' + data.detail);
             }
@@ -919,26 +915,33 @@ class DataInsightApp {
 
     // Display Methods with Smooth Animations
     displayDataPreview(data) {
-        // Update data info cards with smooth animations
         this.animateValueChange('dataShape', `${data.shape[0]} × ${data.shape[1]}`);
         this.animateValueChange('columnCount', data.shape[1]);
         
-        const qualityStatus = data.validation.is_valid ? 'Good' : 'Issues Detected';
-        const qualityClass = data.validation.is_valid ? 'text-success' : 'text-warning';
-        this.animateValueChange('qualityStatus', qualityStatus, qualityClass);
+        if (data.validation) {
+            const qualityStatus = data.validation.is_valid ? 'Good' : 'Issues Detected';
+            const qualityClass = data.validation.is_valid ? 'text-success' : 'text-warning';
+            this.animateValueChange('qualityStatus', qualityStatus, qualityClass);
+            this.displayValidationIssues(data.validation.issues);
+        } else {
+            this.animateValueChange('qualityStatus', 'Not Assessed', '');
+        }
         
-        // Display data preview table with fade-in effect
         this.displayDataTable(data);
-        
-        // Display validation issues if any
-        this.displayValidationIssues(data.validation.issues);
     }
 
     displayIntelligenceSummary(intelligenceSummary) {
         if (!intelligenceSummary || !intelligenceSummary.profiling_completed) return;
         
-        // Update intelligence indicators with animations
-        this.animateValueChange('domainDetected', intelligenceSummary.primary_domain || 'Unknown');
+        let domain = 'General';
+        if (intelligenceSummary.domain_analysis && intelligenceSummary.domain_analysis.detected_domains) {
+            const domains = intelligenceSummary.domain_analysis.detected_domains;
+            if (domains.length > 0) {
+                domain = domains[0].domain;
+            }
+        }
+        
+        this.animateValueChange('domainDetected', domain);
         this.animateValueChange('relationshipCount', intelligenceSummary.relationships_found || 0);
         
         // Populate semantic types if available
@@ -1266,9 +1269,14 @@ class DataInsightApp {
 
     displayRelationshipDetails(graphData) {
         const container = document.getElementById('relationshipsList');
-        if (!container || !graphData.edges) return;
+        if (!container) return;
         
         container.innerHTML = '';
+        
+        if (!graphData || !graphData.edges || graphData.edges.length === 0) {
+            container.innerHTML = '<p class="no-relationships">No relationships found in the data.</p>';
+            return;
+        }
         
         graphData.edges.forEach((edge, index) => {
             const item = document.createElement('div');
@@ -1277,14 +1285,20 @@ class DataInsightApp {
             item.style.transform = 'translateX(20px)';
             item.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
             
+            const source = typeof edge.source === 'string' ? edge.source : (edge.source?.name || edge.source?.id || 'Unknown');
+            const target = typeof edge.target === 'string' ? edge.target : (edge.target?.name || edge.target?.id || 'Unknown');
+            const relationshipType = edge.type || edge.relationship_type || 'correlation';
+            const strength = edge.strength || edge.correlation || 0;
+            const description = edge.description || `${relationshipType.replace(/_/g, ' ')} between columns`;
+            
             item.innerHTML = `
                 <div class="relationship-header">
-                    <span class="relationship-type">${edge.type.replace(/_/g, ' ')}</span>
-                    <span class="relationship-strength">${(edge.strength * 100).toFixed(1)}%</span>
+                    <span class="relationship-type">${relationshipType.replace(/_/g, ' ')}</span>
+                    <span class="relationship-strength">${(strength * 100).toFixed(1)}%</span>
                 </div>
                 <div class="relationship-description">
-                    <strong>${edge.source}</strong> → <strong>${edge.target}</strong><br>
-                    ${edge.description || 'Statistical relationship detected'}
+                    <strong>${source}</strong> → <strong>${target}</strong><br>
+                    ${description}
                 </div>
             `;
             
@@ -1322,16 +1336,18 @@ class DataInsightApp {
 
     toggleAdvancedOptions() {
         const advancedOptions = document.getElementById('advancedOptions');
-        const isVisible = advancedOptions.style.display !== 'none';
+        const isVisible = advancedOptions.classList.contains('hidden') === false;
+        
+        console.log('Toggling advanced options, currently visible:', isVisible);
         
         if (isVisible) {
             advancedOptions.style.opacity = '0';
             advancedOptions.style.transform = 'translateY(-10px)';
             setTimeout(() => {
-                advancedOptions.style.display = 'none';
+                advancedOptions.classList.add('hidden');
             }, 300);
         } else {
-            advancedOptions.style.display = 'block';
+            advancedOptions.classList.remove('hidden');
             advancedOptions.style.opacity = '0';
             advancedOptions.style.transform = 'translateY(-10px)';
             advancedOptions.style.transition = 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
@@ -1534,7 +1550,8 @@ class DataInsightApp {
             'dataPreviewSection': 2,
             'intelligenceSection': 3,
             'taskConfigSection': 4,
-            'resultsSection': 5
+            'processingSection': 5,
+            'resultsSection': 6
         };
         return stepMap[sectionId] || 1;
     }
@@ -1585,23 +1602,48 @@ class DataInsightApp {
 
     displayValidationIssues(issues) {
         const container = document.getElementById('validationIssues');
-        if (!container || !issues || issues.length === 0) {
-            if (container) container.style.display = 'none';
+        if (!container) return;
+        
+        if (!issues || issues.length === 0) {
+            container.style.display = 'none';
             return;
         }
         
         container.style.display = 'block';
         container.innerHTML = `
-            <h4>Data Quality Issues</h4>
-            <ul class="issue-list">
-                ${issues.map(issue => `
-                    <li class="issue-item">
-                        <span class="issue-type">${issue.type}</span>
-                        <span class="issue-description">${issue.description}</span>
-                    </li>
-                `).join('')}
-            </ul>
+            <div class="quality-issues-header" onclick="this.parentElement.classList.toggle('expanded')">
+                <h4>
+                    <i class="fas fa-exclamation-triangle"></i>
+                    Data Quality Issues (${issues.length})
+                    <i class="fas fa-chevron-down expand-icon"></i>
+                </h4>
+            </div>
+            <div class="quality-issues-content">
+                <div class="issues-grid">
+                    ${issues.map(issue => `
+                        <div class="issue-card">
+                            <div class="issue-severity ${issue.severity || 'medium'}">
+                                ${this.getSeverityIcon(issue.severity)}
+                            </div>
+                            <div class="issue-details">
+                                <h5>${issue.type || 'Quality Issue'}</h5>
+                                <p>${issue.description || 'Issue detected in data'}</p>
+                                ${issue.affected_columns ? `<small>Columns: ${issue.affected_columns.join(', ')}</small>` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
         `;
+    }
+
+    getSeverityIcon(severity) {
+        const icons = {
+            'high': '<i class="fas fa-times-circle" style="color: #e74c3c;"></i>',
+            'medium': '<i class="fas fa-exclamation-circle" style="color: #f39c12;"></i>',
+            'low': '<i class="fas fa-info-circle" style="color: #3498db;"></i>'
+        };
+        return icons[severity] || icons['medium'];
     }
 
     restartWorkflow() {
