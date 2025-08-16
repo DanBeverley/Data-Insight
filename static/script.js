@@ -3,8 +3,11 @@
  * Elegant, minimalistic interface with smooth animations and intelligence features
  */
 
+console.log('🚀 DataInsight AI Script Loading...');
+
 class DataInsightApp {
     constructor() {
+        console.log('🔧 Initializing DataInsight App...');
         this.currentSessionId = null;
         this.currentStep = 1;
         this.intelligence = {
@@ -825,6 +828,7 @@ class DataInsightApp {
     }
 
     async processFile(file) {
+        console.log('📁 Processing file:', file.name);
         this.showElegantLoading('Uploading and analyzing your data...');
         
         try {
@@ -846,6 +850,13 @@ class DataInsightApp {
                 this.populateTargetSelect(data.columns);
                 this.showSection('dataPreviewSection');
                 this.showElegantSuccess(`File uploaded successfully: ${file.name}`);
+                
+                // Auto-advance to configuration after 2 seconds
+                setTimeout(() => {
+                    console.log('Auto-advancing to task configuration...');
+                    this.showSection('taskConfigSection');
+                    this.showElegantSuccess('Ready for configuration! Select your task type below.');
+                }, 2000);
             } else {
                 this.showElegantError('Upload failed: ' + data.detail);
             }
@@ -889,6 +900,13 @@ class DataInsightApp {
                 this.populateTargetSelect(data.columns);
                 this.showSection('dataPreviewSection');
                 this.showElegantSuccess('Data fetched successfully from URL');
+                
+                // Auto-advance to configuration after 2 seconds
+                setTimeout(() => {
+                    console.log('Auto-advancing to task configuration...');
+                    this.showSection('taskConfigSection');
+                    this.showElegantSuccess('Ready for configuration! Select your task type below.');
+                }, 2000);
             } else {
                 this.showElegantError('URL ingestion failed: ' + data.detail);
             }
@@ -1482,10 +1500,17 @@ class DataInsightApp {
 
     // UI Management methods
     showSection(sectionId) {
+        console.log(`Showing section: ${sectionId}`);
         const sections = document.querySelectorAll('.section');
+        console.log(`Found ${sections.length} sections`);
+        
         sections.forEach(section => {
             if (section.id === sectionId) {
-                section.classList.add('active');
+                console.log(`Making section ${sectionId} visible`);
+                section.classList.remove('hidden');
+                // Override CSS positioning
+                section.style.position = 'static';
+                section.style.left = 'auto';
                 section.style.opacity = '0';
                 section.style.transform = 'translateY(20px)';
                 section.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
@@ -1495,7 +1520,7 @@ class DataInsightApp {
                     section.style.transform = 'translateY(0)';
                 }, 50);
             } else {
-                section.classList.remove('active');
+                section.classList.add('hidden');
             }
         });
         
@@ -1508,7 +1533,7 @@ class DataInsightApp {
             'dataInputSection': 1,
             'dataPreviewSection': 2,
             'intelligenceSection': 3,
-            'configurationSection': 4,
+            'taskConfigSection': 4,
             'resultsSection': 5
         };
         return stepMap[sectionId] || 1;
@@ -1613,5 +1638,7 @@ class DataInsightApp {
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('📄 DOM Content Loaded - Starting App...');
     window.dataInsightApp = new DataInsightApp();
+    console.log('✅ App initialized successfully');
 });
