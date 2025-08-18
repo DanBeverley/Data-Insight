@@ -38,35 +38,40 @@ class DataInsightApp {
     }
 
     setupFileUpload() {
+        console.log('Setting up file upload...');
         const fileInput = document.getElementById('fileInput');
         const uploadZone = document.getElementById('uploadZone');
         
-        if (this.uploadZoneClickHandler) {
-            uploadZone.removeEventListener('click', this.uploadZoneClickHandler);
-        }
-        if (this.fileInputChangeHandler) {
-            fileInput.removeEventListener('change', this.fileInputChangeHandler);
+        console.log('fileInput:', fileInput);
+        console.log('uploadZone:', uploadZone);
+        
+        if (!fileInput || !uploadZone) {
+            console.error('File input or upload zone not found!');
+            return;
         }
         
-        this.uploadZoneClickHandler = () => {
-            if (this.lastClickTime && Date.now() - this.lastClickTime < 300) {
-                return;
-            }
-            this.lastClickTime = Date.now();
-            this.addButtonEffect(uploadZone);
+        // Store reference to this for use in handlers
+        const self = this;
+        
+        // Simple click handler
+        uploadZone.onclick = function() {
+            console.log('Upload zone clicked, triggering file input');
             fileInput.click();
         };
         
-        this.fileInputChangeHandler = (e) => {
-            this.handleFileSelect(e);
+        // Simple file change handler
+        fileInput.onchange = function(e) {
+            console.log('File selected:', e.target.files);
+            const file = e.target.files[0];
+            if (file) {
+                self.processFile(file);
+            }
         };
         
-        uploadZone.addEventListener('click', this.uploadZoneClickHandler);
-        
+        // Drag and drop
         uploadZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadZone.classList.add('drag-over');
-            this.createRippleEffect(e, uploadZone);
         });
         
         uploadZone.addEventListener('dragleave', () => {
@@ -76,11 +81,11 @@ class DataInsightApp {
         uploadZone.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadZone.classList.remove('drag-over');
-            this.addSuccessGlow(uploadZone);
-            this.handleFileDrop(e);
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                this.processFile(files[0]);
+            }
         });
-        
-        fileInput.addEventListener('change', this.fileInputChangeHandler);
 
         // URL ingestion with smooth interactions
         const urlSubmit = document.getElementById('urlSubmit');
@@ -159,6 +164,7 @@ class DataInsightApp {
         const downloadButtons = document.querySelectorAll('.download-btn');
         downloadButtons.forEach(button => {
             button.addEventListener('click', (e) => {
+                console.log('Download button clicked:', button.id);
                 this.addDownloadEffect(button);
                 this.handleDownload(button.id);
             });
@@ -554,6 +560,7 @@ class DataInsightApp {
             const data = await response.json();
             
             if (data.status === 'success') {
+                console.log('Graph data received:', data.graph_data);
                 this.intelligence.relationships = data.graph_data;
                 this.renderRelationshipGraph(data.graph_data);
                 this.displayRelationshipDetails(data.graph_data);
@@ -655,8 +662,7 @@ class DataInsightApp {
             const data = await response.json();
             
             if (data.status === 'success') {
-                this.displayEDAResults(data);
-                this.showSection('edaSection');
+                this.displayEDAResults(data.report);
                 this.showElegantSuccess('EDA report generated successfully');
             } else {
                 const errorMessage = data.detail || data.message || JSON.stringify(data);
@@ -697,10 +703,12 @@ class DataInsightApp {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    task_type: taskType,
+                    task: taskType,
                     target_column: targetColumn,
-                    use_robust_pipeline: true,
-                    ...config
+                    enable_robust_pipeline: true,
+                    enable_intelligence: document.getElementById('enableIntelligence')?.checked || true,
+                    feature_generation_enabled: document.getElementById('featureGeneration')?.checked || false,
+                    feature_selection_enabled: document.getElementById('featureSelection')?.checked || false
                 })
             });
             
@@ -784,23 +792,37 @@ class DataInsightApp {
     
     // Download handling with progress animation
     async handleDownload(downloadType) {
+        console.log('handleDownload called with:', downloadType);
+        console.log('Current session ID:', this.currentSessionId);
+        
         if (!this.currentSessionId) {
             this.showElegantError('No data session found');
             return;
         }
         
         const endpoints = {
-            'downloadCleaned': '/api/data/export/cleaned',
-            'downloadFeatures': '/api/data/export/features',
-            'downloadModel': '/api/data/export/model',
-            'downloadResults': '/api/data/export/results'
+            'downloadData': '/api/data',
+            'downloadEnhancedData': '/api/data', 
+            'downloadPipeline': '/api/data',
+            'downloadIntelligence': '/api/data',
+            'downloadLineage': '/api/data',
+            'downloadMetadata': '/api/data'
         };
         
         const endpoint = endpoints[downloadType];
-        if (!endpoint) return;
+        if (!endpoint) {
+            console.error('No endpoint found for download type:', downloadType);
+            this.showElegantError('Download not available for this artifact type');
+            return;
+        }
         
         try {
-            const response = await fetch(`${endpoint}/${this.currentSessionId}`);
+            const artifactType = this.getArtifactType(downloadType);
+            const downloadUrl = `${endpoint}/${this.currentSessionId}/download/${artifactType}`;
+            console.log('Download URL:', downloadUrl);
+            console.log('Artifact type:', artifactType);
+            
+            const response = await fetch(downloadUrl);
             
             if (response.ok) {
                 const blob = await response.blob();
@@ -815,10 +837,14 @@ class DataInsightApp {
                 
                 this.showElegantSuccess('Download completed successfully');
             } else {
-                this.showElegantError('Download failed');
+                console.error('Download failed. Status:', response.status, 'StatusText:', response.statusText);
+                const errorText = await response.text();
+                console.error('Error response:', errorText);
+                this.showElegantError(`Download failed: ${response.status} ${response.statusText}`);
             }
         } catch (error) {
-            this.showElegantError('Network error during download');
+            console.error('Network error during download:', error);
+            this.showElegantError('Network error during download: ' + error.message);
         }
     }
     
@@ -830,12 +856,6 @@ class DataInsightApp {
         }
     }
 
-    handleFileSelect(e) {
-        const file = e.target.files[0];
-        if (file) {
-            this.processFile(file);
-        }
-    }
 
     async processFile(file) {
         console.log('📁 Processing file:', file.name);
@@ -944,10 +964,60 @@ class DataInsightApp {
         this.animateValueChange('domainDetected', domain);
         this.animateValueChange('relationshipCount', intelligenceSummary.relationships_found || 0);
         
+        // Display feature processing status if available
+        if (intelligenceSummary.feature_generation_applied !== undefined || intelligenceSummary.feature_selection_applied !== undefined) {
+            this.displayFeatureProcessingStatus(intelligenceSummary);
+        }
+        
         // Populate semantic types if available
         if (intelligenceSummary.semantic_types) {
             this.displaySemanticTypes(intelligenceSummary.semantic_types);
         }
+    }
+
+    displayFeatureProcessingStatus(intelligenceSummary) {
+        // Create or update feature processing status display
+        let statusContainer = document.getElementById('featureProcessingStatus');
+        if (!statusContainer) {
+            statusContainer = document.createElement('div');
+            statusContainer.id = 'featureProcessingStatus';
+            statusContainer.className = 'feature-processing-status';
+            
+            // Find a good place to insert it - after processing summary
+            const summaryCard = document.querySelector('.summary-card');
+            if (summaryCard && summaryCard.parentNode) {
+                summaryCard.parentNode.insertBefore(statusContainer, summaryCard.nextSibling);
+            }
+        }
+        
+        const featureGenStatus = intelligenceSummary.feature_generation_applied ? 
+            '<span class="status-enabled">✓ Enabled</span>' : 
+            '<span class="status-disabled">✗ Disabled</span>';
+            
+        const featureSelStatus = intelligenceSummary.feature_selection_applied ? 
+            '<span class="status-enabled">✓ Enabled</span>' : 
+            '<span class="status-disabled">✗ Disabled</span>';
+        
+        const shapeInfo = intelligenceSummary.original_shape && intelligenceSummary.final_shape ?
+            `<div class="shape-info">
+                <span>Original Shape: ${intelligenceSummary.original_shape[0]}×${intelligenceSummary.original_shape[1]}</span>
+                <span>Final Shape: ${intelligenceSummary.final_shape[0]}×${intelligenceSummary.final_shape[1]}</span>
+            </div>` : '';
+        
+        statusContainer.innerHTML = `
+            <h4>Feature Processing Status</h4>
+            <div class="feature-status-grid">
+                <div class="status-item">
+                    <label>Feature Generation:</label>
+                    ${featureGenStatus}
+                </div>
+                <div class="status-item">
+                    <label>Feature Selection:</label>
+                    ${featureSelStatus}
+                </div>
+            </div>
+            ${shapeInfo}
+        `;
     }
 
     animateValueChange(elementId, newValue, className = '') {
@@ -1165,106 +1235,303 @@ class DataInsightApp {
 
     renderRelationshipGraph(graphData) {
         const container = document.getElementById('relationshipGraph');
-        if (!container || !graphData.nodes || graphData.nodes.length === 0) return;
+        if (!container) return;
         
-        // Clear existing content
+        // Stop any existing simulation and clear container completely
+        if (this.currentSimulation) {
+            this.currentSimulation.stop();
+            this.currentSimulation = null;
+        }
+        
+        // Clear container and remove any D3 selections
+        container.innerHTML = '';
+        if (typeof d3 !== 'undefined') {
+            try {
+                d3.select(container).selectAll('*').remove();
+            } catch (e) {
+                console.log('D3 cleanup error (non-critical):', e);
+            }
+        }
+        
+        if (!graphData || !graphData.nodes || graphData.nodes.length === 0) {
+            container.innerHTML = `
+                <div class="graph-placeholder">
+                    <i class="fas fa-info-circle"></i>
+                    <p>No relationship data available for visualization</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Use Canvas-based network graph visualization
+        this.renderCanvasNetworkGraph(container, graphData);
+        return;
+        
+        // D3.js code disabled to prevent errors
+        console.log('D3.js visualization disabled, using fallback');
+    }
+
+    renderCanvasNetworkGraph(container, graphData) {
+        // Clear container
         container.innerHTML = '';
         
-        const width = container.clientWidth;
-        const height = 400;
+        // Create wrapper div with title
+        const wrapper = document.createElement('div');
+        wrapper.className = 'canvas-graph-wrapper';
+        wrapper.innerHTML = '<h4 style="color: var(--color-white); margin-bottom: 1rem; text-align: center;">Feature Relationship Network</h4>';
         
-        const svg = d3.select(container)
-            .append('svg')
-            .attr('width', width)
-            .attr('height', height)
-            .style('background', 'var(--color-medium-grey)')
-            .style('border-radius', 'var(--border-radius-md)');
+        // Create canvas - much larger
+        const canvas = document.createElement('canvas');
+        canvas.width = 1000;
+        canvas.height = 700;
+        canvas.style.background = 'var(--color-medium-grey)';
+        canvas.style.borderRadius = 'var(--border-radius-md)';
+        canvas.style.border = '1px solid var(--color-light-grey)';
         
-        const simulation = d3.forceSimulation(graphData.nodes)
-            .force('link', d3.forceLink(graphData.edges).id(d => d.id).distance(100))
-            .force('charge', d3.forceManyBody().strength(-300))
-            .force('center', d3.forceCenter(width / 2, height / 2));
+        wrapper.appendChild(canvas);
+        container.appendChild(wrapper);
         
-        // Add links
-        const link = svg.append('g')
-            .selectAll('line')
-            .data(graphData.edges)
-            .join('line')
-            .attr('stroke', 'var(--color-accent-green)')
-            .attr('stroke-width', d => Math.sqrt(d.strength * 5) || 2)
-            .attr('stroke-opacity', 0.6)
-            .style('opacity', 0)
-            .transition()
-            .duration(1000)
-            .style('opacity', 1);
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
         
-        // Add nodes
-        const node = svg.append('g')
-            .selectAll('circle')
-            .data(graphData.nodes)
-            .join('circle')
-            .attr('r', 8)
-            .attr('fill', 'var(--color-accent-green)')
-            .attr('stroke', 'var(--color-white)')
-            .attr('stroke-width', 2)
-            .style('opacity', 0)
-            .call(d3.drag()
-                .on('start', dragstarted)
-                .on('drag', dragged)
-                .on('end', dragended))
-            .transition()
-            .duration(1000)
-            .delay((d, i) => i * 100)
-            .style('opacity', 1);
+        // Prepare node data with positions - more spread out initial positions
+        const nodes = graphData.nodes.map((node, i) => ({
+            ...node,
+            x: Math.random() * (width - 200) + 100,
+            y: Math.random() * (height - 200) + 100,
+            vx: 0,
+            vy: 0,
+            radius: 18
+        }));
         
-        // Add labels
-        const label = svg.append('g')
-            .selectAll('text')
-            .data(graphData.nodes)
-            .join('text')
-            .text(d => d.id)
-            .attr('font-size', '12px')
-            .attr('fill', 'var(--color-text-grey)')
-            .attr('text-anchor', 'middle')
-            .attr('dy', -15)
-            .style('opacity', 0)
-            .transition()
-            .duration(1000)
-            .delay((d, i) => i * 100)
-            .style('opacity', 1);
+        // Prepare edge data
+        const edges = graphData.edges.map(edge => {
+            const sourceNode = nodes.find(n => n.id === edge.source || n.name === edge.source);
+            const targetNode = nodes.find(n => n.id === edge.target || n.name === edge.target);
+            return {
+                ...edge,
+                sourceNode,
+                targetNode,
+                strength: edge.strength || 0.5
+            };
+        }).filter(edge => edge.sourceNode && edge.targetNode);
         
-        simulation.on('tick', () => {
-            link
-                .attr('x1', d => d.source.x)
-                .attr('y1', d => d.source.y)
-                .attr('x2', d => d.target.x)
-                .attr('y2', d => d.target.y);
+        // Simple physics simulation parameters
+        const simulation = {
+            alpha: 1,
+            alphaDecay: 0.02,
+            velocityDecay: 0.4,
+            forceStrength: 0.8,
+            linkDistance: 300,
+            centerForce: 0.1
+        };
+        
+        // Animation loop
+        const animate = () => {
+            if (simulation.alpha < 0.01) return;
             
-            node
-                .attr('cx', d => d.x)
-                .attr('cy', d => d.y);
+            simulation.alpha *= 1 - simulation.alphaDecay;
             
-            label
-                .attr('x', d => d.x)
-                .attr('y', d => d.y);
+            // Apply forces
+            this.applyForces(nodes, edges, width, height, simulation);
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+            
+            // Draw edges
+            this.drawEdges(ctx, edges);
+            
+            // Draw nodes
+            this.drawNodes(ctx, nodes);
+            
+            requestAnimationFrame(animate);
+        };
+        
+        // Start animation
+        animate();
+        
+        // Add click handling for node interaction
+        canvas.addEventListener('click', (event) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            const clickedNode = nodes.find(node => {
+                const dx = x - node.x;
+                const dy = y - node.y;
+                return Math.sqrt(dx*dx + dy*dy) < node.radius + 5;
+            });
+            
+            if (clickedNode) {
+                this.highlightNode(ctx, nodes, edges, clickedNode);
+            }
+        });
+    }
+    
+    applyForces(nodes, edges, width, height, simulation) {
+        // Reset forces
+        nodes.forEach(node => {
+            node.vx *= simulation.velocityDecay;
+            node.vy *= simulation.velocityDecay;
         });
         
-        function dragstarted(event, d) {
-            if (!event.active) simulation.alphaTarget(0.3).restart();
-            d.fx = d.x;
-            d.fy = d.y;
+        // Repulsion between nodes
+        for (let i = 0; i < nodes.length; i++) {
+            for (let j = i + 1; j < nodes.length; j++) {
+                const nodeA = nodes[i];
+                const nodeB = nodes[j];
+                const dx = nodeB.x - nodeA.x;
+                const dy = nodeB.y - nodeA.y;
+                const distance = Math.sqrt(dx*dx + dy*dy) || 1;
+                
+                if (distance < 250) {
+                    const force = simulation.forceStrength / (distance * distance);
+                    const fx = (dx / distance) * force;
+                    const fy = (dy / distance) * force;
+                    
+                    nodeA.vx -= fx;
+                    nodeA.vy -= fy;
+                    nodeB.vx += fx;
+                    nodeB.vy += fy;
+                }
+            }
         }
         
-        function dragged(event, d) {
-            d.fx = event.x;
-            d.fy = event.y;
-        }
+        // Link forces
+        edges.forEach(edge => {
+            const source = edge.sourceNode;
+            const target = edge.targetNode;
+            const dx = target.x - source.x;
+            const dy = target.y - source.y;
+            const distance = Math.sqrt(dx*dx + dy*dy) || 1;
+            const targetDistance = simulation.linkDistance * edge.strength;
+            const force = (distance - targetDistance) * 0.1;
+            
+            const fx = (dx / distance) * force;
+            const fy = (dy / distance) * force;
+            
+            source.vx += fx;
+            source.vy += fy;
+            target.vx -= fx;
+            target.vy -= fy;
+        });
         
-        function dragended(event, d) {
-            if (!event.active) simulation.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
-        }
+        // Center force
+        const centerX = width / 2;
+        const centerY = height / 2;
+        nodes.forEach(node => {
+            node.vx += (centerX - node.x) * simulation.centerForce * 0.01;
+            node.vy += (centerY - node.y) * simulation.centerForce * 0.01;
+        });
+        
+        // Update positions
+        nodes.forEach(node => {
+            node.x += node.vx;
+            node.y += node.vy;
+            
+            // Boundary constraints
+            node.x = Math.max(node.radius + 10, Math.min(width - node.radius - 10, node.x));
+            node.y = Math.max(node.radius + 10, Math.min(height - node.radius - 10, node.y));
+        });
+    }
+    
+    drawEdges(ctx, edges) {
+        edges.forEach(edge => {
+            const alpha = Math.min(edge.strength * 2, 1);
+            ctx.strokeStyle = `rgba(0, 255, 136, ${alpha * 0.8})`;
+            ctx.lineWidth = Math.max(2, edge.strength * 4);
+            
+            // Draw edge line
+            ctx.beginPath();
+            ctx.moveTo(edge.sourceNode.x, edge.sourceNode.y);
+            ctx.lineTo(edge.targetNode.x, edge.targetNode.y);
+            ctx.stroke();
+            
+            // Draw percentage label on edge
+            const midX = (edge.sourceNode.x + edge.targetNode.x) / 2;
+            const midY = (edge.sourceNode.y + edge.targetNode.y) / 2;
+            const percentage = Math.round((edge.strength || 0) * 100);
+            
+            // Background for text visibility - larger
+            ctx.fillStyle = 'rgba(26, 26, 26, 0.9)';
+            ctx.fillRect(midX - 20, midY - 10, 40, 20);
+            
+            // Percentage text - larger
+            ctx.fillStyle = '#FFD700';
+            ctx.font = 'bold 13px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${percentage}%`, midX, midY);
+        });
+    }
+    
+    drawNodes(ctx, nodes) {
+        nodes.forEach(node => {
+            // Draw node circle - all green
+            ctx.fillStyle = '#00ff88';
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, node.radius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+            
+            // Draw node label with better visibility
+            const label = (node.id || node.name || '').substring(0, 12);
+            
+            // Text background for visibility - larger
+            ctx.font = 'bold 14px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            const textWidth = ctx.measureText(label).width;
+            ctx.fillStyle = 'rgba(26, 26, 26, 0.9)';
+            ctx.fillRect(node.x - textWidth/2 - 6, node.y - node.radius - 30, textWidth + 12, 20);
+            
+            // Text in bright color - larger
+            ctx.fillStyle = '#FFD700';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, node.x, node.y - node.radius - 20);
+        });
+    }
+    
+    highlightNode(ctx, nodes, edges, highlightedNode) {
+        // Redraw with highlighted node
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        
+        // Draw all edges (dimmed)
+        ctx.strokeStyle = 'rgba(0, 255, 136, 0.2)';
+        ctx.lineWidth = 1;
+        edges.forEach(edge => {
+            ctx.beginPath();
+            ctx.moveTo(edge.sourceNode.x, edge.sourceNode.y);
+            ctx.lineTo(edge.targetNode.x, edge.targetNode.y);
+            ctx.stroke();
+        });
+        
+        // Draw highlighted edges
+        ctx.strokeStyle = 'rgba(0, 255, 136, 0.9)';
+        ctx.lineWidth = 3;
+        edges.forEach(edge => {
+            if (edge.sourceNode === highlightedNode || edge.targetNode === highlightedNode) {
+                ctx.beginPath();
+                ctx.moveTo(edge.sourceNode.x, edge.sourceNode.y);
+                ctx.lineTo(edge.targetNode.x, edge.targetNode.y);
+                ctx.stroke();
+            }
+        });
+        
+        // Draw all nodes
+        this.drawNodes(ctx, nodes);
+        
+        // Draw highlighted node
+        ctx.fillStyle = 'rgba(255, 215, 0, 0.9)';
+        ctx.strokeStyle = 'var(--color-white)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(highlightedNode.x, highlightedNode.y, highlightedNode.radius + 2, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
     }
 
     displayRelationshipDetails(graphData) {
@@ -1415,54 +1682,210 @@ class DataInsightApp {
     }
     
     displayEDAResults(data) {
-        const edaContainer = document.getElementById('edaResults');
-        if (!edaContainer) return;
+        // Show results in the overview tab since there's no dedicated EDA section
+        const overviewTab = document.getElementById('overviewTab');
+        if (!overviewTab) return;
         
-        edaContainer.innerHTML = '';
-        
-        // Display plots if available
-        if (data.plots) {
-            Object.entries(data.plots).forEach(([plotType, plotData]) => {
-                const plotContainer = document.createElement('div');
-                plotContainer.className = 'eda-plot-container';
-                plotContainer.innerHTML = `
-                    <h4>${plotType.replace(/_/g, ' ').toUpperCase()}</h4>
-                    <div class="plot-content">${plotData}</div>
-                `;
-                edaContainer.appendChild(plotContainer);
-            });
+        // Find or create EDA results container
+        let edaContainer = document.getElementById('edaResults');
+        if (!edaContainer) {
+            edaContainer = document.createElement('div');
+            edaContainer.id = 'edaResults';
+            edaContainer.className = 'eda-results';
+            overviewTab.appendChild(edaContainer);
         }
         
-        // Display statistics
-        if (data.statistics) {
-            const statsContainer = document.createElement('div');
-            statsContainer.className = 'eda-statistics';
-            statsContainer.innerHTML = `
-                <h4>STATISTICAL SUMMARY</h4>
-                <pre>${JSON.stringify(data.statistics, null, 2)}</pre>
+        edaContainer.innerHTML = `
+            <div class="eda-header">
+                <h3>📊 Exploratory Data Analysis</h3>
+                <p>Comprehensive analysis of your dataset</p>
+            </div>
+        `;
+        
+        // Basic info
+        if (data.basic_info) {
+            edaContainer.innerHTML += `
+                <div class="eda-section">
+                    <h4>Dataset Overview</h4>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="label">Shape:</span>
+                            <span class="value">${data.basic_info.shape[0]} rows × ${data.basic_info.shape[1]} columns</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="label">Total Missing:</span>
+                            <span class="value">${Object.values(data.basic_info.missing_values).reduce((a, b) => a + b, 0)} values</span>
+                        </div>
+                    </div>
+                </div>
             `;
-            edaContainer.appendChild(statsContainer);
+        }
+        
+        // Numeric summary
+        if (data.numeric_summary && Object.keys(data.numeric_summary).length > 0) {
+            const firstCol = Object.keys(data.numeric_summary)[0];
+            edaContainer.innerHTML += `
+                <div class="eda-section">
+                    <h4>Numeric Variables Summary</h4>
+                    <div class="summary-table">
+                        <table class="eda-table">
+                            <thead>
+                                <tr>
+                                    <th>Statistic</th>
+                                    ${Object.keys(data.numeric_summary).slice(0, 3).map(col => `<th>${col}</th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${['mean', 'std', 'min', 'max'].map(stat => `
+                                    <tr>
+                                        <td>${stat}</td>
+                                        ${Object.keys(data.numeric_summary).slice(0, 3).map(col => 
+                                            `<td>${data.numeric_summary[col][stat]?.toFixed(2) || 'N/A'}</td>`
+                                        ).join('')}
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Categorical summary
+        if (data.categorical_summary && Object.keys(data.categorical_summary).length > 0) {
+            edaContainer.innerHTML += `
+                <div class="eda-section">
+                    <h4>Categorical Variables</h4>
+                    <div class="categorical-grid">
+                        ${Object.entries(data.categorical_summary).map(([col, values]) => `
+                            <div class="categorical-item">
+                                <h5>${col}</h5>
+                                <ul>
+                                    ${Object.entries(values).slice(0, 5).map(([val, count]) => 
+                                        `<li>${val}: ${count}</li>`
+                                    ).join('')}
+                                </ul>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
         }
     }
     
     displayProcessingResults(data) {
-        // Update result metrics with animations
-        if (data.metrics) {
-            Object.entries(data.metrics).forEach(([metric, value]) => {
-                this.animateValueChange(metric, value);
-            });
+        console.log('Processing results received:', data);
+        
+        // Update basic metrics
+        if (data.data_shape) {
+            // For original shape, we might need to get it from session data or use data_shape as fallback
+            this.animateValueChange('originalShape', `${data.data_shape[0]} × ${data.data_shape[1]}`);
+            this.animateValueChange('processedShape', `${data.data_shape[0]} × ${data.data_shape[1]}`);
+            
+            // Add a note about the processing
+            const note = data.data_shape[0] === data.data_shape[1] && data.data_shape[0] > 0 
+                ? '(Data cleaned and prepared)' 
+                : '(Features engineered)';
+            
+            const processedElement = document.getElementById('processedShape');
+            if (processedElement && processedElement.parentElement) {
+                let noteElement = processedElement.parentElement.querySelector('.processing-note');
+                if (!noteElement) {
+                    noteElement = document.createElement('small');
+                    noteElement.className = 'processing-note';
+                    noteElement.style.color = 'var(--color-muted-grey)';
+                    processedElement.parentElement.appendChild(noteElement);
+                }
+                noteElement.textContent = note;
+            }
         }
         
-        // Display model performance if available
-        if (data.model_performance) {
-            this.displayModelPerformance(data.model_performance);
+        if (data.processing_time) {
+            this.animateValueChange('processingTime', `${data.processing_time.toFixed(2)}s`);
         }
         
-        // Display feature importance
-        if (data.feature_importance) {
-            this.displayFeatureImportance(data.feature_importance);
+        // Display column roles if available
+        if (data.column_roles) {
+            this.displayColumnClassification(data.column_roles);
+        }
+        
+        // Setup download buttons
+        if (data.artifacts) {
+            this.setupDownloadButtons(data.artifacts);
         }
     }
+    
+    displayColumnClassification(columnRoles) {
+        console.log('Column roles received:', columnRoles);
+        const container = document.getElementById('columnRoles');
+        if (!container) {
+            console.error('columnRoles container not found');
+            return;
+        }
+        
+        if (!columnRoles) {
+            console.log('No column roles provided');
+            container.innerHTML = '<p>No column classification available</p>';
+            return;
+        }
+        
+        container.innerHTML = '';
+        
+        const roleEntries = Object.entries(columnRoles);
+        console.log('Role entries:', roleEntries);
+        
+        if (roleEntries.length === 0) {
+            container.innerHTML = '<p>No column roles found in data</p>';
+            return;
+        }
+        
+        roleEntries.forEach(([role, columns]) => {
+            console.log(`Processing role: ${role}, columns:`, columns);
+            if (columns && Array.isArray(columns) && columns.length > 0) {
+                const roleDiv = document.createElement('div');
+                roleDiv.className = 'column-role-group';
+                roleDiv.innerHTML = `
+                    <h4 class="role-title">${role.replace(/_/g, ' ').toUpperCase()}</h4>
+                    <div class="column-tags">
+                        ${columns.map(col => `<span class="column-tag">${col}</span>`).join('')}
+                    </div>
+                `;
+                container.appendChild(roleDiv);
+            } else {
+                console.log(`Skipping role ${role} - no valid columns`);
+            }
+        });
+        
+        if (container.children.length === 0) {
+            container.innerHTML = '<p>No valid column classifications found</p>';
+        }
+    }
+    
+    setupDownloadButtons(artifacts) {
+        console.log('setupDownloadButtons called with artifacts:', artifacts);
+        
+        // Map artifact URLs to button IDs and enable buttons
+        const buttonMapping = {
+            'pipeline_metadata': 'downloadMetadata',
+            'processed_data': 'downloadData', 
+            'intelligence_report': 'downloadIntelligence',
+            'lineage': 'downloadLineage',
+            'enhanced_data': 'downloadEnhancedData',
+            'pipeline': 'downloadPipeline'
+        };
+        
+        Object.entries(artifacts).forEach(([type, url]) => {
+            const buttonId = buttonMapping[type] || `download${type.charAt(0).toUpperCase() + type.slice(1)}`;
+            const button = document.getElementById(buttonId);
+            if (button) {
+                console.log(`Enabling button ${buttonId} for artifact ${type}`);
+                button.style.opacity = '1';
+                button.disabled = false;
+                // Don't override the onclick - let the existing handleDownload system work
+            }
+        });
+    }
+    
     
     displayModelPerformance(performance) {
         const container = document.getElementById('modelPerformance');
@@ -1503,13 +1926,27 @@ class DataInsightApp {
         `;
     }
     
+    getArtifactType(downloadType) {
+        const artifactTypes = {
+            'downloadData': 'data',
+            'downloadEnhancedData': 'enhanced-data',
+            'downloadPipeline': 'pipeline',
+            'downloadIntelligence': 'intelligence',
+            'downloadLineage': 'lineage',
+            'downloadMetadata': 'robust-metadata'
+        };
+        return artifactTypes[downloadType] || 'data';
+    }
+
     getDownloadFilename(downloadType) {
         const timestamp = new Date().toISOString().slice(0, 10);
         const filenames = {
-            'downloadCleaned': `cleaned_data_${timestamp}.csv`,
-            'downloadFeatures': `engineered_features_${timestamp}.csv`,
-            'downloadModel': `trained_model_${timestamp}.pkl`,
-            'downloadResults': `results_${timestamp}.json`
+            'downloadData': `processed_data_${timestamp}.csv`,
+            'downloadEnhancedData': `enhanced_data_${timestamp}.csv`,
+            'downloadPipeline': `pipeline_${timestamp}.joblib`,
+            'downloadIntelligence': `intelligence_report_${timestamp}.json`,
+            'downloadLineage': `lineage_report_${timestamp}.json`,
+            'downloadMetadata': `metadata_${timestamp}.json`
         };
         return filenames[downloadType] || 'download.csv';
     }
