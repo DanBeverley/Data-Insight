@@ -168,7 +168,14 @@ class RobustPipelineOrchestrator:
         """Execute complete robust pipeline with error handling and recovery"""
         
         try:
+            # Store custom config for conditional feature execution
+            self.custom_config = custom_config or {}
+            feature_generation_enabled = self.custom_config.get('feature_generation_enabled', True)
+            feature_selection_enabled = self.custom_config.get('feature_selection_enabled', True)
+            
             self.logger.info(f"Starting pipeline execution for task: {task_type}")
+            self.logger.info(f"Feature generation enabled: {feature_generation_enabled}")
+            self.logger.info(f"Feature selection enabled: {feature_selection_enabled}")
             
             # Stage 1: Data Ingestion
             ingestion_result = self._execute_stage_with_recovery(
@@ -215,31 +222,53 @@ class RobustPipelineOrchestrator:
             if cleaning_result.status != "success":
                 return self._handle_pipeline_failure(cleaning_result)
             
-            # Stage 6: Intelligent Feature Engineering
-            fe_result = self._execute_stage_with_recovery(
-                PipelineStage.FEATURE_ENGINEERING,
-                lambda: self._execute_feature_engineering(
-                    cleaning_result.data, 
-                    profiling_result.metadata,
-                    target_column
+            # Stage 6: Intelligent Feature Engineering (conditional)
+            if feature_generation_enabled:
+                self.logger.info("Executing feature engineering stage")
+                fe_result = self._execute_stage_with_recovery(
+                    PipelineStage.FEATURE_ENGINEERING,
+                    lambda: self._execute_feature_engineering(
+                        cleaning_result.data, 
+                        profiling_result.metadata,
+                        target_column
+                    )
                 )
-            )
-            
-            if fe_result.status != "success":
-                return self._handle_pipeline_failure(fe_result)
-            
-            # Stage 7: Intelligent Feature Selection
-            fs_result = self._execute_stage_with_recovery(
-                PipelineStage.FEATURE_SELECTION,
-                lambda: self._execute_feature_selection(
-                    fe_result.data,
-                    target_column,
-                    task_type
+                
+                if fe_result.status != "success":
+                    return self._handle_pipeline_failure(fe_result)
+            else:
+                self.logger.info("Skipping feature engineering stage (disabled by config)")
+                # Use cleaned data as-is
+                fe_result = StageResult(
+                    stage=PipelineStage.FEATURE_ENGINEERING,
+                    status="skipped",
+                    data=cleaning_result.data,
+                    metadata={"skipped": True, "reason": "disabled_by_config"}
                 )
-            )
             
-            if fs_result.status != "success":
-                return self._handle_pipeline_failure(fs_result)
+            # Stage 7: Intelligent Feature Selection (conditional)
+            if feature_selection_enabled:
+                self.logger.info("Executing feature selection stage")
+                fs_result = self._execute_stage_with_recovery(
+                    PipelineStage.FEATURE_SELECTION,
+                    lambda: self._execute_feature_selection(
+                        fe_result.data,
+                        target_column,
+                        task_type
+                    )
+                )
+                
+                if fs_result.status != "success":
+                    return self._handle_pipeline_failure(fs_result)
+            else:
+                self.logger.info("Skipping feature selection stage (disabled by config)")
+                # Use feature engineering result as-is
+                fs_result = StageResult(
+                    stage=PipelineStage.FEATURE_SELECTION,
+                    status="skipped", 
+                    data=fe_result.data,
+                    metadata={"skipped": True, "reason": "disabled_by_config"}
+                )
             
             # Stage 8: Intelligent Model Selection
             modeling_result = self._execute_stage_with_recovery(
