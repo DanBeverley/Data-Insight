@@ -57,6 +57,10 @@ class AdvancedFeatureIntelligence:
             except Exception as e:
                 continue
         
+        # Add basic recommendations if none were generated
+        if not recommendations:
+            recommendations.extend(self._generate_basic_recommendations(df, column_profiles, target_column))
+        
         # Prioritize recommendations
         prioritized_recs = self._prioritize_recommendations(recommendations, df, target_column)
         
@@ -535,3 +539,68 @@ class AdvancedFeatureIntelligence:
             })
         
         return pipeline
+    
+    def _generate_basic_recommendations(self, df: pd.DataFrame, column_profiles: Dict, target_column: Optional[str]) -> List[FeatureEngineeringRecommendation]:
+        """Generate basic recommendations when no specialized ones are found"""
+        recommendations = []
+        
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        
+        # Basic scaling recommendation
+        if numeric_cols:
+            recommendations.append(FeatureEngineeringRecommendation(
+                feature_type='scaling',
+                priority='high',
+                description='Standardize numeric features for better model performance',
+                implementation=f'Apply StandardScaler to: {", ".join(numeric_cols[:3])}{"..." if len(numeric_cols) > 3 else ""}',
+                expected_benefit='Improved model convergence and performance',
+                computational_cost='low'
+            ))
+        
+        # Basic categorical encoding
+        if categorical_cols:
+            recommendations.append(FeatureEngineeringRecommendation(
+                feature_type='categorical',
+                priority='high',
+                description='Encode categorical variables for machine learning',
+                implementation=f'Apply encoding to: {", ".join(categorical_cols[:3])}{"..." if len(categorical_cols) > 3 else ""}',
+                expected_benefit='Enable ML algorithms to process categorical data',
+                computational_cost='low'
+            ))
+        
+        # Missing value handling
+        missing_cols = [col for col in df.columns if df[col].isnull().sum() > 0]
+        if missing_cols:
+            recommendations.append(FeatureEngineeringRecommendation(
+                feature_type='imputation',
+                priority='high',
+                description='Handle missing values in the dataset',
+                implementation=f'Impute missing values in: {", ".join(missing_cols[:3])}{"..." if len(missing_cols) > 3 else ""}',
+                expected_benefit='Complete dataset for model training',
+                computational_cost='low'
+            ))
+        
+        # Feature selection
+        if len(df.columns) > 10:
+            recommendations.append(FeatureEngineeringRecommendation(
+                feature_type='selection',
+                priority='medium',
+                description='Select most relevant features to reduce dimensionality',
+                implementation=f'Apply feature selection to {len(df.columns)} features',
+                expected_benefit='Reduced overfitting and improved performance',
+                computational_cost='medium'
+            ))
+        
+        # Basic interaction features for numeric data
+        if len(numeric_cols) >= 2:
+            recommendations.append(FeatureEngineeringRecommendation(
+                feature_type='interaction',
+                priority='medium',
+                description='Create interaction features between numeric variables',
+                implementation=f'Generate interactions between: {numeric_cols[0]} and {numeric_cols[1]}',
+                expected_benefit='Capture relationships between variables',
+                computational_cost='low'
+            ))
+        
+        return recommendations
