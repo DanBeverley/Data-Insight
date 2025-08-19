@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Insight - Advanced ML Analytics Platform</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            /* New Blue Color Scheme */
+            --color-primary: #3b82f6;
+            --color-primary-dark: #2563eb;
+            --color-primary-light: #60a5fa;
+            --color-secondary: #6366f1;
+            --color-accent: #8b5cf6;
+            
+            /* Dark Theme */
+            --color-background: #0f172a;
+            --color-surface: #1e293b;
+            --color-surface-light: #334155;
+            --color-text: #f8fafc;
+            --color-text-secondary: #cbd5e1;
+            --color-border: #475569;
+            
+            /* Status Colors */
+            --color-success: #10b981;
+            --color-warning: #f59e0b;
+            --color-error: #ef4444;
+            
+            /* Spacing & Layout */
+            --spacing-xs: 0.25rem;
+            --spacing-sm: 0.5rem;
+            --spacing-md: 1rem;
+            --spacing-lg: 1.5rem;
+            --spacing-xl: 2rem;
+            --spacing-2xl: 3rem;
+            
+            --border-radius: 0.5rem;
+            --border-radius-lg: 0.75rem;
+            --border-radius-xl: 1rem;
+            
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, var(--color-background) 0%, #1e293b 100%);
+            color: var(--color-text);
+            line-height: 1.6;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Particle Background */
+        #particleCanvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -1;
+            opacity: 0.6;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--color-border);
+            padding: var(--spacing-lg) 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 var(--spacing-lg);
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .logo i {
+            color: var(--color-primary);
+            font-size: 2rem;
+        }
+
+        .logo-text {
+            background: linear-gradient(45deg, var(--color-primary), var(--color-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            background: rgba(59, 130, 246, 0.1);
+            padding: var(--spacing-sm) var(--spacing-md);
+            border-radius: var(--border-radius);
+            border: 1px solid rgba(59, 130, 246, 0.2);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--color-success);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Main Content */
+        .main {
+            padding: var(--spacing-2xl) 0;
+            position: relative;
+            z-index: 1;
+        }
+
+        .section {
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius-lg);
+            padding: var(--spacing-2xl);
+            margin-bottom: var(--spacing-xl);
+            transition: var(--transition);
+        }
+
+        .section.hidden {
+            display: none;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: var(--spacing-2xl);
+        }
+
+        .section-header h2 {
+            font-size: 2rem;
+            margin-bottom: var(--spacing-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--spacing-md);
+        }
+
+        .step-number {
+            background: linear-gradient(45deg, var(--color-primary), var(--color-secondary));
+            color: white;
+            width: 3rem;
+            height: 3rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        .section-header p {
+            color: var(--color-text-secondary);
+            font-size: 1.1rem;
+        }
+
+        /* Upload Section */
+        .input-methods {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: var(--spacing-xl);
+            align-items: center;
+        }
+
+        .input-method {
+            background: rgba(51, 65, 85, 0.5);
+            border: 2px dashed var(--color-border);
+            border-radius: var(--border-radius-lg);
+            padding: var(--spacing-xl);
+            text-align: center;
+            transition: var(--transition);
+            cursor: pointer;
+        }
+
+        .input-method:hover {
+            border-color: var(--color-primary);
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .input-method.active {
+            border-color: var(--color-primary);
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .method-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--spacing-sm);
+            margin-bottom: var(--spacing-lg);
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .method-header i {
+            color: var(--color-primary);
+            font-size: 1.5rem;
+        }
+
+        .upload-zone {
+            padding: var(--spacing-xl);
+        }
+
+        .upload-zone i {
+            font-size: 3rem;
+            color: var(--color-primary);
+            margin-bottom: var(--spacing-md);
+            display: block;
+        }
+
+        .upload-zone p {
+            margin-bottom: var(--spacing-sm);
+        }
+
+        .subtext {
+            color: var(--color-text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .method-divider {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            color: var(--color-text-secondary);
+        }
+
+        .url-input-container {
+            display: flex;
+            gap: var(--spacing-sm);
+        }
+
+        .url-input {
+            flex: 1;
+            padding: var(--spacing-md);
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius);
+            color: var(--color-text);
+            font-size: 1rem;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: var(--spacing-md) var(--spacing-lg);
+            border: none;
+            border-radius: var(--border-radius);
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            display: inline-flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            font-size: 1rem;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, var(--color-primary), var(--color-secondary));
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3);
+        }
+
+        .btn-secondary {
+            background: var(--color-surface);
+            color: var(--color-text);
+            border: 1px solid var(--color-border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--color-surface-light);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Data Cards */
+        .data-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: var(--spacing-lg);
+            margin-bottom: var(--spacing-2xl);
+        }
+
+        .info-card {
+            background: rgba(51, 65, 85, 0.5);
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius-lg);
+            padding: var(--spacing-lg);
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-md);
+        }
+
+        .info-icon {
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(45deg, var(--color-primary), var(--color-secondary));
+            border-radius: var(--border-radius);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.2rem;
+        }
+
+        .info-content {
+            flex: 1;
+        }
+
+        .info-label {
+            display: block;
+            color: var(--color-text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .info-value {
+            display: block;
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--color-text);
+        }
+
+        /* Processing Animation */
+        .processing-container {
+            text-align: center;
+            padding: var(--spacing-2xl);
+        }
+
+        .processing-circle {
+            width: 120px;
+            height: 120px;
+            border: 4px solid rgba(59, 130, 246, 0.3);
+            border-top: 4px solid var(--color-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto var(--spacing-lg);
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .progress-bar {
+            width: 100%;
+            max-width: 400px;
+            height: 8px;
+            background: var(--color-surface);
+            border-radius: 4px;
+            margin: var(--spacing-lg) auto;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--color-primary), var(--color-secondary));
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+
+        /* Continue Button */
+        .continue-btn {
+            display: block;
+            margin: var(--spacing-2xl) auto 0;
+            padding: var(--spacing-lg) var(--spacing-2xl);
+            background: linear-gradient(45deg, var(--color-primary), var(--color-secondary));
+            color: white;
+            border: none;
+            border-radius: var(--border-radius-lg);
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .continue-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3);
+        }
+
+        /* Graph Container */
+        .graph-container {
+            background: rgba(51, 65, 85, 0.5);
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius-lg);
+            padding: var(--spacing-lg);
+            margin: var(--spacing-lg) 0;
+        }
+
+        .canvas-graph-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: var(--spacing-lg);
+        }
+
+        /* Download Grid */
+        .download-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: var(--spacing-md);
+            margin-top: var(--spacing-lg);
+        }
+
+        .download-item {
+            background: rgba(51, 65, 85, 0.5);
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius);
+            padding: var(--spacing-lg);
+            text-align: center;
+            cursor: pointer;
+            transition: var(--transition);
+        }
+
+        .download-item:hover {
+            border-color: var(--color-primary);
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .download-item i {
+            font-size: 2rem;
+            color: var(--color-primary);
+            margin-bottom: var(--spacing-sm);
+            display: block;
+        }
+
+        .download-item .title {
+            font-weight: 600;
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .download-item .subtitle {
+            color: var(--color-text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .input-methods {
+                grid-template-columns: 1fr;
+                gap: var(--spacing-md);
+            }
+
+            .method-divider {
+                display: none;
+            }
+
+            .data-info-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .download-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Toast Notifications */
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius);
+            padding: var(--spacing-md) var(--spacing-lg);
+            color: var(--color-text);
+            z-index: 1000;
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast.success {
+            border-color: var(--color-success);
+            background: rgba(16, 185, 129, 0.1);
+        }
+
+        .toast.error {
+            border-color: var(--color-error);
+            background: rgba(239, 68, 68, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <!-- Particle Background Canvas -->
+    <canvas id="particleCanvas"></canvas>
+
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="container">
+                <div class="header-content">
+                    <div class="logo">
+                        <i class="fas fa-brain"></i>
+                        <span class="logo-text">Data Insight</span>
+                    </div>
+                    <div class="status-indicator">
+                        <div class="status-dot"></div>
+                        <span>Ready</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <div class="container">
+                <!-- Step 1: Data Input -->
+                <section class="section" id="dataInputSection">
+                    <div class="section-header">
+                        <h2><span class="step-number">01</span> Data Input</h2>
+                        <p>Upload your dataset or provide a URL to get started</p>
+                    </div>
+                    
+                    <div class="input-methods">
+                        <div class="input-method active" data-method="upload">
+                            <div class="method-header">
+                                <i class="fas fa-upload"></i>
+                                <span>Upload File</span>
+                            </div>
+                            <div class="upload-zone" id="uploadZone">
+                                <i class="fas fa-cloud-upload-alt"></i>
+                                <p>Drag & drop your CSV/Excel file here</p>
+                                <p class="subtext">or click to browse</p>
+                                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden>
+                            </div>
+                        </div>
+                        
+                        <div class="method-divider">
+                            <span>OR</span>
+                        </div>
+                        
+                        <div class="input-method" data-method="url">
+                            <div class="method-header">
+                                <i class="fas fa-link"></i>
+                                <span>URL Data Source</span>
+                            </div>
+                            <div class="url-input-container">
+                                <input type="url" id="urlInput" placeholder="https://example.com/data.csv" class="url-input">
+                                <button id="urlSubmit" class="btn btn-primary">
+                                    <i class="fas fa-download"></i>
+                                    Fetch
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Step 2: Data Preview & Intelligence -->
+                <section class="section hidden" id="dataPreviewSection">
+                    <div class="section-header">
+                        <h2><span class="step-number">02</span> Data Intelligence</h2>
+                        <p>AI-powered data understanding and insights</p>
+                    </div>
+                    
+                    <div class="data-info-grid">
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-table"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Dataset Shape</span>
+                                <span class="info-value" id="dataShape">-</span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-brain"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Domain Detected</span>
+                                <span class="info-value" id="domainDetected">-</span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-check-circle"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Data Quality</span>
+                                <span class="info-value" id="dataQuality">-</span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-exclamation-triangle"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Missing Values</span>
+                                <span class="info-value" id="missingValues">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="dataPreview"></div>
+                    <div id="validationIssues"></div>
+                    <div id="edaResults"></div>
+                    <div id="relationshipGraph" class="graph-container"></div>
+
+                    <button class="continue-btn" id="continueToConfig">
+                        <i class="fas fa-arrow-right"></i>
+                        Continue to Configuration
+                    </button>
+                </section>
+
+                <!-- Step 3: Task Configuration -->
+                <section class="section hidden" id="configSection">
+                    <div class="section-header">
+                        <h2><span class="step-number">03</span> Task Configuration</h2>
+                        <p>Configure your machine learning task and preferences</p>
+                    </div>
+
+                    <div class="data-info-grid">
+                        <div class="info-card">
+                            <div class="info-content">
+                                <span class="info-label">ML Task</span>
+                                <select id="taskSelect" class="url-input" style="width: 100%;">
+                                    <option value="classification">Classification</option>
+                                    <option value="regression">Regression</option>
+                                    <option value="clustering">Clustering</option>
+                                    <option value="timeseries">Time-Series Forecasting</option>
+                                    <option value="nlp">NLP Text Analysis</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-content">
+                                <span class="info-label">Target Column</span>
+                                <select id="targetSelect" class="url-input" style="width: 100%;">
+                                    <option value="">Select target column...</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="data-info-grid">
+                        <div class="info-card">
+                            <div class="info-content">
+                                <label style="display: flex; align-items: center; gap: 10px;">
+                                    <input type="checkbox" id="enableIntelligence" checked>
+                                    <span>Enable AI Intelligence Features</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-content">
+                                <label style="display: flex; align-items: center; gap: 10px;">
+                                    <input type="checkbox" id="featureGeneration">
+                                    <span>Enable Feature Generation</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-content">
+                                <label style="display: flex; align-items: center; gap: 10px;">
+                                    <input type="checkbox" id="featureSelection">
+                                    <span>Enable Feature Selection</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="continue-btn" id="startProcessing">
+                        <i class="fas fa-play"></i>
+                        Start Processing
+                    </button>
+                </section>
+
+                <!-- Step 4: Processing -->
+                <section class="section hidden" id="processingSection">
+                    <div class="section-header">
+                        <h2><span class="step-number">04</span> Processing Pipeline</h2>
+                        <p>Advanced ML pipeline in progress</p>
+                    </div>
+
+                    <div class="processing-container">
+                        <div class="processing-circle"></div>
+                        <h3>Processing Your Data</h3>
+                        <p id="processingStatus">Initializing pipeline...</p>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressBar"></div>
+                        </div>
+                    </div>
+
+                    <div id="processingSteps"></div>
+                </section>
+
+                <!-- Step 5: Results -->
+                <section class="section hidden" id="resultsSection">
+                    <div class="section-header">
+                        <h2><span class="step-number">05</span> Results</h2>
+                        <p>Processing complete! Review and download your results</p>
+                    </div>
+
+                    <div class="data-info-grid">
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-table"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Original Shape</span>
+                                <span class="info-value" id="originalShape">-</span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-cogs"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Processed Shape</span>
+                                <span class="info-value" id="processedShape">-</span>
+                            </div>
+                        </div>
+                        
+                        <div class="info-card">
+                            <div class="info-icon">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                            <div class="info-content">
+                                <span class="info-label">Processing Time</span>
+                                <span class="info-value" id="processingTime">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="columnRoles"></div>
+
+                    <h3 style="margin: 2rem 0 1rem 0; color: var(--color-text);">Download Artifacts</h3>
+                    <div class="download-grid">
+                        <div class="download-item" id="downloadData">
+                            <i class="fas fa-table"></i>
+                            <div class="title">Processed Data</div>
+                            <div class="subtitle">CSV format</div>
+                        </div>
+                        
+                        <div class="download-item" id="downloadEnhancedData">
+                            <i class="fas fa-sparkles"></i>
+                            <div class="title">Enhanced Data</div>
+                            <div class="subtitle">With engineered features</div>
+                        </div>
+                        
+                        <div class="download-item" id="downloadPipeline">
+                            <i class="fas fa-cogs"></i>
+                            <div class="title">ML Pipeline</div>
+                            <div class="subtitle">Joblib format</div>
+                        </div>
+                        
+                        <div class="download-item" id="downloadIntelligence">
+                            <i class="fas fa-brain"></i>
+                            <div class="title">Intelligence Report</div>
+                            <div class="subtitle">JSON format</div>
+                        </div>
+                        
+                        <div class="download-item" id="downloadLineage">
+                            <i class="fas fa-project-diagram"></i>
+                            <div class="title">Lineage Report</div>
+                            <div class="subtitle">JSON format</div>
+                        </div>
+                        
+                        <div class="download-item" id="downloadMetadata">
+                            <i class="fas fa-file-alt"></i>
+                            <div class="title">Pipeline Metadata</div>
+                            <div class="subtitle">JSON format</div>
+                        </div>
+                    </div>
+
+                    <button class="continue-btn" id="processNewData" style="background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border);">
+                        <i class="fas fa-refresh"></i>
+                        Process New Data
+                    </button>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toastContainer"></div>
+
+    <script src="/static/script.js"></script>
+    <script>
+        // Particle Background with Connecting Lines
+        class ParticleSystem {
+            constructor() {
+                this.canvas = document.getElementById('particleCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.particles = [];
+                this.connections = [];
+                this.connectionDistance = 120;
+                this.particleCount = 40;
+                this.maxConnections = 3;
+                
+                this.resize();
+                this.init();
+                this.animate();
+                this.startConnectionCreation();
+                
+                window.addEventListener('resize', () => this.resize());
+            }
+            
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+            }
+            
+            init() {
+                this.particles = [];
+                for (let i = 0; i < this.particleCount; i++) {
+                    this.particles.push({
+                        x: Math.random() * this.canvas.width,
+                        y: Math.random() * this.canvas.height,
+                        vx: (Math.random() - 0.5) * 0.8,
+                        vy: (Math.random() - 0.5) * 0.8,
+                        size: Math.random() * 2 + 2
+                    });
+                }
+            }
+            
+            startConnectionCreation() {
+                // Create random connections that fade out after 5 seconds
+                setInterval(() => {
+                    if (this.particles.length >= 2) {
+                        const particle1 = this.particles[Math.floor(Math.random() * this.particles.length)];
+                        const particle2 = this.particles[Math.floor(Math.random() * this.particles.length)];
+                        
+                        if (particle1 !== particle2) {
+                            const connection = {
+                                p1: particle1,
+                                p2: particle2,
+                                createdAt: Date.now(),
+                                maxOpacity: Math.random() * 0.6 + 0.2
+                            };
+                            
+                            this.connections.push(connection);
+                            
+                            // Remove connection after 5 seconds
+                            setTimeout(() => {
+                                const index = this.connections.indexOf(connection);
+                                if (index > -1) {
+                                    this.connections.splice(index, 1);
+                                }
+                            }, 5000);
+                        }
+                    }
+                }, 1500 + Math.random() * 2000); // Random interval between 1.5-3.5 seconds
+            }
+            
+            animate() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Update particles
+                this.particles.forEach(particle => {
+                    particle.x += particle.vx;
+                    particle.y += particle.vy;
+                    
+                    // Bounce off edges
+                    if (particle.x < 0 || particle.x > this.canvas.width) particle.vx *= -1;
+                    if (particle.y < 0 || particle.y > this.canvas.height) particle.vy *= -1;
+                    
+                    // Keep particles in bounds
+                    particle.x = Math.max(0, Math.min(this.canvas.width, particle.x));
+                    particle.y = Math.max(0, Math.min(this.canvas.height, particle.y));
+                });
+                
+                // Draw connections with fade effect
+                this.drawConnections();
+                
+                // Draw particles
+                this.drawParticles();
+                
+                requestAnimationFrame(() => this.animate());
+            }
+            
+            drawConnections() {
+                const currentTime = Date.now();
+                
+                this.connections.forEach(connection => {
+                    const age = currentTime - connection.createdAt;
+                    const fadeTime = 5000; // 5 seconds
+                    
+                    let opacity;
+                    if (age < 1000) {
+                        // Fade in over first second
+                        opacity = (age / 1000) * connection.maxOpacity;
+                    } else if (age > fadeTime - 1000) {
+                        // Fade out over last second
+                        opacity = ((fadeTime - age) / 1000) * connection.maxOpacity;
+                    } else {
+                        // Full opacity in middle
+                        opacity = connection.maxOpacity;
+                    }
+                    
+                    if (opacity > 0) {
+                        this.ctx.strokeStyle = `rgba(59, 130, 246, ${opacity})`;
+                        this.ctx.lineWidth = 1.5;
+                        this.ctx.globalAlpha = 1;
+                        
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(connection.p1.x, connection.p1.y);
+                        this.ctx.lineTo(connection.p2.x, connection.p2.y);
+                        this.ctx.stroke();
+                    }
+                });
+                
+                this.ctx.globalAlpha = 1;
+            }
+            
+            drawParticles() {
+                this.particles.forEach(particle => {
+                    // Main particle
+                    this.ctx.fillStyle = 'rgba(59, 130, 246, 0.8)';
+                    this.ctx.beginPath();
+                    this.ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    
+                    // Glow effect
+                    this.ctx.fillStyle = 'rgba(59, 130, 246, 0.3)';
+                    this.ctx.beginPath();
+                    this.ctx.arc(particle.x, particle.y, particle.size * 1.5, 0, Math.PI * 2);
+                    this.ctx.fill();
+                });
+            }
+        }
+        
+        // Initialize particle system when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new ParticleSystem();
+        });
+    </script>
+</body>
+</html>

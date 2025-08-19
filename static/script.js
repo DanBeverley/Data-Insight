@@ -91,20 +91,24 @@ class DataInsightApp {
         const urlSubmit = document.getElementById('urlSubmit');
         const urlInput = document.getElementById('urlInput');
         
-        urlSubmit.addEventListener('click', (e) => {
-            this.addButtonEffect(urlSubmit);
-            this.handleUrlSubmit();
-        });
-        
-        urlInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.addInputEffect(urlInput);
+        if (urlSubmit) {
+            urlSubmit.addEventListener('click', (e) => {
+                this.addButtonEffect(urlSubmit);
                 this.handleUrlSubmit();
-            }
-        });
+            });
+        }
         
-        urlInput.addEventListener('focus', () => this.addInputFocus(urlInput));
-        urlInput.addEventListener('blur', () => this.removeInputFocus(urlInput));
+        if (urlInput) {
+            urlInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.addInputEffect(urlInput);
+                    this.handleUrlSubmit();
+                }
+            });
+            
+            urlInput.addEventListener('focus', () => this.addInputFocus(urlInput));
+            urlInput.addEventListener('blur', () => this.removeInputFocus(urlInput));
+        }
     }
 
     setupIntelligenceTabs() {
@@ -123,8 +127,12 @@ class DataInsightApp {
         const taskSelect = document.getElementById('taskSelect');
         const advancedToggle = document.getElementById('advancedToggle');
         
-        taskSelect.addEventListener('change', this.handleTaskChange.bind(this));
-        advancedToggle.addEventListener('change', this.toggleAdvancedOptions.bind(this));
+        if (taskSelect) {
+            taskSelect.addEventListener('change', this.handleTaskChange.bind(this));
+        }
+        if (advancedToggle) {
+            advancedToggle.addEventListener('change', this.toggleAdvancedOptions.bind(this));
+        }
         
         // Add smooth interactions to checkboxes
         const checkboxes = document.querySelectorAll('input[type="checkbox"]');
@@ -137,10 +145,12 @@ class DataInsightApp {
 
     setupProcessing() {
         const startButton = document.getElementById('startProcessing');
-        startButton.addEventListener('click', (e) => {
-            this.addButtonEffect(startButton);
-            this.startProcessing();
-        });
+        if (startButton) {
+            startButton.addEventListener('click', (e) => {
+                this.addButtonEffect(startButton);
+                this.startProcessing();
+            });
+        }
         
         const refreshButton = document.getElementById('refreshStatus');
         const recoveryButton = document.getElementById('triggerRecovery');
@@ -215,13 +225,56 @@ class DataInsightApp {
 
     setupContinueButton() {
         const continueButton = document.getElementById('continueToConfig');
-        if (continueButton) {
-            continueButton.addEventListener('click', (e) => {
-                this.addButtonEffect(continueButton);
-                this.showSection('taskConfigSection');
-                this.showElegantSuccess('Ready for configuration! Select your task type below.');
-            });
+        if (!continueButton) {
+            console.warn('Continue button not found in DOM');
+            return;
         }
+        
+        continueButton.addEventListener('click', (e) => {
+            // Prevent double-click issues
+            if (!e || !e.target) {
+                console.warn('Invalid click event received');
+                return;
+            }
+            
+            // Prevent multiple rapid clicks
+            if (this.lastClickTime && Date.now() - this.lastClickTime < 500) {
+                console.log('Ignoring rapid click');
+                return;
+            }
+            this.lastClickTime = Date.now();
+            
+            try {
+                // Null check for button effect method
+                if (typeof this.addButtonEffect === 'function') {
+                    this.addButtonEffect(continueButton);
+                } else {
+                    console.warn('addButtonEffect method not available');
+                }
+                
+                // Null check for section display method
+                if (typeof this.showSection === 'function') {
+                    this.showSection('taskConfigSection');
+                } else {
+                    console.error('showSection method not available');
+                    return;
+                }
+                
+                // Null check for success message method
+                if (typeof this.showElegantSuccess === 'function') {
+                    this.showElegantSuccess('Ready for configuration! Select your task type below.');
+                } else {
+                    console.warn('showElegantSuccess method not available');
+                }
+            } catch (error) {
+                console.error('Error in continue button handler:', error);
+                // Fallback: at least try to show the section
+                const targetSection = document.getElementById('taskConfigSection');
+                if (targetSection) {
+                    targetSection.classList.remove('hidden');
+                }
+            }
+        });
     }
 
     initializeUI() {
@@ -582,23 +635,35 @@ class DataInsightApp {
         const loadingOverlay = document.getElementById('loadingOverlay');
         const loadingText = document.getElementById('loadingText');
         
-        loadingText.textContent = message;
-        loadingOverlay.classList.remove('hidden');
-        loadingOverlay.style.opacity = '0';
-        loadingOverlay.style.transition = 'opacity 0.3s ease';
+        if (loadingText) {
+            loadingText.textContent = message;
+        }
         
-        setTimeout(() => {
-            loadingOverlay.style.opacity = '1';
-        }, 50);
+        if (loadingOverlay) {
+            loadingOverlay.classList.remove('hidden');
+            loadingOverlay.style.opacity = '0';
+            loadingOverlay.style.transition = 'opacity 0.3s ease';
+            
+            setTimeout(() => {
+                loadingOverlay.style.opacity = '1';
+            }, 50);
+        }
+        
+        // Fallback: show message in console if elements don't exist
+        if (!loadingText || !loadingOverlay) {
+            console.log('Loading:', message);
+        }
     }
 
     hideElegantLoading() {
         const loadingOverlay = document.getElementById('loadingOverlay');
         
-        loadingOverlay.style.opacity = '0';
-        setTimeout(() => {
-            loadingOverlay.classList.add('hidden');
-        }, 300);
+        if (loadingOverlay) {
+            loadingOverlay.style.opacity = '0';
+            setTimeout(() => {
+                loadingOverlay.classList.add('hidden');
+            }, 300);
+        }
     }
 
     showElegantSuccess(message) {
@@ -610,31 +675,105 @@ class DataInsightApp {
     }
 
     showElegantToast(message, type) {
+        // Validate parameters
+        if (!message) {
+            console.warn('showElegantToast: No message provided');
+            return;
+        }
+        
+        // Ensure message is a string
+        const safeMessage = typeof message === 'string' ? message : String(message);
+        
+        // Validate and sanitize type parameter
+        const validTypes = ['success', 'error', 'warning', 'info'];
+        const safeType = validTypes.includes(type) ? type : 'info';
+        
+        // Check if toast container exists
         const toastContainer = document.getElementById('toastContainer');
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
+        if (!toastContainer) {
+            console.error('showElegantToast: Toast container not found in DOM');
+            // Fallback: log message to console
+            console.log(`Toast (${safeType}): ${safeMessage}`);
+            return;
+        }
         
-        toast.innerHTML = `
-            <div class="toast-content">
-                <div class="toast-icon">
-                    <i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'}"></i>
+        try {
+            // Create toast element
+            const toast = document.createElement('div');
+            if (!toast) {
+                console.error('showElegantToast: Failed to create toast element');
+                return;
+            }
+            
+            toast.className = `toast ${safeType}`;
+            
+            // Determine icon based on type
+            const iconClass = safeType === 'success' ? 'fa-check-circle' : 
+                            safeType === 'error' ? 'fa-exclamation-circle' :
+                            safeType === 'warning' ? 'fa-exclamation-triangle' : 
+                            'fa-info-circle';
+            
+            // Escape HTML in message to prevent XSS
+            const escapedMessage = safeMessage.replace(/[&<>"']/g, (match) => {
+                const escapeChars = {
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                };
+                return escapeChars[match];
+            });
+            
+            toast.innerHTML = `
+                <div class="toast-content">
+                    <div class="toast-icon">
+                        <i class="fas ${iconClass}"></i>
+                    </div>
+                    <div class="toast-message">
+                        <div class="toast-text">${escapedMessage}</div>
+                    </div>
                 </div>
-                <div class="toast-message">
-                    <div class="toast-text">${message}</div>
-                </div>
-            </div>
-        `;
-        
-        toastContainer.appendChild(toast);
-        
-        setTimeout(() => {
-            toast.classList.add('show');
-        }, 50);
-        
-        setTimeout(() => {
-            toast.classList.remove('show');
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
+            `;
+            
+            // Safely append to container
+            toastContainer.appendChild(toast);
+            
+            // Show animation with error handling
+            const showTimeout = setTimeout(() => {
+                if (toast && toast.parentNode) {
+                    toast.classList.add('show');
+                }
+            }, 50);
+            
+            // Hide animation with error handling
+            const hideTimeout = setTimeout(() => {
+                if (toast && toast.parentNode) {
+                    toast.classList.remove('show');
+                    const removeTimeout = setTimeout(() => {
+                        if (toast && toast.parentNode) {
+                            try {
+                                toast.remove();
+                            } catch (e) {
+                                console.warn('Error removing toast element:', e);
+                            }
+                        }
+                    }, 300);
+                    
+                    // Store timeout reference for potential cleanup
+                    toast._removeTimeout = removeTimeout;
+                }
+            }, 3000);
+            
+            // Store timeout references for potential cleanup
+            toast._showTimeout = showTimeout;
+            toast._hideTimeout = hideTimeout;
+            
+        } catch (error) {
+            console.error('showElegantToast: Error creating toast notification:', error);
+            // Fallback: at least log the message
+            console.log(`Toast fallback (${safeType}): ${safeMessage}`);
+        }
     }
 
     // EDA Generation with elegant loading
@@ -871,6 +1010,13 @@ class DataInsightApp {
                 body: formData
             });
             
+            console.log('Upload response status:', response.status);
+            console.log('Upload response ok:', response.ok);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const data = await response.json();
             
             if (data.session_id) {
@@ -884,7 +1030,8 @@ class DataInsightApp {
                 this.showElegantError('Upload failed: ' + data.detail);
             }
         } catch (error) {
-            this.showElegantError('Network error during upload');
+            console.error('Upload error details:', error);
+            this.showElegantError(`Network error during upload: ${error.message}`);
         } finally {
             this.hideElegantLoading();
         }
@@ -936,18 +1083,22 @@ class DataInsightApp {
     // Display Methods with Smooth Animations
     displayDataPreview(data) {
         this.animateValueChange('dataShape', `${data.shape[0]} × ${data.shape[1]}`);
-        this.animateValueChange('columnCount', data.shape[1]);
+        
+        // Update missing values count
+        if (data.validation && data.validation.missing_values_count !== undefined) {
+            this.animateValueChange('missingValues', data.validation.missing_values_count);
+        }
         
         if (data.validation) {
             const qualityStatus = data.validation.is_valid ? 'Good' : 'Issues Detected';
-            const qualityClass = data.validation.is_valid ? 'text-success' : 'text-warning';
-            this.animateValueChange('qualityStatus', qualityStatus, qualityClass);
+            this.animateValueChange('dataQuality', qualityStatus);
             this.displayValidationIssues(data.validation.issues);
         } else {
-            this.animateValueChange('qualityStatus', 'Not Assessed', '');
+            this.animateValueChange('dataQuality', 'Not Assessed');
         }
         
-        this.displayDataTable(data);
+        // Create a simple data preview table
+        this.createSimpleDataPreview(data);
     }
 
     displayIntelligenceSummary(intelligenceSummary) {
@@ -1038,11 +1189,62 @@ class DataInsightApp {
         }, 150);
     }
 
+    // Simple data preview for our dashboard
+    createSimpleDataPreview(data) {
+        const previewContainer = document.getElementById('dataPreview');
+        if (!previewContainer) {
+            console.log('Data preview container not found');
+            return;
+        }
+
+        // Create a simple table structure
+        let tableHTML = '<div class="data-preview-table">';
+        tableHTML += '<h4 style="color: var(--color-text); margin-bottom: 1rem;">Data Preview</h4>';
+        
+        if (data.columns && data.columns.length > 0) {
+            tableHTML += '<div class="preview-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">';
+            
+            // Show first few columns
+            const maxColumns = Math.min(data.columns.length, 6);
+            for (let i = 0; i < maxColumns; i++) {
+                const column = data.columns[i];
+                const dataType = data.data_types ? data.data_types[column] : 'unknown';
+                
+                tableHTML += `
+                    <div class="column-info" style="background: rgba(51, 65, 85, 0.5); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--color-border);">
+                        <div style="font-weight: 600; color: var(--color-text); margin-bottom: 0.5rem;">${column}</div>
+                        <div style="color: var(--color-text-secondary); font-size: 0.9rem;">${dataType}</div>
+                    </div>
+                `;
+            }
+            
+            if (data.columns.length > maxColumns) {
+                tableHTML += `<div class="column-info" style="background: rgba(51, 65, 85, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px dashed var(--color-border); display: flex; align-items: center; justify-content: center; color: var(--color-text-secondary);">+${data.columns.length - maxColumns} more columns</div>`;
+            }
+            
+            tableHTML += '</div>';
+        }
+        
+        tableHTML += '</div>';
+        previewContainer.innerHTML = tableHTML;
+    }
+
     // Data Display Methods
     displayDataTable(data) {
         const table = document.getElementById('dataPreviewTable');
+        
+        if (!table) {
+            console.log('Data preview table not found, skipping table display');
+            return;
+        }
+        
         const thead = table.querySelector('thead');
         const tbody = table.querySelector('tbody');
+        
+        if (!thead || !tbody) {
+            console.log('Table head or body not found, skipping table display');
+            return;
+        }
         
         // Clear existing content
         thead.innerHTML = '';
@@ -1320,11 +1522,11 @@ class DataInsightApp {
         // Simple physics simulation parameters
         const simulation = {
             alpha: 1,
-            alphaDecay: 0.02,
+            alphaDecay: 0.01,
             velocityDecay: 0.4,
             forceStrength: 0.8,
-            linkDistance: 300,
-            centerForce: 0.1
+            linkDistance: 400,
+            centerForce: 0.05
         };
         
         // Animation loop
@@ -1405,8 +1607,8 @@ class DataInsightApp {
             const dx = target.x - source.x;
             const dy = target.y - source.y;
             const distance = Math.sqrt(dx*dx + dy*dy) || 1;
-            const targetDistance = simulation.linkDistance * edge.strength;
-            const force = (distance - targetDistance) * 0.1;
+            const targetDistance = simulation.linkDistance * Math.max(edge.strength, 0.8);
+            const force = (distance - targetDistance) * 0.05;
             
             const fx = (dx / distance) * force;
             const fy = (dy / distance) * force;

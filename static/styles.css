@@ -446,15 +446,29 @@ body {
 /* Config Grid */
 .config-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    grid-template-columns: 1fr 1fr;
     gap: var(--spacing-lg);
     margin-bottom: var(--spacing-xl);
+    align-items: start;
 }
 
 .config-group {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-sm);
+    width: 100%;
+}
+
+.config-group label {
+    font-weight: 600;
+    color: var(--color-white);
+    margin-bottom: var(--spacing-xs);
+}
+
+.config-group .select-input {
+    width: 100%;
+    min-height: 42px;
+    box-sizing: border-box;
 }
 
 .config-group label {
