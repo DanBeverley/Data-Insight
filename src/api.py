@@ -115,7 +115,7 @@ class LearningFeedback(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main application interface."""
-    html_path = Path(__file__).parent.parent / "static" / "index.html"
+    html_path = Path(__file__).parent.parent / "static" / "dashboard.html"
     return HTMLResponse(html_path.read_text())
 
 @app.post("/api/upload")
@@ -698,19 +698,31 @@ async def download_artifact(session_id: str, artifact_type: str):
                 if isinstance(robust_result, dict):
                     for key, value in robust_result.items():
                         try:
+                            print(f"🔧 Processing key: {key}, value type: {type(value)}")
+                            
                             if key in ['pipeline', 'final_pipeline']:
                                 # Don't include pipeline objects in metadata
                                 safe_metadata[key] = f"<Pipeline object of type {type(value)}>"
-                            elif hasattr(value, '__dict__'):
+                            elif key in ['dataframe', 'processed_data', 'final_data', 'enhanced_data']:
+                                # Handle DataFrame objects
+                                if hasattr(value, 'shape'):
+                                    safe_metadata[key] = f"<DataFrame with shape {value.shape}>"
+                                else:
+                                    safe_metadata[key] = f"<Data object of type {type(value)}>"
+                            elif hasattr(value, '__dict__') and not isinstance(value, (str, int, float, bool, list, dict)):
                                 # Convert objects to string representation
-                                safe_metadata[key] = str(value)
+                                safe_metadata[key] = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
                             else:
                                 # Try to include the value directly
-                                json.dumps(value)  # Test if serializable
-                                safe_metadata[key] = value
-                        except (TypeError, ValueError):
-                            # If value is not serializable, convert to string
-                            safe_metadata[key] = str(value)
+                                try:
+                                    json.dumps(value)  # Test if serializable
+                                    safe_metadata[key] = value
+                                except:
+                                    # If not serializable, convert to string
+                                    safe_metadata[key] = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
+                        except Exception as key_error:
+                            print(f"❌ Error processing key {key}: {str(key_error)}")
+                            safe_metadata[key] = f"<Error processing key: {str(key_error)}>"
                 else:
                     safe_metadata = {
                         "robust_result_type": str(type(robust_result)),
