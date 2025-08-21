@@ -171,7 +171,7 @@ class DataInsightApp {
     }
 
     setupDownloads() {
-        const downloadButtons = document.querySelectorAll('.download-btn');
+        const downloadButtons = document.querySelectorAll('.download-item');
         downloadButtons.forEach(button => {
             button.addEventListener('click', (e) => {
                 console.log('Download button clicked:', button.id);
@@ -201,6 +201,7 @@ class DataInsightApp {
         const getRecommendations = document.getElementById('getRecommendations');
         if (getRecommendations) {
             getRecommendations.addEventListener('click', (e) => {
+                console.log('💡 Recommendations card clicked');
                 this.addButtonEffect(getRecommendations);
                 this.getFeatureRecommendations();
             });
@@ -209,6 +210,7 @@ class DataInsightApp {
         const generateGraph = document.getElementById('generateGraph');
         if (generateGraph) {
             generateGraph.addEventListener('click', (e) => {
+                console.log('🔗 Graph card clicked');
                 this.addButtonEffect(generateGraph);
                 this.generateRelationshipGraph();
             });
@@ -217,6 +219,7 @@ class DataInsightApp {
         const generateEDA = document.getElementById('generateEDA');
         if (generateEDA) {
             generateEDA.addEventListener('click', (e) => {
+                console.log('🔬 EDA card clicked');
                 this.addButtonEffect(generateEDA);
                 this.generateEDA();
             });
@@ -254,7 +257,7 @@ class DataInsightApp {
                 
                 // Null check for section display method
                 if (typeof this.showSection === 'function') {
-                    this.showSection('taskConfigSection');
+                    this.showSection('configSection');
                 } else {
                     console.error('showSection method not available');
                     return;
@@ -569,10 +572,32 @@ class DataInsightApp {
     }
 
     async getFeatureRecommendations() {
-        if (!this.currentSessionId) return;
+        console.log('💡 getFeatureRecommendations called, session ID:', this.currentSessionId);
         
-        const priorityFilter = document.getElementById('priorityFilter').value;
-        const targetColumn = document.getElementById('targetSelect').value;
+        // Always show something for testing
+        const recsContainer = document.getElementById('featureRecommendations');
+        if (recsContainer) {
+            recsContainer.classList.add('show');
+            recsContainer.innerHTML = `
+                <div style="padding: 20px; color: var(--color-text);">
+                    <h4>💡 AI Recommendations Test</h4>
+                    <p>Session ID: ${this.currentSessionId || 'No session'}</p>
+                    <p>This proves the function is working!</p>
+                </div>
+            `;
+        }
+        
+        if (!this.currentSessionId) {
+            console.error('❌ No session ID found for recommendations');
+            this.showElegantError('No data session found. Please upload data first.');
+            return;
+        }
+        
+        const priorityFilterElement = document.getElementById('priorityFilter');
+        const targetColumnElement = document.getElementById('targetSelect');
+        
+        const priorityFilter = priorityFilterElement ? priorityFilterElement.value : '';
+        const targetColumn = targetColumnElement ? targetColumnElement.value : '';
         
         this.showElegantLoading('Generating AI feature recommendations...');
         
@@ -604,7 +629,26 @@ class DataInsightApp {
     }
 
     async generateRelationshipGraph() {
-        if (!this.currentSessionId) return;
+        console.log('🔗 generateRelationshipGraph called, session ID:', this.currentSessionId);
+        
+        // Always show something for testing
+        const graphContainer = document.getElementById('relationshipGraph');
+        if (graphContainer) {
+            graphContainer.classList.add('show');
+            graphContainer.innerHTML = `
+                <div style="padding: 20px; color: var(--color-text);">
+                    <h4>🔗 Relationship Graph Test</h4>
+                    <p>Session ID: ${this.currentSessionId || 'No session'}</p>
+                    <p>This proves the function is working!</p>
+                </div>
+            `;
+        }
+        
+        if (!this.currentSessionId) {
+            console.error('❌ No session ID found for relationship graph');
+            this.showElegantError('No data session found. Please upload data first.');
+            return;
+        }
         
         this.showElegantLoading('Building relationship graph...');
         
@@ -778,8 +822,73 @@ class DataInsightApp {
 
     // EDA Generation with elegant loading
     async generateEDA() {
+        console.log('🔬 generateEDA called, session ID:', this.currentSessionId);
+        
+        // Debug all containers
+        const edaContainer = document.getElementById('edaResults');
+        const graphContainer = document.getElementById('relationshipGraph');
+        const recsContainer = document.getElementById('featureRecommendations');
+        
+        console.log('DOM Check:');
+        console.log('- edaResults:', edaContainer);
+        console.log('- relationshipGraph:', graphContainer);
+        console.log('- featureRecommendations:', recsContainer);
+        
+        // Add the show class and normal content
+        if (edaContainer) {
+            console.log('✅ EDA container found, adding content...');
+            
+            edaContainer.classList.add('show');
+            edaContainer.innerHTML = `
+                <h3 style="color: var(--color-text); margin-bottom: 20px;">📊 Exploratory Data Analysis Results</h3>
+                <div style="background: rgba(255,255,255,0.05); padding: 20px; border-radius: 8px; border: 1px solid var(--color-border);">
+                    <h4 style="color: var(--color-text); margin-bottom: 15px;">Dataset Summary</h4>
+                    <table style="width: 100%; color: var(--color-text); border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--color-border);">
+                                <th style="text-align: left; padding: 10px;">Metric</th>
+                                <th style="text-align: left; padding: 10px;">Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr><td style="padding: 8px;">Total Rows</td><td style="padding: 8px;">1,000</td></tr>
+                            <tr><td style="padding: 8px;">Total Columns</td><td style="padding: 8px;">10</td></tr>
+                            <tr><td style="padding: 8px;">Missing Values</td><td style="padding: 8px;">5%</td></tr>
+                            <tr><td style="padding: 8px;">Data Quality</td><td style="padding: 8px;">Good</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            
+            console.log('✅ Content applied, checking visibility...');
+            console.log('- offsetHeight:', edaContainer.offsetHeight);
+            console.log('- offsetWidth:', edaContainer.offsetWidth);
+            console.log('- computed display:', window.getComputedStyle(edaContainer).display);
+            
+            // Check parent containers for clipping
+            let parent = edaContainer.parentElement;
+            let level = 0;
+            while (parent && level < 5) {
+                const styles = window.getComputedStyle(parent);
+                console.log(`Parent ${level} (${parent.className}):`, {
+                    overflow: styles.overflow,
+                    maxHeight: styles.maxHeight,
+                    height: styles.height,
+                    display: styles.display,
+                    visibility: styles.visibility
+                });
+                parent = parent.parentElement;
+                level++;
+            }
+            
+        } else {
+            console.error('❌ EDA container not found');
+            alert('EDA container is NULL - DOM issue!');
+        }
+        
         if (!this.currentSessionId) {
-            this.showElegantError('No data session found');
+            console.error('❌ No session ID found');
+            this.showElegantError('No data session found. Please upload data first.');
             return;
         }
         
@@ -1082,6 +1191,11 @@ class DataInsightApp {
 
     // Display Methods with Smooth Animations
     displayDataPreview(data) {
+        // Store original data shape for later reference
+        if (!this.originalDataShape) {
+            this.originalDataShape = data.shape;
+        }
+        
         this.animateValueChange('dataShape', `${data.shape[0]} × ${data.shape[1]}`);
         
         // Update missing values count
@@ -1093,11 +1207,30 @@ class DataInsightApp {
             const qualityStatus = data.validation.is_valid ? 'Good' : 'Issues Detected';
             this.animateValueChange('dataQuality', qualityStatus);
             this.displayValidationIssues(data.validation.issues);
+            
+            // Quality Score already has its icon, don't add colored bars
+            // Just update the text value, no visual styling changes needed
         } else {
             this.animateValueChange('dataQuality', 'Not Assessed');
         }
         
-        // Create a simple data preview table
+        // Update missing values card color based on actual missing values
+        const missingValuesCard = document.getElementById('missingValuesCard');
+        if (missingValuesCard) {
+            missingValuesCard.classList.remove('warning-card');
+            const cardIcon = missingValuesCard.querySelector('.card-icon');
+            if (cardIcon) {
+                cardIcon.classList.remove('warning-icon');
+            }
+            
+            if (data.validation && data.validation.missing_values_count > 0) {
+                missingValuesCard.classList.add('warning-card');
+                if (cardIcon) {
+                    cardIcon.classList.add('warning-icon');
+                }
+            }
+        }
+        
         this.createSimpleDataPreview(data);
     }
 
@@ -1189,7 +1322,6 @@ class DataInsightApp {
         }, 150);
     }
 
-    // Simple data preview for our dashboard
     createSimpleDataPreview(data) {
         const previewContainer = document.getElementById('dataPreview');
         if (!previewContainer) {
@@ -1197,14 +1329,14 @@ class DataInsightApp {
             return;
         }
 
-        // Create a simple table structure
+        this.fullDataPreview = data;
+
         let tableHTML = '<div class="data-preview-table">';
         tableHTML += '<h4 style="color: var(--color-text); margin-bottom: 1rem;">Data Preview</h4>';
         
         if (data.columns && data.columns.length > 0) {
-            tableHTML += '<div class="preview-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">';
+            tableHTML += '<div class="preview-grid" id="previewGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">';
             
-            // Show first few columns
             const maxColumns = Math.min(data.columns.length, 6);
             for (let i = 0; i < maxColumns; i++) {
                 const column = data.columns[i];
@@ -1219,14 +1351,75 @@ class DataInsightApp {
             }
             
             if (data.columns.length > maxColumns) {
-                tableHTML += `<div class="column-info" style="background: rgba(51, 65, 85, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px dashed var(--color-border); display: flex; align-items: center; justify-content: center; color: var(--color-text-secondary);">+${data.columns.length - maxColumns} more columns</div>`;
+                tableHTML += `
+                    <div class="column-info expand-columns" id="expandColumns" style="background: rgba(51, 65, 85, 0.3); padding: 1rem; border-radius: 0.5rem; border: 1px dashed var(--color-border); display: flex; align-items: center; justify-content: center; color: var(--color-text-secondary); cursor: pointer; transition: all 0.3s ease;">
+                        <i class="fas fa-plus" style="margin-right: 0.5rem;"></i>
+                        +${data.columns.length - maxColumns} more columns
+                    </div>
+                `;
             }
             
             tableHTML += '</div>';
+            
+            if (data.columns.length > maxColumns) {
+                tableHTML += `
+                    <div class="collapse-columns" id="collapseColumns" style="display: none; text-align: center; margin-top: 1rem;">
+                        <button style="background: var(--color-surface); border: 1px solid var(--color-border); color: var(--color-text); padding: 0.5rem 1rem; border-radius: 0.5rem; cursor: pointer;">
+                            <i class="fas fa-minus" style="margin-right: 0.5rem;"></i>
+                            Show Less
+                        </button>
+                    </div>
+                `;
+            }
         }
         
         tableHTML += '</div>';
         previewContainer.innerHTML = tableHTML;
+
+        const expandBtn = document.getElementById('expandColumns');
+        const collapseBtn = document.getElementById('collapseColumns');
+        
+        if (expandBtn) {
+            expandBtn.addEventListener('click', () => this.expandDataPreview());
+        }
+        if (collapseBtn) {
+            collapseBtn.addEventListener('click', () => this.collapseDataPreview());
+        }
+    }
+
+    expandDataPreview() {
+        const previewGrid = document.getElementById('previewGrid');
+        const expandBtn = document.getElementById('expandColumns');
+        const collapseBtn = document.getElementById('collapseColumns');
+        
+        if (!this.fullDataPreview || !previewGrid) return;
+
+        previewGrid.innerHTML = '';
+        
+        this.fullDataPreview.columns.forEach(column => {
+            const dataType = this.fullDataPreview.data_types ? this.fullDataPreview.data_types[column] : 'unknown';
+            
+            const columnDiv = document.createElement('div');
+            columnDiv.className = 'column-info';
+            columnDiv.style.cssText = 'background: rgba(51, 65, 85, 0.5); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--color-border); opacity: 0; transform: translateY(20px); transition: all 0.3s ease;';
+            columnDiv.innerHTML = `
+                <div style="font-weight: 600; color: var(--color-text); margin-bottom: 0.5rem;">${column}</div>
+                <div style="color: var(--color-text-secondary); font-size: 0.9rem;">${dataType}</div>
+            `;
+            previewGrid.appendChild(columnDiv);
+            
+            setTimeout(() => {
+                columnDiv.style.opacity = '1';
+                columnDiv.style.transform = 'translateY(0)';
+            }, 50);
+        });
+
+        if (expandBtn) expandBtn.style.display = 'none';
+        if (collapseBtn) collapseBtn.style.display = 'block';
+    }
+
+    collapseDataPreview() {
+        this.createSimpleDataPreview(this.fullDataPreview);
     }
 
     // Data Display Methods
@@ -1403,6 +1596,7 @@ class DataInsightApp {
         if (!container) return;
         
         container.innerHTML = '';
+        container.classList.add('show');
         
         data.recommendations.forEach((rec, index) => {
             const item = document.createElement('div');
@@ -1445,8 +1639,9 @@ class DataInsightApp {
             this.currentSimulation = null;
         }
         
-        // Clear container and remove any D3 selections
+        // Clear container, show it, and remove any D3 selections
         container.innerHTML = '';
+        container.classList.add('show');
         if (typeof d3 !== 'undefined') {
             try {
                 d3.select(container).selectAll('*').remove();
@@ -1884,18 +2079,16 @@ class DataInsightApp {
     }
     
     displayEDAResults(data) {
-        // Show results in the overview tab since there's no dedicated EDA section
-        const overviewTab = document.getElementById('overviewTab');
-        if (!overviewTab) return;
-        
-        // Find or create EDA results container
+        // Use the existing EDA results container in our dashboard
         let edaContainer = document.getElementById('edaResults');
         if (!edaContainer) {
-            edaContainer = document.createElement('div');
-            edaContainer.id = 'edaResults';
-            edaContainer.className = 'eda-results';
-            overviewTab.appendChild(edaContainer);
+            console.log('EDA results container not found');
+            return;
         }
+        
+        // Clear any existing content and show the container
+        edaContainer.innerHTML = '';
+        edaContainer.classList.add('show');
         
         edaContainer.innerHTML = `
             <div class="eda-header">
@@ -1980,8 +2173,12 @@ class DataInsightApp {
         
         // Update basic metrics
         if (data.data_shape) {
-            // For original shape, we might need to get it from session data or use data_shape as fallback
-            this.animateValueChange('originalShape', `${data.data_shape[0]} × ${data.data_shape[1]}`);
+            // Use stored original data shape for consistency
+            if (this.originalDataShape) {
+                this.animateValueChange('originalShape', `${this.originalDataShape[0]} × ${this.originalDataShape[1]}`);
+            } else {
+                this.animateValueChange('originalShape', `${data.data_shape[0]} × ${data.data_shape[1]}`);
+            }
             this.animateValueChange('processedShape', `${data.data_shape[0]} × ${data.data_shape[1]}`);
             
             // Add a note about the processing
@@ -2135,7 +2332,7 @@ class DataInsightApp {
             'downloadPipeline': 'pipeline',
             'downloadIntelligence': 'intelligence',
             'downloadLineage': 'lineage',
-            'downloadMetadata': 'robust-metadata'
+            'downloadMetadata': 'intelligence'
         };
         return artifactTypes[downloadType] || 'data';
     }
@@ -2148,7 +2345,7 @@ class DataInsightApp {
             'downloadPipeline': `pipeline_${timestamp}.joblib`,
             'downloadIntelligence': `intelligence_report_${timestamp}.json`,
             'downloadLineage': `lineage_report_${timestamp}.json`,
-            'downloadMetadata': `metadata_${timestamp}.json`
+            'downloadMetadata': `pipeline_metadata_${timestamp}.json`
         };
         return filenames[downloadType] || 'download.csv';
     }
@@ -2180,19 +2377,57 @@ class DataInsightApp {
         });
         
         this.currentStep = this.getSectionStep(sectionId);
-        this.updateProgressIndicator();
+        this.updateSidebarProgress();
     }
 
     getSectionStep(sectionId) {
         const stepMap = {
             'dataInputSection': 1,
             'dataPreviewSection': 2,
-            'intelligenceSection': 3,
-            'taskConfigSection': 4,
-            'processingSection': 5,
-            'resultsSection': 6
+            'configSection': 3,
+            'processingSection': 4,
+            'resultsSection': 5
         };
         return stepMap[sectionId] || 1;
+    }
+
+    updateSidebarProgress() {
+        const stepItems = document.querySelectorAll('.step-item');
+        stepItems.forEach((item, index) => {
+            const stepNumber = index + 1;
+            const circle = item.querySelector('.step-circle');
+            
+            item.classList.remove('active', 'completed');
+            
+            if (stepNumber < this.currentStep) {
+                item.classList.add('completed');
+                circle.innerHTML = '<i class="fas fa-check"></i>';
+            } else if (stepNumber === this.currentStep) {
+                item.classList.add('active');
+                circle.innerHTML = stepNumber;
+            } else {
+                circle.innerHTML = stepNumber;
+            }
+        });
+
+        // Update quick stats when data is available
+        if (this.currentStep >= 2 && this.currentSessionId) {
+            this.updateSidebarStats();
+        }
+    }
+
+    updateSidebarStats() {
+        const quickStats = document.getElementById('quickStats');
+        if (quickStats && this.fullDataPreview) {
+            quickStats.style.display = 'block';
+            
+            const [rows, cols] = this.fullDataPreview.shape || [0, 0];
+            document.getElementById('sidebarRows').textContent = rows.toLocaleString();
+            document.getElementById('sidebarCols').textContent = cols.toLocaleString();
+            
+            const quality = this.fullDataPreview.validation?.is_valid ? 'Good' : 'Issues';
+            document.getElementById('sidebarQuality').textContent = quality;
+        }
     }
 
     updateProgressIndicator() {
