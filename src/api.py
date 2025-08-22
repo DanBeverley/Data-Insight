@@ -19,12 +19,13 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .automator import WorkflowOrchestrator, Status
+from .core.pipeline_orchestrator import RobustPipelineOrchestrator, PipelineConfig
+from .core.project_definition import ProjectDefinition, Objective, Domain, RiskLevel, Constraints
+from .automator import Status
 from .common.data_ingestion import ingest_data, ingest_from_url
 from .data_quality.validator import DataQualityValidator
 from .utils import generate_eda_report
 from .intelligence.data_profiler import IntelligentDataProfiler
-from .core.pipeline_orchestrator import RobustPipelineOrchestrator
 
 app = FastAPI(
     title="DataInsight AI",
@@ -66,6 +67,18 @@ class TaskConfig(BaseModel):
     feature_selection_enabled: bool = False
     enable_intelligence: bool = True
     enable_robust_pipeline: bool = True
+
+class StrategyConfig(BaseModel):
+    objective: str
+    domain: str = "general"
+    risk_level: str = "medium"
+    max_latency_ms: Optional[int] = None
+    max_training_hours: Optional[int] = None
+    min_accuracy: Optional[float] = None
+    protected_attributes: List[str] = []
+    interpretability_required: bool = False
+    compliance_rules: List[str] = []
+    target_column: Optional[str] = None
 
 class DataIngestionRequest(BaseModel):
     url: str
@@ -358,138 +371,183 @@ async def generate_eda(session_id: str):
     except Exception as e:
         return {"status": "error", "detail": f"Error generating EDA: {str(e)}"}
 
-@app.post("/api/data/{session_id}/process")
-async def process_data(session_id: str, config: TaskConfig):
-    """Process data with intelligent automated pipeline."""
+@app.post("/api/data/{session_id}/process-strategy")
+async def process_data_strategy(session_id: str, strategy: StrategyConfig):
+    """Strategy-driven data processing using business objectives"""
     if session_id not in session_store:
-        return {"status": "error", "detail": "Session not found"}
+        raise HTTPException(status_code=404, detail="Session not found")
     
     try:
         start_time = datetime.now()
         session_data = session_store[session_id]
         df = session_data["dataframe"]
         
-        # Determine which orchestrator to use
-        if config.enable_robust_pipeline:
-            # Use new robust pipeline orchestrator
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+            df.to_csv(temp_file.name, index=False)
+            data_path = temp_file.name
+        
+        try:
+            constraints = Constraints(
+                max_latency_ms=strategy.max_latency_ms,
+                max_training_hours=strategy.max_training_hours,
+                min_accuracy=strategy.min_accuracy,
+                protected_attributes=strategy.protected_attributes,
+                interpretability_required=strategy.interpretability_required,
+                compliance_rules=strategy.compliance_rules
+            )
+            
+            project_definition = ProjectDefinition(
+                objective=Objective(strategy.objective),
+                domain=Domain(strategy.domain),
+                risk_level=RiskLevel(strategy.risk_level),
+                constraints=constraints
+            )
+            
+            orchestrator = RobustPipelineOrchestrator(project_def=project_definition)
+            
+            result_dict = orchestrator.execute_pipeline(
+                data_path=data_path,
+                target_column=strategy.target_column,
+                project_definition=project_definition
+            )
+            
+            end_time = datetime.now()
+            processing_time = (end_time - start_time).total_seconds()
+            
+            strategy_context = result_dict.get('strategy_context', {})
+            
+            return {
+                "status": "success",
+                "message": "Strategy-driven processing completed",
+                "processing_time": processing_time,
+                "strategy_applied": {
+                    "objective": strategy.objective,
+                    "domain": strategy.domain,
+                    "objective_met": strategy_context.get('objective_met', True),
+                    "constraints_satisfied": strategy_context.get('constraints_satisfied', True),
+                    "trade_offs": strategy_context.get('trade_offs_made', []),
+                    "business_rationale": strategy_context.get('business_rationale', '')
+                },
+                "results": result_dict,
+                "execution_history": result_dict.get('execution_history', [])
+            }
+            
+        finally:
             try:
-                # Create temporary file for data path (robust orchestrator expects file path)
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-                df.to_csv(temp_file.name, index=False)
+                Path(data_path).unlink()
+            except:
+                pass
                 
-                robust_orchestrator = RobustPipelineOrchestrator()
-                
-                # Get intelligence profile if available
-                intelligence_profile = session_data.get("intelligence_profile")
-                
-                # Prepare custom config with feature settings
-                custom_config = {
-                    'feature_generation_enabled': config.feature_generation_enabled,
-                    'feature_selection_enabled': config.feature_selection_enabled,
-                    'enable_intelligence': config.enable_intelligence
-                }
-                
-                print(f"🔧 Processing config received:")
-                print(f"   Feature Generation: {config.feature_generation_enabled}")
-                print(f"   Feature Selection: {config.feature_selection_enabled}")
-                print(f"   Intelligence: {config.enable_intelligence}")
-                
-                # Execute robust pipeline
-                robust_result = robust_orchestrator.execute_pipeline(
-                    data_path=temp_file.name,
-                    task_type=config.task,
-                    target_column=config.target_column,
-                    custom_config=custom_config
-                )
-                
-                # Clean up temp file
-                Path(temp_file.name).unlink()
-                
-                if robust_result.get('status') != 'success':
-                    raise Exception(f"Robust pipeline failed: {robust_result.get('error', 'Unknown error')}")
-                
-                processing_time = (datetime.now() - start_time).total_seconds()
-                
-                # Store robust results
-                session_store[session_id].update({
-                    "robust_pipeline_result": robust_result,
-                    "processing_config": config.dict(),
-                    "processing_time": processing_time
-                })
-                
-                print(f"🔧 After processing, session {session_id} now has keys: {list(session_store[session_id].keys())}")
-                print(f"🔧 Robust result keys: {list(robust_result.keys()) if isinstance(robust_result, dict) else 'Not a dict'}")
-                
-                # Extract intelligence summary if available
-                intelligence_summary = None
-                if intelligence_profile:
-                    domain_analysis = intelligence_profile.get('domain_analysis', {})
-                    detected_domains = domain_analysis.get('detected_domains', [])
-                    intelligence_summary = {
-                        "primary_domain": detected_domains[0].get('domain') if detected_domains else 'unknown',
-                        "total_recommendations": len(intelligence_profile.get('overall_recommendations', [])),
-                        "relationships_analyzed": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-                        "feature_generation_applied": config.feature_generation_enabled,
-                        "feature_selection_applied": config.feature_selection_enabled,
-                        "original_shape": df.shape,
-                        "final_shape": robust_result.get('final_data_shape', df.shape)
-                    }
-                
-                return ProcessingResult(
-                    status="success",
-                    message="Data processed with robust intelligent pipeline",
-                    data_shape=df.shape,  # Simplified for now
-                    processing_time=processing_time,
-                    intelligence_summary=intelligence_summary,
-                    artifacts={
-                        "pipeline_metadata": f"/api/data/{session_id}/download/robust-metadata",
-                        "processed_data": f"/api/data/{session_id}/download/data",
-                        "intelligence_report": f"/api/data/{session_id}/download/intelligence"
-                    }
-                )
-                
-            except Exception as robust_error:
-                # Fallback to legacy orchestrator if robust fails
-                print(f"Robust pipeline failed, falling back to legacy: {robust_error}")
-                config.enable_robust_pipeline = False
-        
-        # Use legacy orchestrator (backward compatibility)
-        orchestrator = WorkflowOrchestrator(
-            df=df,
-            target_column=config.target_column,
-            task=config.task
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Strategy processing failed: {str(e)}",
+                "error_type": type(e).__name__
+            }
         )
+
+@app.post("/api/data/{session_id}/process")
+async def process_data(session_id: str, config: TaskConfig):
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    try:
+        start_time = datetime.now()
+        session_data = session_store[session_id]
+        df = session_data["dataframe"]
         
-        result = orchestrator.run()
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+            df.to_csv(temp_file.name, index=False)
+            data_path = temp_file.name
         
-        if result.status != Status.SUCCESS:
-            raise HTTPException(status_code=500, detail=result.error_message)
+        try:
+            pipeline_config = PipelineConfig(
+                enable_explainability=config.enable_intelligence,
+                enable_bias_detection=config.enable_intelligence,
+                enable_security=True,
+                enable_privacy_protection=True,
+                enable_compliance=True,
+                enable_adaptive_learning=config.enable_intelligence,
+                enable_feature_engineering=config.feature_generation_enabled,
+                enable_feature_selection=config.feature_selection_enabled,
+                max_memory_usage=0.8,
+                enable_caching=True,
+                checkpoint_enabled=True,
+                auto_recovery=True
+            )
+            
+            orchestrator = RobustPipelineOrchestrator(pipeline_config)
+            
+            custom_config = {
+                'feature_generation_enabled': config.feature_generation_enabled,
+                'feature_selection_enabled': config.feature_selection_enabled
+            }
+            
+            result_dict = orchestrator.execute_pipeline(
+                data_path=data_path,
+                task_type=config.task,
+                target_column=config.target_column,
+                custom_config=custom_config
+            )
+            
+        finally:
+            Path(data_path).unlink()
+        
+        if result_dict.get('status') != 'success':
+            error_msg = result_dict.get('error', 'Unknown pipeline error')
+            raise HTTPException(status_code=500, detail=f"Pipeline execution failed: {error_msg}")
         
         processing_time = (datetime.now() - start_time).total_seconds()
         
-        # Store legacy results
         session_store[session_id].update({
-            "orchestrator_result": result,
-            "processed_data": result.processed_features,
-            "aligned_target": result.aligned_target,
-            "processing_config": config.dict()
+            "robust_pipeline_result": result_dict,
+            "processing_config": config.dict(),
+            "processing_time": processing_time
         })
+        
+        results = result_dict.get('results', {})
+        execution_summary = result_dict.get('execution_summary', {})
+        
+        profiling_result = results.get('data_profiling', {})
+        model_result = results.get('model_selection', {})
+        security_result = results.get('security_scan', {})
+        
+        intelligence_summary = {
+            "detected_domain": profiling_result.get('metadata', {}).get('detected_domain', 'unknown'),
+            "features_analyzed": len(df.columns),
+            "feature_generation_applied": config.feature_generation_enabled,
+            "feature_selection_applied": config.feature_selection_enabled,
+            "model_selected": model_result.get('metadata', {}).get('best_algorithm', 'N/A'),
+            "model_score": model_result.get('metadata', {}).get('best_score', 0),
+            "security_score": security_result.get('metadata', {}).get('security_score', 0),
+            "stages_completed": execution_summary.get('stages_completed', 0),
+            "total_time": execution_summary.get('total_time', processing_time),
+            "original_shape": df.shape,
+            "processing_successful": True
+        }
         
         return ProcessingResult(
             status="success",
-            message="Data processed successfully (legacy pipeline)",
-            data_shape=result.processed_features.shape,
-            column_roles=result.column_roles,
+            message="Data processed successfully with comprehensive AI pipeline",
+            data_shape=df.shape,
             processing_time=processing_time,
+            intelligence_summary=intelligence_summary,
             artifacts={
-                "pipeline": f"/api/data/{session_id}/download/pipeline",
+                "pipeline_metadata": f"/api/data/{session_id}/download/metadata",
                 "processed_data": f"/api/data/{session_id}/download/data",
-                "lineage_report": f"/api/data/{session_id}/download/lineage"
+                "intelligence_report": f"/api/data/{session_id}/download/intelligence",
+                "model_artifacts": f"/api/data/{session_id}/download/model"
             }
         )
-    
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"status": "error", "detail": f"Processing error: {str(e)}"}
+        error_msg = f"Processing failed: {str(e)}"
+        logging.error(error_msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/api/data/{session_id}/download/{artifact_type}")
 async def download_artifact(session_id: str, artifact_type: str):
