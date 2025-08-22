@@ -168,7 +168,12 @@ class PrivacyEngine:
             if attr in df.columns:
                 value_counts = df[attr].value_counts()
                 if len(value_counts) > 1:
-                    entropy = -sum((p := count/len(df)) * np.log2(p) for count in value_counts if p > 0)
+                    total_count = len(df)
+                    entropy = 0
+                    for count in value_counts:
+                        p = count / total_count
+                        if p > 0:
+                            entropy -= p * np.log2(p)
                     max_entropy = np.log2(len(value_counts))
                     normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
                     diversity_scores.append(normalized_entropy)

@@ -1,70 +1,104 @@
 # Data Insight
 
-Intelligent data processing platform with automated ML pipeline, explainability, and enterprise security.
+ML automation platform with intelligence-driven data processing, automated feature engineering, and integrated MLOps pipeline.
 
-## Features
+## Core Functionality
 
-### Intelligence & Automation
-- **Intelligent Data Profiling**: 27 semantic data types, domain detection, relationship discovery
-- **Automated Feature Engineering**: Context-aware feature generation and selection  
-- **Model Selection**: Intelligent algorithm selection based on data characteristics
-- **Pipeline Orchestration**: Production-grade execution with error recovery and caching
+### Data Intelligence & Analysis
+- **Semantic Data Profiling**: Detects 16 semantic types (email, phone, currency, datetime, etc.) with confidence scoring
+- **Domain Detection**: Automatic classification into business domains (finance, healthcare, e-commerce, etc.)
+- **Relationship Discovery**: Identifies primary/foreign keys, correlations, and data dependencies
+- **Data Quality Assessment**: Comprehensive validation with anomaly detection and drift monitoring
 
-### Explainability & Trust
-- **Model Explanations**: SHAP/LIME explanations with intelligent fallbacks
-- **Bias Detection**: Multi-dimensional fairness assessment across demographic groups
-- **Trust Metrics**: Reliability, consistency, robustness, and calibration scoring
+### Feature Engineering & Selection
+- **Automated Feature Generation**: Uses FeatureTools for time-based features, aggregations, and transformations
+- **Intelligent Feature Selection**: Multi-method selection (statistical, model-based, correlation-based)
+- **Missing Value Intelligence**: Advanced imputation strategies based on semantic types
+- **Categorical Grouping**: ML-powered categorical variable optimization
 
-### Security & Compliance
-- **Data Protection**: PII detection, masking, and anonymization (k-anonymity, differential privacy)
-- **Access Control**: Role-based permissions with session management and audit logging
-- **Compliance**: GDPR/CCPA automation with violation detection and reporting
-- **Privacy Engine**: Risk assessment and comprehensive privacy protection
+### Model Selection & Training
+- **Intelligent Algorithm Selection**: Automated model recommendation based on dataset characteristics
+- **Hyperparameter Optimization**: Automated tuning with multiple optimization strategies
+- **Performance Validation**: Cross-validation with comprehensive metrics
+- **Support for**: Classification, regression, clustering, time-series, and basic NLP
 
-## Architecture
+### MLOps Integration
+- **Pipeline Orchestration**: 15-stage production pipeline with error recovery and checkpointing
+- **Model Deployment**: Automated deployment with version control and rollback capabilities
+- **Monitoring System**: Performance tracking, drift detection, and alert management
+- **Auto-scaling**: Load-based scaling for deployed models
 
-### Core Components
-- **Pipeline Orchestrator**: Stage-based execution with error handling and recovery
-- **Intelligence Engine**: Data profiling, domain detection, relationship discovery
-- **Feature Engineering**: Automated feature generation and intelligent selection
-- **Model Selection**: Algorithm recommendation based on data characteristics
-- **Explainability Engine**: SHAP/LIME explanations with business insights
-- **Security Manager**: PII detection, data masking, access control
-- **Compliance Manager**: GDPR/CCPA automation and violation monitoring
-- **Privacy Engine**: Risk assessment and privacy-preserving transformations
+### Security & Privacy
+- **PII Detection**: Automatic identification and masking of sensitive data
+- **Privacy Protection**: Multiple anonymization techniques (k-anonymity, differential privacy)
+- **Compliance Checking**: GDPR/CCPA validation with violation reporting
+- **Access Control**: Role-based permissions and audit logging
 
-### Pipeline Stages
-1. **Data Ingestion** - Load and validate data sources
-2. **Profiling** - Semantic analysis and domain detection  
-3. **Quality Assessment** - Data quality scoring and anomaly detection
-4. **Cleaning** - Intelligent data cleaning and preprocessing
-5. **Feature Engineering** - Automated feature generation and selection
-6. **Model Selection** - Algorithm selection and hyperparameter optimization
-7. **Validation** - Performance assessment and quality metrics
-8. **Explainability** - Model interpretation and business insights
-9. **Bias Assessment** - Fairness evaluation across sensitive attributes
-10. **Security Scan** - PII detection and data protection
-11. **Privacy Protection** - Risk assessment and anonymization
-12. **Compliance Check** - Regulatory compliance validation
+### Explainability & Bias Detection
+- **Model Explanations**: SHAP/LIME-based local and global explanations
+- **Bias Assessment**: Fairness metrics across demographic groups
+- **Trust Scoring**: Model reliability and calibration metrics
+- **Business Insights**: Automated insight generation from model results
 
-## API
+## Technical Architecture
 
-### Core Endpoints
-- `POST /api/upload` - Data upload with intelligence profiling
-- `POST /api/data/{session_id}/process` - Execute complete pipeline
-- `GET /api/data/{session_id}/results` - Retrieve results and artifacts
-- `GET /api/data/{session_id}/status` - Pipeline execution status
+### Application Structure
+- **FastAPI Backend** (`src/api.py`): REST API with 20+ endpoints for data processing and ML operations
+- **Streamlit Interface** (`src/app.py`): Interactive web UI for data science workflows  
+- **RobustPipelineOrchestrator** (`src/core/pipeline_orchestrator.py`): Production-grade pipeline with error recovery and caching
+- **Modern Web Dashboard** (`static/dashboard.html`): Professional frontend with real-time progress tracking
+
+### Key Modules
+- **Intelligence Engine** (`src/intelligence/`): Data profiling, domain detection, semantic analysis
+- **Data Quality** (`src/data_quality/`): Validation, anomaly detection, drift monitoring, quality assessment
+- **Feature Engineering** (`src/feature_selector/`): Automated generation and intelligent selection
+- **Model Selection** (`src/model_selection/`): Algorithm recommendation, hyperparameter optimization, performance validation
+- **MLOps** (`src/mlops/`): Deployment automation, monitoring, scaling, version control
+- **Security** (`src/security/`): PII detection, privacy protection, compliance management
+- **Explainability** (`src/explainability/`): Model interpretation, bias detection, trust metrics
+
+### Pipeline Execution Flow
+1. **Data Ingestion & Validation** - Multi-format support with error handling
+2. **Intelligence Profiling** - Semantic type detection and domain classification
+3. **Quality Assessment** - Comprehensive data quality scoring and issue identification
+4. **Data Cleaning** - Automated preprocessing based on intelligence insights
+5. **Feature Engineering** - Context-aware feature generation and selection
+6. **Model Selection & Training** - Intelligent algorithm selection with hyperparameter tuning
+7. **Performance Validation** - Cross-validation and metric computation
+8. **Explainability Analysis** - Model interpretation and insight generation
+9. **Bias & Fairness Assessment** - Multi-dimensional fairness evaluation
+10. **Security & Privacy Scanning** - PII detection and protection measures
+11. **Compliance Verification** - Regulatory requirement validation
+12. **Deployment Preparation** - Model packaging and deployment automation
+
+## API Endpoints
+
+### Data Operations
+- `POST /api/upload` - File upload with automatic profiling and validation
+- `POST /api/ingest-url` - Data ingestion from web URLs
+- `GET /api/data/{session_id}/preview` - Dataset preview and basic statistics
+- `GET /api/data/{session_id}/columns` - Column information and metadata
+
+### Pipeline Execution
+- `POST /api/data/{session_id}/process` - Execute full ML pipeline with configuration
+- `GET /api/data/{session_id}/status` - Real-time pipeline execution status
+- `POST /api/data/{session_id}/recover` - Pipeline error recovery and resume
+- `GET /api/data/{session_id}/logs` - Detailed execution logs and debug information
 
 ### Intelligence & Analysis
-- `POST /api/data/{session_id}/profile` - Intelligent data profiling
-- `GET /api/data/{session_id}/explanations` - Model explanations and insights
-- `GET /api/data/{session_id}/bias-report` - Fairness assessment report
-- `GET /api/data/{session_id}/trust-metrics` - Trust and reliability scores
+- `GET /api/data/{session_id}/profile` - Comprehensive data profiling results
+- `GET /api/data/{session_id}/eda` - Exploratory data analysis report
+- `GET /api/data/{session_id}/feature-recommendations` - AI-powered feature suggestions
+- `GET /api/data/{session_id}/relationship-graph` - Data relationship visualization
 
-### Security & Compliance
-- `GET /api/data/{session_id}/security-scan` - Security assessment results
-- `GET /api/data/{session_id}/privacy-report` - Privacy risk analysis
-- `GET /api/data/{session_id}/compliance-status` - Regulatory compliance report
+### Results & Artifacts
+- `GET /api/data/{session_id}/results` - Complete pipeline results and metrics
+- `GET /api/data/{session_id}/download/{artifact_type}` - Download processed data, models, reports
+- `GET /api/data/{session_id}/model-info` - Model performance and configuration details
+
+### Learning & Feedback
+- `POST /api/learning/feedback` - User feedback for adaptive learning system
+- `GET /api/learning/recommendations` - Personalized workflow recommendations
 
 ## Installation
 
@@ -88,46 +122,79 @@ python run_app.py
 
 ## Usage
 
-1. **Upload data** - CSV/Excel files or provide data URLs
-2. **Configure pipeline** - Select task type and security/privacy settings
-3. **Execute processing** - Automated pipeline with intelligence and security
-4. **Review results** - Model performance, explanations, bias, and compliance reports
-5. **Download artifacts** - Processed data, models, and comprehensive reports
+### Basic Workflow
+1. **Data Upload**: Upload CSV/Excel files or provide URLs for data ingestion
+2. **Automatic Profiling**: System performs semantic analysis and quality assessment
+3. **Pipeline Configuration**: Select ML task type (classification, regression, clustering, etc.)
+4. **Feature Engineering**: Enable automated feature generation and selection
+5. **Model Training**: Automated algorithm selection and hyperparameter optimization
+6. **Results Review**: Access model performance, explanations, and quality reports
+7. **Artifact Download**: Download processed data, trained models, and analysis reports
 
-## Configuration
+### Advanced Features
+- **Interactive Dashboard**: Real-time pipeline monitoring with progress tracking
+- **Relationship Analysis**: Visualize data relationships and correlation networks
+- **Quality Assessment**: Comprehensive data quality scoring with issue recommendations
+- **Adaptive Learning**: System learns from previous executions to improve recommendations
 
-### Security Levels
-- `basic` - Standard protection with PII detection
-- `standard` - Enhanced security with access control  
-- `high` - Strong encryption and audit logging
-- `maximum` - Maximum protection with strict policies
+## Configuration Options
 
-### Privacy Levels
-- `low` - Basic anonymization
-- `medium` - K-anonymity and data masking
-- `high` - Differential privacy and l-diversity
-- `maximum` - Comprehensive privacy protection
+### Task Types
+- **Classification**: Binary and multi-class prediction tasks
+- **Regression**: Continuous value prediction
+- **Clustering**: Unsupervised pattern discovery
+- **Time Series**: Forecasting with temporal data
+- **NLP**: Basic text analysis and processing
 
-### Compliance
-- GDPR - EU General Data Protection Regulation
-- CCPA - California Consumer Privacy Act  
-- HIPAA - Health Insurance Portability and Accountability Act
+### Feature Engineering
+- **Automated Generation**: Time-based features, aggregations, polynomial features
+- **Intelligent Selection**: Statistical, model-based, and correlation-based methods
+- **Domain-Specific**: Context-aware features based on detected business domain
+
+### Security & Privacy Options
+- **PII Detection**: Automatic identification of sensitive data fields
+- **Data Masking**: Multiple anonymization techniques available
+- **Compliance Checking**: GDPR/CCPA validation with detailed reports
+- **Access Control**: Session-based permissions and audit logging
 
 ## Supported Data
-- **Formats**: CSV, Excel, Parquet, JSON
-- **Sources**: File upload, URLs, databases
-- **Types**: Tabular, time-series, text data
-- **Tasks**: Classification, regression, clustering, forecasting, NLP
+
+### Input Formats
+- **File Types**: CSV, Excel (.xlsx, .xls), Parquet, JSON
+- **Data Sources**: Direct file upload, web URLs, database connections
+- **Size Limits**: Configurable based on system resources
+
+### Data Types
+- **Tabular Data**: Structured datasets with mixed column types
+- **Time Series**: Sequential data with temporal patterns
+- **Text Data**: Unstructured text for basic NLP processing
+- **Mixed Types**: Datasets combining numerical, categorical, and text data
 
 ## Output Artifacts
-- Processed datasets with feature engineering
-- Trained models with hyperparameter optimization
-- Explanation reports with SHAP/LIME analysis
-- Bias assessment with fairness metrics
-- Security scan results with PII detection
-- Privacy protection reports with risk analysis
-- Compliance reports with violation detection
 
-## MVP Status
+### Data Products
+- **Processed Dataset**: Cleaned data with generated features
+- **Feature Metadata**: Detailed feature engineering documentation
+- **Quality Report**: Data quality assessment with improvement recommendations
 
-✅ **Complete** - Intelligent pipeline with explainability and enterprise security ready for deployment
+### Models & Analysis
+- **Trained Models**: Optimized ML models with hyperparameter configurations
+- **Performance Metrics**: Comprehensive evaluation including cross-validation results
+- **Explainability Reports**: Model interpretation with feature importance and SHAP analysis
+
+### Business Intelligence
+- **Domain Insights**: Business context analysis and recommendations
+- **Relationship Maps**: Data dependency and correlation visualizations
+- **Executive Summary**: High-level findings and actionable insights
+
+## Current Status
+
+**Production-Ready ML Automation Platform**
+- ✅ Complete pipeline orchestration with error recovery
+- ✅ Intelligent data profiling and quality assessment
+- ✅ Automated feature engineering and model selection  
+- ✅ MLOps integration with deployment capabilities
+- ✅ Security and privacy protection features
+- ✅ Explainability and bias detection
+- ✅ Modern web interface with API access
+- ✅ Adaptive learning system

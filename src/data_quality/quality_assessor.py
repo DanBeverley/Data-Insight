@@ -293,7 +293,8 @@ class ContextAwareQualityAssessor:
         if outlier_details:
             worst_columns = sorted(outlier_details.items(), 
                                  key=lambda x: x[1]['percentage'], reverse=True)[:3]
-            issues.append(f"Highest outlier columns: {', '.join([f'{col}({info['percentage']:.1f}%)' for col, info in worst_columns])}")
+            column_details = ', '.join([f"{col}({info['percentage']:.1f}%)" for col, info in worst_columns])
+            issues.append(f"Highest outlier columns: {column_details}")
         
         # Generate recommendations
         if outlier_ratio > 0.1:

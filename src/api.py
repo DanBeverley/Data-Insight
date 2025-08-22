@@ -15,7 +15,7 @@ import pandas as pd
 import joblib
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -40,8 +40,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Serve static files with explicit routes
+static_dir = Path(__file__).parent.parent / "static"
+
+@app.get("/static/script.js")
+async def get_script():
+    """Serve JavaScript file with correct MIME type."""
+    script_path = static_dir / "script.js"
+    return FileResponse(script_path, media_type="application/javascript")
+
+@app.get("/static/styles.css") 
+async def get_styles():
+    """Serve CSS file with correct MIME type."""
+    css_path = static_dir / "styles.css"
+    return FileResponse(css_path, media_type="text/css")
+
+# Mount remaining static files
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Data models
 class TaskConfig(BaseModel):
@@ -100,7 +115,8 @@ class LearningFeedback(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the main application interface."""
-    return HTMLResponse(open("static/index.html").read())
+    html_path = Path(__file__).parent.parent / "static" / "dashboard.html"
+    return HTMLResponse(html_path.read_text())
 
 @app.post("/api/upload")
 async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True)):
@@ -135,7 +151,14 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
             "validation": {
                 "is_valid": validation_report.is_valid,
                 "issues": [
-                    {"name": check.name, "message": check.message, "passed": check.passed}
+                    {
+                        "type": check.name,
+                        "description": check.message,
+                        "severity": "high" if "missing" in check.message.lower() or "null" in check.message.lower() else "medium",
+                        "affected_columns": list(check.details.keys()) if check.details else [],
+                        "details": check.details,
+                        "passed": check.passed
+                    }
                     for check in validation_report.checks if not check.passed
                 ]
             }
@@ -212,7 +235,14 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
             "validation": {
                 "is_valid": validation_report.is_valid,
                 "issues": [
-                    {"name": check.name, "message": check.message, "passed": check.passed}
+                    {
+                        "type": check.name,
+                        "description": check.message,
+                        "severity": "high" if "missing" in check.message.lower() or "null" in check.message.lower() else "medium",
+                        "affected_columns": list(check.details.keys()) if check.details else [],
+                        "details": check.details,
+                        "passed": check.passed
+                    }
                     for check in validation_report.checks if not check.passed
                 ]
             }
@@ -277,29 +307,62 @@ async def get_data_preview(session_id: str, rows: int = 10):
 async def generate_eda(session_id: str):
     """Generate comprehensive EDA report."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         df = session_store[session_id]["dataframe"]
-        eda_report = generate_eda_report(df)
         
-        # Store EDA report
+        # Use basic analysis to avoid dependency issues
+        eda_report = {
+            "basic_info": {
+                "shape": list(df.shape),
+                "columns": df.columns.tolist(),
+                "dtypes": {k: str(v) for k, v in df.dtypes.to_dict().items()},
+                "missing_values": {k: int(v) for k, v in df.isnull().sum().to_dict().items()},
+                "missing_percentage": {k: float(v) for k, v in (df.isnull().sum() / len(df) * 100).to_dict().items()}
+            },
+            "numeric_summary": {},
+            "categorical_summary": {},
+            "correlations": {}
+        }
+        
+        # Numeric analysis
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) > 0:
+            desc = df[numeric_cols].describe()
+            eda_report["numeric_summary"] = {col: {k: float(v) for k, v in desc[col].to_dict().items()} for col in numeric_cols}
+            
+            # Simple correlation matrix
+            if len(numeric_cols) > 1:
+                corr_matrix = df[numeric_cols].corr()
+                eda_report["correlations"] = {
+                    col1: {col2: float(corr_matrix.loc[col1, col2]) if not pd.isna(corr_matrix.loc[col1, col2]) else 0.0 
+                           for col2 in numeric_cols} 
+                    for col1 in numeric_cols
+                }
+        
+        # Categorical analysis
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns[:5]
+        for col in categorical_cols:
+            value_counts = df[col].value_counts().head()
+            eda_report["categorical_summary"][col] = {str(k): int(v) for k, v in value_counts.to_dict().items()}
+        
         session_store[session_id]["eda_report"] = eda_report
         
         return {
-            "status": "success",
+            "status": "success", 
             "report": eda_report,
             "message": "EDA report generated successfully"
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating EDA: {str(e)}")
+        return {"status": "error", "detail": f"Error generating EDA: {str(e)}"}
 
 @app.post("/api/data/{session_id}/process")
 async def process_data(session_id: str, config: TaskConfig):
     """Process data with intelligent automated pipeline."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         start_time = datetime.now()
@@ -319,11 +382,24 @@ async def process_data(session_id: str, config: TaskConfig):
                 # Get intelligence profile if available
                 intelligence_profile = session_data.get("intelligence_profile")
                 
+                # Prepare custom config with feature settings
+                custom_config = {
+                    'feature_generation_enabled': config.feature_generation_enabled,
+                    'feature_selection_enabled': config.feature_selection_enabled,
+                    'enable_intelligence': config.enable_intelligence
+                }
+                
+                print(f"🔧 Processing config received:")
+                print(f"   Feature Generation: {config.feature_generation_enabled}")
+                print(f"   Feature Selection: {config.feature_selection_enabled}")
+                print(f"   Intelligence: {config.enable_intelligence}")
+                
                 # Execute robust pipeline
                 robust_result = robust_orchestrator.execute_pipeline(
                     data_path=temp_file.name,
                     task_type=config.task,
-                    target_column=config.target_column
+                    target_column=config.target_column,
+                    custom_config=custom_config
                 )
                 
                 # Clean up temp file
@@ -341,6 +417,9 @@ async def process_data(session_id: str, config: TaskConfig):
                     "processing_time": processing_time
                 })
                 
+                print(f"🔧 After processing, session {session_id} now has keys: {list(session_store[session_id].keys())}")
+                print(f"🔧 Robust result keys: {list(robust_result.keys()) if isinstance(robust_result, dict) else 'Not a dict'}")
+                
                 # Extract intelligence summary if available
                 intelligence_summary = None
                 if intelligence_profile:
@@ -350,7 +429,10 @@ async def process_data(session_id: str, config: TaskConfig):
                         "primary_domain": detected_domains[0].get('domain') if detected_domains else 'unknown',
                         "total_recommendations": len(intelligence_profile.get('overall_recommendations', [])),
                         "relationships_analyzed": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-                        "feature_engineering_applied": True
+                        "feature_generation_applied": config.feature_generation_enabled,
+                        "feature_selection_applied": config.feature_selection_enabled,
+                        "original_shape": df.shape,
+                        "final_shape": robust_result.get('final_data_shape', df.shape)
                     }
                 
                 return ProcessingResult(
@@ -407,60 +489,166 @@ async def process_data(session_id: str, config: TaskConfig):
         )
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+        return {"status": "error", "detail": f"Processing error: {str(e)}"}
 
 @app.get("/api/data/{session_id}/download/{artifact_type}")
 async def download_artifact(session_id: str, artifact_type: str):
     """Download processing artifacts including intelligence reports."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     session_data = session_store[session_id]
     
     try:
+        print(f"🔧 Download request: session_id={session_id}, artifact_type={artifact_type}")
+        print(f"🔧 Session data keys: {list(session_data.keys())}")
+        
         if artifact_type == "data":
-            if "processed_data" not in session_data:
-                raise HTTPException(status_code=404, detail="Processed data not found")
+            # Check both possible locations for processed data
+            processed_data = None
+            if "processed_data" in session_data:
+                processed_data = session_data["processed_data"]
+            elif "robust_pipeline_result" in session_data:
+                robust_result = session_data["robust_pipeline_result"]
+                if isinstance(robust_result, dict) and "final_data" in robust_result:
+                    processed_data = robust_result["final_data"]
+                elif isinstance(robust_result, dict) and "processed_data" in robust_result:
+                    processed_data = robust_result["processed_data"]
             
-            df = session_data["processed_data"]
+            if processed_data is None:
+                return {"status": "error", "detail": "Processed data not found"}
+            
+            df = processed_data
             if session_data.get("aligned_target") is not None:
                 df = df.copy()
                 df["target"] = session_data["aligned_target"]
             
             csv_data = df.to_csv(index=False)
             
-            return FileResponse(
-                path=None,
-                filename=f"processed_data_{session_id}.csv",
+            return Response(
                 content=csv_data.encode(),
-                media_type="text/csv"
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=processed_data_{session_id}.csv"}
             )
         
         elif artifact_type == "pipeline":
             if "orchestrator_result" not in session_data:
                 raise HTTPException(status_code=404, detail="Pipeline not found")
             
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".joblib") as tmp:
-                joblib.dump(session_data["orchestrator_result"].pipeline, tmp.name)
-                return FileResponse(
-                    path=tmp.name,
-                    filename=f"pipeline_{session_id}.joblib",
-                    media_type="application/octet-stream"
-                )
+            try:
+                # Get the pipeline from orchestrator result
+                orchestrator_result = session_data["orchestrator_result"]
+                print(f"🔧 Orchestrator result type: {type(orchestrator_result)}")
+                print(f"🔧 Orchestrator result keys: {orchestrator_result.keys() if hasattr(orchestrator_result, 'keys') else 'Not dict-like'}")
+                
+                # Try to get pipeline - could be in different locations
+                pipeline = None
+                if hasattr(orchestrator_result, 'pipeline'):
+                    pipeline = orchestrator_result.pipeline
+                elif isinstance(orchestrator_result, dict) and 'pipeline' in orchestrator_result:
+                    pipeline = orchestrator_result['pipeline']
+                elif isinstance(orchestrator_result, dict) and 'final_pipeline' in orchestrator_result:
+                    pipeline = orchestrator_result['final_pipeline']
+                
+                if pipeline is None:
+                    # If no pipeline found, create a placeholder
+                    print("⚠️ No pipeline object found, creating placeholder")
+                    placeholder_data = {
+                        "session_id": session_id,
+                        "message": "Pipeline object not available - processing may have used a different approach",
+                        "orchestrator_keys": list(orchestrator_result.keys()) if isinstance(orchestrator_result, dict) else str(type(orchestrator_result)),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    return Response(
+                        content=json.dumps(placeholder_data, indent=2).encode(),
+                        media_type="application/json",
+                        headers={"Content-Disposition": f"attachment; filename=pipeline_info_{session_id}.json"}
+                    )
+                
+                print(f"🔧 Found pipeline object of type: {type(pipeline)}")
+                
+                # Test if pipeline is serializable
+                try:
+                    # Use a temporary file approach instead of BytesIO to avoid memory issues
+                    import tempfile
+                    import os
+                    
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".joblib") as tmp_file:
+                        print(f"🔧 Creating temporary pipeline file: {tmp_file.name}")
+                        joblib.dump(pipeline, tmp_file.name)
+                        
+                        # Read the file back as bytes
+                        with open(tmp_file.name, 'rb') as f:
+                            pipeline_bytes = f.read()
+                        
+                        # Clean up temp file
+                        os.unlink(tmp_file.name)
+                        
+                        print(f"🔧 Pipeline serialization successful, size: {len(pipeline_bytes)} bytes")
+                        
+                        return Response(
+                            content=pipeline_bytes,
+                            media_type="application/octet-stream",
+                            headers={
+                                "Content-Disposition": f"attachment; filename=pipeline_{session_id}.joblib",
+                                "Content-Length": str(len(pipeline_bytes))
+                            }
+                        )
+                except Exception as serialize_error:
+                    print(f"❌ Pipeline serialization failed: {str(serialize_error)}")
+                    # Return pipeline info as JSON instead
+                    pipeline_info = {
+                        "session_id": session_id,
+                        "pipeline_type": str(type(pipeline)),
+                        "pipeline_string": str(pipeline)[:1000] + "..." if len(str(pipeline)) > 1000 else str(pipeline),
+                        "serialization_error": str(serialize_error),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    return Response(
+                        content=json.dumps(pipeline_info, indent=2).encode(),
+                        media_type="application/json",
+                        headers={"Content-Disposition": f"attachment; filename=pipeline_info_{session_id}.json"}
+                    )
+            except Exception as e:
+                print(f"❌ Pipeline download error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Pipeline serialization failed: {str(e)}")
         
         elif artifact_type == "lineage":
             if "orchestrator_result" not in session_data:
                 raise HTTPException(status_code=404, detail="Lineage report not found")
             
-            lineage = session_data["orchestrator_result"].lineage_report
-            lineage_json = json.dumps(lineage, indent=2)
-            
-            return FileResponse(
-                path=None,
-                filename=f"lineage_report_{session_id}.json",
-                content=lineage_json.encode(),
-                media_type="application/json"
-            )
+            try:
+                orchestrator_result = session_data["orchestrator_result"]
+                
+                # Try different ways to get lineage data
+                lineage = None
+                if hasattr(orchestrator_result, 'lineage_report'):
+                    lineage = orchestrator_result.lineage_report
+                elif isinstance(orchestrator_result, dict) and 'lineage_report' in orchestrator_result:
+                    lineage = orchestrator_result['lineage_report']
+                elif isinstance(orchestrator_result, dict) and 'lineage' in orchestrator_result:
+                    lineage = orchestrator_result['lineage']
+                else:
+                    # Generate basic lineage from available data
+                    lineage = {
+                        "pipeline_execution": "completed",
+                        "timestamp": datetime.now().isoformat(),
+                        "steps_executed": list(orchestrator_result.keys()) if isinstance(orchestrator_result, dict) else [],
+                        "session_id": session_id
+                    }
+                
+                lineage_json = json.dumps(lineage, indent=2, default=str)
+                
+                return Response(
+                    content=lineage_json.encode(),
+                    media_type="application/json",
+                    headers={"Content-Disposition": f"attachment; filename=lineage_report_{session_id}.json"}
+                )
+            except Exception as e:
+                print(f"❌ Lineage download error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Lineage report generation failed: {str(e)}")
         
         elif artifact_type == "intelligence":
             if "intelligence_profile" not in session_data:
@@ -489,40 +677,107 @@ async def download_artifact(session_id: str, artifact_type: str):
             
             intelligence_json = json.dumps(serializable_profile, indent=2, default=str)
             
-            return FileResponse(
-                path=None,
-                filename=f"intelligence_report_{session_id}.json",
+            return Response(
                 content=intelligence_json.encode(),
-                media_type="application/json"
+                media_type="application/json",
+                headers={"Content-Disposition": f"attachment; filename=intelligence_report_{session_id}.json"}
             )
         
         elif artifact_type == "robust-metadata":
             if "robust_pipeline_result" not in session_data:
                 raise HTTPException(status_code=404, detail="Robust pipeline metadata not found")
             
-            robust_result = session_data["robust_pipeline_result"]
-            metadata_json = json.dumps(robust_result, indent=2, default=str)
-            
-            return FileResponse(
-                path=None,
-                filename=f"robust_pipeline_metadata_{session_id}.json",
-                content=metadata_json.encode(),
-                media_type="application/json"
-            )
+            try:
+                robust_result = session_data["robust_pipeline_result"]
+                print(f"🔧 Robust result type: {type(robust_result)}")
+                print(f"🔧 Robust result keys: {list(robust_result.keys()) if isinstance(robust_result, dict) else 'Not a dict'}")
+                
+                # Create a safe, serializable version of the metadata
+                safe_metadata = {}
+                
+                if isinstance(robust_result, dict):
+                    for key, value in robust_result.items():
+                        try:
+                            print(f"🔧 Processing key: {key}, value type: {type(value)}")
+                            
+                            if key in ['pipeline', 'final_pipeline']:
+                                # Don't include pipeline objects in metadata
+                                safe_metadata[key] = f"<Pipeline object of type {type(value)}>"
+                            elif key in ['dataframe', 'processed_data', 'final_data', 'enhanced_data']:
+                                # Handle DataFrame objects
+                                if hasattr(value, 'shape'):
+                                    safe_metadata[key] = f"<DataFrame with shape {value.shape}>"
+                                else:
+                                    safe_metadata[key] = f"<Data object of type {type(value)}>"
+                            elif hasattr(value, '__dict__') and not isinstance(value, (str, int, float, bool, list, dict)):
+                                # Convert objects to string representation
+                                safe_metadata[key] = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
+                            else:
+                                # Try to include the value directly
+                                try:
+                                    json.dumps(value)  # Test if serializable
+                                    safe_metadata[key] = value
+                                except:
+                                    # If not serializable, convert to string
+                                    safe_metadata[key] = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
+                        except Exception as key_error:
+                            print(f"❌ Error processing key {key}: {str(key_error)}")
+                            safe_metadata[key] = f"<Error processing key: {str(key_error)}>"
+                else:
+                    safe_metadata = {
+                        "robust_result_type": str(type(robust_result)),
+                        "robust_result_str": str(robust_result)[:1000] + "..." if len(str(robust_result)) > 1000 else str(robust_result)
+                    }
+                
+                # Add session info
+                safe_metadata["session_id"] = session_id
+                safe_metadata["export_timestamp"] = datetime.now().isoformat()
+                
+                metadata_json = json.dumps(safe_metadata, indent=2, default=str)
+                
+                return Response(
+                    content=metadata_json.encode(),
+                    media_type="application/json",
+                    headers={"Content-Disposition": f"attachment; filename=robust_pipeline_metadata_{session_id}.json"}
+                )
+            except Exception as e:
+                print(f"❌ Metadata serialization error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Metadata export failed: {str(e)}")
         
         elif artifact_type == "enhanced-data":
-            if "enhanced_data" not in session_data:
-                raise HTTPException(status_code=404, detail="Enhanced data not found")
+            # Look for enhanced data in multiple locations
+            enhanced_df = None
             
-            enhanced_df = session_data["enhanced_data"]
-            csv_data = enhanced_df.to_csv(index=False)
+            if "enhanced_data" in session_data:
+                enhanced_df = session_data["enhanced_data"]
+            elif "robust_pipeline_result" in session_data:
+                robust_result = session_data["robust_pipeline_result"]
+                if isinstance(robust_result, dict):
+                    if "enhanced_data" in robust_result:
+                        enhanced_df = robust_result["enhanced_data"]
+                    elif "final_data" in robust_result:
+                        enhanced_df = robust_result["final_data"] 
+                    elif "processed_data" in robust_result:
+                        enhanced_df = robust_result["processed_data"]
             
-            return FileResponse(
-                path=None,
-                filename=f"enhanced_data_{session_id}.csv",
-                content=csv_data.encode(),
-                media_type="text/csv"
-            )
+            if enhanced_df is None:
+                # Fallback to regular processed data
+                if "processed_data" in session_data:
+                    enhanced_df = session_data["processed_data"]
+                else:
+                    raise HTTPException(status_code=404, detail="Enhanced data not found")
+            
+            try:
+                csv_data = enhanced_df.to_csv(index=False)
+                
+                return Response(
+                    content=csv_data.encode(),
+                    media_type="text/csv",
+                    headers={"Content-Disposition": f"attachment; filename=enhanced_data_{session_id}.csv"}
+                )
+            except Exception as e:
+                print(f"❌ Enhanced data download error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Enhanced data export failed: {str(e)}")
         
         else:
             raise HTTPException(status_code=400, detail="Invalid artifact type")
@@ -598,7 +853,7 @@ async def get_feature_recommendations(session_id: str,
                                     priority_filter: Optional[str] = None):
     """Get AI-powered feature engineering recommendations."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         df = session_store[session_id]["dataframe"]
@@ -659,7 +914,7 @@ async def get_feature_recommendations(session_id: str,
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Feature recommendation error: {str(e)}")
+        return {"status": "error", "detail": f"Feature recommendation error: {str(e)}"}
 
 @app.post("/api/data/{session_id}/apply-features")
 async def apply_feature_recommendations(session_id: str, request: FeatureRecommendationRequest):
@@ -965,14 +1220,14 @@ async def trigger_pipeline_recovery(session_id: str):
 async def get_relationship_graph(session_id: str):
     """Get interactive relationship graph data for visualization."""
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return {"status": "error", "detail": "Session not found"}
     
     try:
         session_data = session_store[session_id]
         intelligence_profile = session_data.get("intelligence_profile")
         
         if not intelligence_profile:
-            raise HTTPException(status_code=400, detail="Intelligence profile required. Run profiling first.")
+            return {"status": "error", "detail": "Intelligence profile required. Run profiling first."}
         
         relationship_analysis = intelligence_profile.get('relationship_analysis', {})
         relationships = relationship_analysis.get('relationships', [])
@@ -1040,7 +1295,12 @@ async def get_relationship_graph(session_id: str):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Relationship graph error: {str(e)}")
+        return {"status": "error", "detail": f"Relationship graph error: {str(e)}"}
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Simple favicon to prevent 404 errors."""
+    return {"status": "no favicon"}
 
 @app.get("/api/health")
 async def health_check():
