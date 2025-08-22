@@ -106,6 +106,11 @@ class WorkflowOrchestrator:
         self.profiler = IntelligentDataProfiler()
         self.domain_detector = DomainDetector()
     
+    def build(self) -> tuple[Pipeline, Dict[str, List[str]]]:
+        """Simplified build method for backward compatibility."""
+        result = self.run()
+        return result.pipeline, result.column_roles
+    
     def run(self) -> OrchestratorResult:
         """Executes complete preprocessing workflow with optional Phase 2 capabilities."""
         try:
@@ -488,4 +493,3 @@ class WorkflowOrchestrator:
         """Build NLP pipeline with text-aware processing."""
         nlp_config = create_nlp_config(self.df, self.target_column, auto_detect=True)
         return create_nlp_pipeline(self.df, self.target_column, config=nlp_config)
-            
