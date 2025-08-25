@@ -19,12 +19,21 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .automator import WorkflowOrchestrator, Status
 from .common.data_ingestion import ingest_data, ingest_from_url
 from .data_quality.validator import DataQualityValidator
 from .utils import generate_eda_report
 from .intelligence.data_profiler import IntelligentDataProfiler
-from .core.pipeline_orchestrator import RobustPipelineOrchestrator
+from .core.pipeline_orchestrator import RobustPipelineOrchestrator, PipelineConfig
+from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
+from .core.strategy_translator import StrategyTranslator
+
+try:
+    from .database.service import get_database_service
+    from .database.connection import get_database_manager
+    from .learning.persistent_storage import PersistentMetaDatabase
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
 
 app = FastAPI(
     title="DataInsight AI",
@@ -65,7 +74,23 @@ class TaskConfig(BaseModel):
     feature_generation_enabled: bool = False
     feature_selection_enabled: bool = False
     enable_intelligence: bool = True
-    enable_robust_pipeline: bool = True
+
+class StrategicTaskConfig(BaseModel):
+    project_id: str
+    objective: str
+    domain: str
+    priority: str = "medium"
+    risk_level: str = "medium"
+    target_column: Optional[str] = None
+    business_goal: str
+    success_criteria: List[str] = []
+    stakeholders: List[str] = []
+    timeline_months: int = 3
+    interpretability_required: bool = False
+    compliance_rules: List[str] = []
+    max_latency_ms: Optional[int] = None
+    max_training_hours: Optional[float] = None
+    min_accuracy: Optional[float] = None
 
 class DataIngestionRequest(BaseModel):
     url: str
@@ -98,6 +123,12 @@ class ProfilingRequest(BaseModel):
     deep_analysis: bool = True
     include_relationships: bool = True
     include_domain_detection: bool = True
+
+class StrategicAnalysisRequest(BaseModel):
+    """Request model for comprehensive strategic analysis"""
+    project_definition: StrategicTaskConfig
+    include_historical_insights: bool = True
+    translation_strategy: str = "balanced"  # conservative, balanced, aggressive, compliance_first
 
 class FeatureRecommendationRequest(BaseModel):
     target_column: Optional[str] = None
@@ -358,9 +389,9 @@ async def generate_eda(session_id: str):
     except Exception as e:
         return {"status": "error", "detail": f"Error generating EDA: {str(e)}"}
 
-@app.post("/api/data/{session_id}/process")
-async def process_data(session_id: str, config: TaskConfig):
-    """Process data with intelligent automated pipeline."""
+@app.post("/api/data/{session_id}/process/strategic")
+async def process_data_strategic(session_id: str, config: StrategicTaskConfig):
+    """Process data with strategic business-driven pipeline"""
     if session_id not in session_store:
         return {"status": "error", "detail": "Session not found"}
     
@@ -369,122 +400,192 @@ async def process_data(session_id: str, config: TaskConfig):
         session_data = session_store[session_id]
         df = session_data["dataframe"]
         
-        # Determine which orchestrator to use
-        if config.enable_robust_pipeline:
-            # Use new robust pipeline orchestrator
-            try:
-                # Create temporary file for data path (robust orchestrator expects file path)
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-                df.to_csv(temp_file.name, index=False)
-                
-                robust_orchestrator = RobustPipelineOrchestrator()
-                
-                # Get intelligence profile if available
-                intelligence_profile = session_data.get("intelligence_profile")
-                
-                # Prepare custom config with feature settings
-                custom_config = {
-                    'feature_generation_enabled': config.feature_generation_enabled,
-                    'feature_selection_enabled': config.feature_selection_enabled,
-                    'enable_intelligence': config.enable_intelligence
-                }
-                
-                print(f"🔧 Processing config received:")
-                print(f"   Feature Generation: {config.feature_generation_enabled}")
-                print(f"   Feature Selection: {config.feature_selection_enabled}")
-                print(f"   Intelligence: {config.enable_intelligence}")
-                
-                # Execute robust pipeline
-                robust_result = robust_orchestrator.execute_pipeline(
-                    data_path=temp_file.name,
-                    task_type=config.task,
-                    target_column=config.target_column,
-                    custom_config=custom_config
-                )
-                
-                # Clean up temp file
-                Path(temp_file.name).unlink()
-                
-                if robust_result.get('status') != 'success':
-                    raise Exception(f"Robust pipeline failed: {robust_result.get('error', 'Unknown error')}")
-                
-                processing_time = (datetime.now() - start_time).total_seconds()
-                
-                # Store robust results
-                session_store[session_id].update({
-                    "robust_pipeline_result": robust_result,
-                    "processing_config": config.dict(),
-                    "processing_time": processing_time
-                })
-                
-                print(f"🔧 After processing, session {session_id} now has keys: {list(session_store[session_id].keys())}")
-                print(f"🔧 Robust result keys: {list(robust_result.keys()) if isinstance(robust_result, dict) else 'Not a dict'}")
-                
-                # Extract intelligence summary if available
-                intelligence_summary = None
-                if intelligence_profile:
-                    domain_analysis = intelligence_profile.get('domain_analysis', {})
-                    detected_domains = domain_analysis.get('detected_domains', [])
-                    intelligence_summary = {
-                        "primary_domain": detected_domains[0].get('domain') if detected_domains else 'unknown',
-                        "total_recommendations": len(intelligence_profile.get('overall_recommendations', [])),
-                        "relationships_analyzed": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-                        "feature_generation_applied": config.feature_generation_enabled,
-                        "feature_selection_applied": config.feature_selection_enabled,
-                        "original_shape": df.shape,
-                        "final_shape": robust_result.get('final_data_shape', df.shape)
-                    }
-                
-                return ProcessingResult(
-                    status="success",
-                    message="Data processed with robust intelligent pipeline",
-                    data_shape=df.shape,  # Simplified for now
-                    processing_time=processing_time,
-                    intelligence_summary=intelligence_summary,
-                    artifacts={
-                        "pipeline_metadata": f"/api/data/{session_id}/download/robust-metadata",
-                        "processed_data": f"/api/data/{session_id}/download/data",
-                        "intelligence_report": f"/api/data/{session_id}/download/intelligence"
-                    }
-                )
-                
-            except Exception as robust_error:
-                # Fallback to legacy orchestrator if robust fails
-                print(f"Robust pipeline failed, falling back to legacy: {robust_error}")
-                config.enable_robust_pipeline = False
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        df.to_csv(temp_file.name, index=False)
         
-        # Use legacy orchestrator (backward compatibility)
-        orchestrator = WorkflowOrchestrator(
-            df=df,
-            target_column=config.target_column,
-            task=config.task
+        project_definition = ProjectDefinition(
+            project_id=config.project_id,
+            objective=Objective(config.objective.lower()),
+            domain=Domain(config.domain.lower()),
+            priority=Priority(config.priority.lower()),
+            risk_level=RiskLevel(config.risk_level.lower()),
+            business_context={
+                'goal': config.business_goal,
+                'success_criteria': config.success_criteria,
+                'stakeholders': config.stakeholders,
+                'timeline_months': config.timeline_months
+            },
+            technical_constraints={
+                'max_latency_ms': config.max_latency_ms,
+                'max_training_hours': config.max_training_hours,
+                'min_accuracy': config.min_accuracy
+            },
+            regulatory_constraints={
+                'interpretability_required': config.interpretability_required,
+                'compliance_rules': config.compliance_rules
+            }
         )
         
-        result = orchestrator.run()
+        pipeline_config = PipelineConfig(
+            enable_adaptive_learning=True,
+            enable_security=True,
+            enable_explainability=True,
+            enable_compliance=True
+        )
         
-        if result.status != Status.SUCCESS:
-            raise HTTPException(status_code=500, detail=result.error_message)
+        orchestrator = RobustPipelineOrchestrator(pipeline_config)
+        
+        strategic_result = orchestrator.execute_pipeline(
+            data_path=temp_file.name,
+            project_definition=project_definition,
+            target_column=config.target_column
+        )
+        
+        Path(temp_file.name).unlink()
         
         processing_time = (datetime.now() - start_time).total_seconds()
         
-        # Store legacy results
         session_store[session_id].update({
-            "orchestrator_result": result,
-            "processed_data": result.processed_features,
-            "aligned_target": result.aligned_target,
-            "processing_config": config.dict()
+            "strategic_result": strategic_result,
+            "project_definition": project_definition.__dict__,
+            "processing_config": config.dict(),
+            "processing_time": processing_time
         })
+        
+        return {
+            "status": "success",
+            "message": "Strategic pipeline execution completed",
+            "project_id": config.project_id,
+            "objective_achieved": strategic_result.get("strategic_summary", {}).get("objective_achieved", False),
+            "business_impact": strategic_result.get("strategic_summary", {}).get("business_impact", {}),
+            "executive_summary": strategic_result.get("strategic_summary", {}).get("executive_summary", {}),
+            "processing_time": processing_time,
+            "artifacts": {
+                "strategic_report": f"/api/data/{session_id}/download/strategic-report",
+                "executive_dashboard": f"/api/data/{session_id}/download/executive-dashboard",
+                "technical_artifacts": f"/api/data/{session_id}/download/technical-artifacts"
+            }
+        }
+    
+    except Exception as e:
+        return {"status": "error", "detail": f"Strategic processing error: {str(e)}"}
+
+@app.post("/api/data/{session_id}/process")
+async def process_data(session_id: str, config: TaskConfig):
+    """Process data with unified RobustPipelineOrchestrator workflow."""
+    if session_id not in session_store:
+        return {"status": "error", "detail": "Session not found"}
+    
+    try:
+        start_time = datetime.now()
+        session_data = session_store[session_id]
+        df = session_data["dataframe"]
+        
+        # Create temporary file for pipeline execution
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        df.to_csv(temp_file.name, index=False)
+        
+        # Phase 1: RECALL - Get experience from database
+        recommended_strategy = None
+        if DATABASE_AVAILABLE:
+            try:
+                meta_db = PersistentMetaDatabase()
+                from .learning.persistent_storage import create_dataset_characteristics
+                
+                # Create dataset characteristics for experience lookup
+                dataset_characteristics = create_dataset_characteristics(
+                    df, config.target_column, domain='general'
+                )
+                
+                # Recall similar successful strategies
+                recommendations = meta_db.get_recommended_strategies(
+                    dataset_characteristics,
+                    objective='accuracy',
+                    domain='general'
+                )
+                
+                if recommendations.get('recommended_strategies'):
+                    recommended_strategy = recommendations['recommended_strategies'][0]
+                
+            except Exception as e:
+                logging.warning(f"Experience recall failed: {e}")
+        
+        if recommended_strategy and recommended_strategy.get('confidence', 0) > 0.6:
+            strategy_config = recommended_strategy.get('config', {})
+            pipeline_config = PipelineConfig(
+                enable_feature_engineering=strategy_config.get('feature_engineering_enabled', config.feature_generation_enabled),
+                enable_feature_selection=strategy_config.get('feature_selection_enabled', config.feature_selection_enabled),
+                enable_intelligence=config.enable_intelligence,
+                security_level=strategy_config.get('security_level', 'standard'),
+                privacy_level=strategy_config.get('privacy_level', 'medium')
+            )
+        else:
+            pipeline_config = PipelineConfig(
+                enable_feature_engineering=config.feature_generation_enabled,
+                enable_feature_selection=config.feature_selection_enabled,
+                enable_intelligence=config.enable_intelligence
+            )
+        
+        # Initialize RobustPipelineOrchestrator
+        orchestrator = RobustPipelineOrchestrator(pipeline_config)
+        
+        # Create default project definition for legacy compatibility
+        project_definition = ProjectDefinition(
+            project_id=f"api_{session_id}",
+            objective=Objective.ACCURACY,
+            domain=Domain.GENERAL,
+            priority=Priority.MEDIUM,
+            risk_level=RiskLevel.MEDIUM
+        )
+        
+        result_dict = orchestrator.execute_pipeline(
+            data_path=temp_file.name,
+            project_definition=project_definition,
+            target_column=config.target_column
+        )
+        
+        # Clean up temporary file
+        Path(temp_file.name).unlink()
+        
+        # Validate pipeline execution
+        if result_dict.get('status') != 'success':
+            raise Exception(f"Pipeline execution failed: {result_dict.get('error', 'Unknown error')}")
+        
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        session_store[session_id].update({
+            "pipeline_result": result_dict,
+            "processing_config": config.dict(),
+            "processing_time": processing_time,
+            "recommended_strategy": recommended_strategy
+        })
+        
+        # Extract intelligence summary
+        intelligence_profile = session_data.get("intelligence_profile")
+        intelligence_summary = None
+        if intelligence_profile:
+            domain_analysis = intelligence_profile.get('domain_analysis', {})
+            detected_domains = domain_analysis.get('detected_domains', [])
+            intelligence_summary = {
+                "primary_domain": detected_domains[0].get('domain') if detected_domains else 'unknown',
+                "total_recommendations": len(intelligence_profile.get('overall_recommendations', [])),
+                "relationships_analyzed": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
+                "feature_generation_applied": config.feature_generation_enabled,
+                "feature_selection_applied": config.feature_selection_enabled,
+                "original_shape": df.shape,
+                "final_shape": result_dict.get('final_data_shape', df.shape)
+            }
         
         return ProcessingResult(
             status="success",
-            message="Data processed successfully (legacy pipeline)",
-            data_shape=result.processed_features.shape,
-            column_roles=result.column_roles,
+            message="Data processed with unified pipeline",
+            data_shape=result_dict.get('final_data_shape', df.shape),
             processing_time=processing_time,
+            intelligence_summary=intelligence_summary,
             artifacts={
-                "pipeline": f"/api/data/{session_id}/download/pipeline",
+                "pipeline_metadata": f"/api/data/{session_id}/download/pipeline-metadata",
                 "processed_data": f"/api/data/{session_id}/download/data",
-                "lineage_report": f"/api/data/{session_id}/download/lineage"
+                "intelligence_report": f"/api/data/{session_id}/download/intelligence"
             }
         )
     
@@ -504,16 +605,16 @@ async def download_artifact(session_id: str, artifact_type: str):
         print(f"🔧 Session data keys: {list(session_data.keys())}")
         
         if artifact_type == "data":
-            # Check both possible locations for processed data
+            # Check unified pipeline result for processed data
             processed_data = None
             if "processed_data" in session_data:
                 processed_data = session_data["processed_data"]
-            elif "robust_pipeline_result" in session_data:
-                robust_result = session_data["robust_pipeline_result"]
-                if isinstance(robust_result, dict) and "final_data" in robust_result:
-                    processed_data = robust_result["final_data"]
-                elif isinstance(robust_result, dict) and "processed_data" in robust_result:
-                    processed_data = robust_result["processed_data"]
+            elif "pipeline_result" in session_data:
+                pipeline_result = session_data["pipeline_result"]
+                if isinstance(pipeline_result, dict) and "final_data" in pipeline_result:
+                    processed_data = pipeline_result["final_data"]
+                elif isinstance(pipeline_result, dict) and "processed_data" in pipeline_result:
+                    processed_data = pipeline_result["processed_data"]
             
             if processed_data is None:
                 return {"status": "error", "detail": "Processed data not found"}
@@ -532,31 +633,27 @@ async def download_artifact(session_id: str, artifact_type: str):
             )
         
         elif artifact_type == "pipeline":
-            if "orchestrator_result" not in session_data:
+            if "pipeline_result" not in session_data:
                 raise HTTPException(status_code=404, detail="Pipeline not found")
             
             try:
-                # Get the pipeline from orchestrator result
-                orchestrator_result = session_data["orchestrator_result"]
-                print(f"🔧 Orchestrator result type: {type(orchestrator_result)}")
-                print(f"🔧 Orchestrator result keys: {orchestrator_result.keys() if hasattr(orchestrator_result, 'keys') else 'Not dict-like'}")
+                # Get the pipeline from unified pipeline result
+                pipeline_result = session_data["pipeline_result"]
                 
-                # Try to get pipeline - could be in different locations
+                # Try to get pipeline from result
                 pipeline = None
-                if hasattr(orchestrator_result, 'pipeline'):
-                    pipeline = orchestrator_result.pipeline
-                elif isinstance(orchestrator_result, dict) and 'pipeline' in orchestrator_result:
-                    pipeline = orchestrator_result['pipeline']
-                elif isinstance(orchestrator_result, dict) and 'final_pipeline' in orchestrator_result:
-                    pipeline = orchestrator_result['final_pipeline']
+                if isinstance(pipeline_result, dict):
+                    if 'pipeline' in pipeline_result:
+                        pipeline = pipeline_result['pipeline']
+                    elif 'final_pipeline' in pipeline_result:
+                        pipeline = pipeline_result['final_pipeline']
                 
                 if pipeline is None:
                     # If no pipeline found, create a placeholder
-                    print("⚠️ No pipeline object found, creating placeholder")
                     placeholder_data = {
                         "session_id": session_id,
                         "message": "Pipeline object not available - processing may have used a different approach",
-                        "orchestrator_keys": list(orchestrator_result.keys()) if isinstance(orchestrator_result, dict) else str(type(orchestrator_result)),
+                        "pipeline_result_keys": list(pipeline_result.keys()) if isinstance(pipeline_result, dict) else str(type(pipeline_result)),
                         "timestamp": datetime.now().isoformat()
                     }
                     
@@ -566,8 +663,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                         headers={"Content-Disposition": f"attachment; filename=pipeline_info_{session_id}.json"}
                     )
                 
-                print(f"🔧 Found pipeline object of type: {type(pipeline)}")
-                
                 # Test if pipeline is serializable
                 try:
                     # Use a temporary file approach instead of BytesIO to avoid memory issues
@@ -575,7 +670,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                     import os
                     
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".joblib") as tmp_file:
-                        print(f"🔧 Creating temporary pipeline file: {tmp_file.name}")
                         joblib.dump(pipeline, tmp_file.name)
                         
                         # Read the file back as bytes
@@ -584,8 +678,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                         
                         # Clean up temp file
                         os.unlink(tmp_file.name)
-                        
-                        print(f"🔧 Pipeline serialization successful, size: {len(pipeline_bytes)} bytes")
                         
                         return Response(
                             content=pipeline_bytes,
@@ -596,7 +688,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                             }
                         )
                 except Exception as serialize_error:
-                    print(f"❌ Pipeline serialization failed: {str(serialize_error)}")
                     # Return pipeline info as JSON instead
                     pipeline_info = {
                         "session_id": session_id,
@@ -612,32 +703,42 @@ async def download_artifact(session_id: str, artifact_type: str):
                         headers={"Content-Disposition": f"attachment; filename=pipeline_info_{session_id}.json"}
                     )
             except Exception as e:
-                print(f"❌ Pipeline download error: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Pipeline serialization failed: {str(e)}")
         
         elif artifact_type == "lineage":
-            if "orchestrator_result" not in session_data:
+            if "pipeline_result" not in session_data:
                 raise HTTPException(status_code=404, detail="Lineage report not found")
             
             try:
-                orchestrator_result = session_data["orchestrator_result"]
+                pipeline_result = session_data["pipeline_result"]
                 
                 # Try different ways to get lineage data
                 lineage = None
-                if hasattr(orchestrator_result, 'lineage_report'):
-                    lineage = orchestrator_result.lineage_report
-                elif isinstance(orchestrator_result, dict) and 'lineage_report' in orchestrator_result:
-                    lineage = orchestrator_result['lineage_report']
-                elif isinstance(orchestrator_result, dict) and 'lineage' in orchestrator_result:
-                    lineage = orchestrator_result['lineage']
-                else:
-                    # Generate basic lineage from available data
-                    lineage = {
-                        "pipeline_execution": "completed",
-                        "timestamp": datetime.now().isoformat(),
-                        "steps_executed": list(orchestrator_result.keys()) if isinstance(orchestrator_result, dict) else [],
-                        "session_id": session_id
-                    }
+                if isinstance(pipeline_result, dict):
+                    if 'lineage_report' in pipeline_result:
+                        lineage = pipeline_result['lineage_report']
+                    elif 'lineage' in pipeline_result:
+                        lineage = pipeline_result['lineage']
+                    elif 'execution_summary' in pipeline_result:
+                        # Generate lineage from execution summary
+                        execution_summary = pipeline_result['execution_summary']
+                        lineage = {
+                            "pipeline_execution": "completed",
+                            "timestamp": datetime.now().isoformat(),
+                            "total_stages": execution_summary.get('total_stages', 0),
+                            "successful_stages": execution_summary.get('successful_stages', 0),
+                            "execution_time": execution_summary.get('total_time', 0),
+                            "session_id": session_id,
+                            "stages_executed": list(pipeline_result.get('results', {}).keys())
+                        }
+                    else:
+                        # Generate basic lineage from available data
+                        lineage = {
+                            "pipeline_execution": "completed",
+                            "timestamp": datetime.now().isoformat(),
+                            "steps_executed": list(pipeline_result.keys()) if isinstance(pipeline_result, dict) else [],
+                            "session_id": session_id
+                        }
                 
                 lineage_json = json.dumps(lineage, indent=2, default=str)
                 
@@ -647,7 +748,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                     headers={"Content-Disposition": f"attachment; filename=lineage_report_{session_id}.json"}
                 )
             except Exception as e:
-                print(f"❌ Lineage download error: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Lineage report generation failed: {str(e)}")
         
         elif artifact_type == "intelligence":
@@ -683,20 +783,20 @@ async def download_artifact(session_id: str, artifact_type: str):
                 headers={"Content-Disposition": f"attachment; filename=intelligence_report_{session_id}.json"}
             )
         
-        elif artifact_type == "robust-metadata":
-            if "robust_pipeline_result" not in session_data:
-                raise HTTPException(status_code=404, detail="Robust pipeline metadata not found")
+        elif artifact_type == "pipeline-metadata":
+            if "pipeline_result" not in session_data:
+                raise HTTPException(status_code=404, detail="Pipeline metadata not found")
             
             try:
-                robust_result = session_data["robust_pipeline_result"]
-                print(f"🔧 Robust result type: {type(robust_result)}")
-                print(f"🔧 Robust result keys: {list(robust_result.keys()) if isinstance(robust_result, dict) else 'Not a dict'}")
+                pipeline_result = session_data["pipeline_result"]
+                print(f"🔧 Pipeline result type: {type(pipeline_result)}")
+                print(f"🔧 Pipeline result keys: {list(pipeline_result.keys()) if isinstance(pipeline_result, dict) else 'Not a dict'}")
                 
                 # Create a safe, serializable version of the metadata
                 safe_metadata = {}
                 
-                if isinstance(robust_result, dict):
-                    for key, value in robust_result.items():
+                if isinstance(pipeline_result, dict):
+                    for key, value in pipeline_result.items():
                         try:
                             print(f"🔧 Processing key: {key}, value type: {type(value)}")
                             
@@ -725,8 +825,8 @@ async def download_artifact(session_id: str, artifact_type: str):
                             safe_metadata[key] = f"<Error processing key: {str(key_error)}>"
                 else:
                     safe_metadata = {
-                        "robust_result_type": str(type(robust_result)),
-                        "robust_result_str": str(robust_result)[:1000] + "..." if len(str(robust_result)) > 1000 else str(robust_result)
+                        "pipeline_result_type": str(type(pipeline_result)),
+                        "pipeline_result_str": str(pipeline_result)[:1000] + "..." if len(str(pipeline_result)) > 1000 else str(pipeline_result)
                     }
                 
                 # Add session info
@@ -738,7 +838,7 @@ async def download_artifact(session_id: str, artifact_type: str):
                 return Response(
                     content=metadata_json.encode(),
                     media_type="application/json",
-                    headers={"Content-Disposition": f"attachment; filename=robust_pipeline_metadata_{session_id}.json"}
+                    headers={"Content-Disposition": f"attachment; filename=pipeline_metadata_{session_id}.json"}
                 )
             except Exception as e:
                 print(f"❌ Metadata serialization error: {str(e)}")
@@ -750,15 +850,15 @@ async def download_artifact(session_id: str, artifact_type: str):
             
             if "enhanced_data" in session_data:
                 enhanced_df = session_data["enhanced_data"]
-            elif "robust_pipeline_result" in session_data:
-                robust_result = session_data["robust_pipeline_result"]
-                if isinstance(robust_result, dict):
-                    if "enhanced_data" in robust_result:
-                        enhanced_df = robust_result["enhanced_data"]
-                    elif "final_data" in robust_result:
-                        enhanced_df = robust_result["final_data"] 
-                    elif "processed_data" in robust_result:
-                        enhanced_df = robust_result["processed_data"]
+            elif "pipeline_result" in session_data:
+                pipeline_result = session_data["pipeline_result"]
+                if isinstance(pipeline_result, dict):
+                    if "enhanced_data" in pipeline_result:
+                        enhanced_df = pipeline_result["enhanced_data"]
+                    elif "final_data" in pipeline_result:
+                        enhanced_df = pipeline_result["final_data"] 
+                    elif "processed_data" in pipeline_result:
+                        enhanced_df = pipeline_result["processed_data"]
             
             if enhanced_df is None:
                 # Fallback to regular processed data
@@ -967,17 +1067,68 @@ async def apply_feature_recommendations(session_id: str, request: FeatureRecomme
 async def record_learning_feedback(feedback: LearningFeedback):
     """Record user feedback for adaptive learning system."""
     try:
-        # Initialize adaptive learning system
+        if DATABASE_AVAILABLE:
+            db_service = get_database_service()
+            meta_db = PersistentMetaDatabase()
+            
+            # Get session data for context
+            if feedback.session_id in session_store:
+                session_data = session_store[feedback.session_id]
+                pipeline_result = session_data.get("pipeline_result", {})
+                execution_id = pipeline_result.get("execution_id") if isinstance(pipeline_result, dict) else None
+                
+                if not execution_id:
+                    execution_id = f"exec_{feedback.session_id}"
+                
+                # Store feedback directly to database
+                feedback_data = {
+                    "user_rating": feedback.success_rating,
+                    "issues_encountered": feedback.issues_encountered,
+                    "suggestions": feedback.suggestions,
+                    "performance_expectation_met": feedback.success_rating >= 0.7,
+                    "would_recommend": feedback.user_satisfaction >= 0.7
+                }
+                
+                success = meta_db.record_user_feedback(execution_id, feedback_data)
+                
+                if success:
+                    # Update the original pipeline execution with user feedback
+                    update_success = meta_db.update_execution_with_feedback(
+                        execution_id, 
+                        user_satisfaction=feedback.user_satisfaction,
+                        success_rating=feedback.success_rating
+                    )
+                    
+                    if update_success:
+                        return {
+                            "status": "success",
+                            "message": "Feedback integrated into execution record",
+                            "feedback_id": f"feedback_{execution_id}_{int(datetime.now().timestamp())}",
+                            "learning_impact": "System will prioritize similar strategies based on your feedback"
+                        }
+                    else:
+                        return {
+                            "status": "partial_success", 
+                            "message": "Feedback stored but execution update failed",
+                            "feedback_id": f"feedback_{execution_id}_{int(datetime.now().timestamp())}"
+                        }
+                else:
+                    raise Exception("Database feedback storage failed")
+            else:
+                return {
+                    "status": "error",
+                    "message": "Session not found - cannot link feedback to execution"
+                }
+        
+        # Fallback to legacy adaptive learning system
         from .learning.adaptive_system import AdaptiveLearningSystem
         learning_system = AdaptiveLearningSystem()
         
-        # Get session data for context
         if feedback.session_id in session_store:
             session_data = session_store[feedback.session_id]
             intelligence_profile = session_data.get("intelligence_profile", {})
             processing_config = session_data.get("processing_config", {})
             
-            # Create mock pipeline results for learning
             pipeline_results = {
                 "performance_metrics": {"user_satisfaction": feedback.user_satisfaction},
                 "execution_time": feedback.execution_time,
@@ -996,7 +1147,6 @@ async def record_learning_feedback(feedback: LearningFeedback):
                 }
             }
             
-            # Record execution for learning
             learning_system.record_pipeline_execution(
                 pipeline_results, intelligence_profile, execution_metadata
             )
@@ -1008,11 +1158,9 @@ async def record_learning_feedback(feedback: LearningFeedback):
                 "learning_impact": "Feedback will improve future recommendations"
             }
         else:
-            # Still record feedback even without session context
             return {
-                "status": "success",
-                "message": "Feedback recorded (limited context)",
-                "feedback_id": f"feedback_{feedback.session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                "status": "error",
+                "message": "Session not found"
             }
     
     except Exception as e:
@@ -1078,36 +1226,23 @@ async def get_pipeline_status(session_id: str):
     try:
         session_data = session_store[session_id]
         
-        # Check for robust pipeline results
-        robust_result = session_data.get("robust_pipeline_result")
-        legacy_result = session_data.get("orchestrator_result")
+        # Check for unified pipeline results
+        pipeline_result = session_data.get("pipeline_result")
         
-        if robust_result:
-            # Extract status from robust pipeline
-            execution_summary = robust_result.get('execution_summary', {})
+        if pipeline_result:
+            # Extract status from unified pipeline
+            execution_summary = pipeline_result.get('execution_summary', {})
             
             status_info = {
-                "pipeline_type": "robust",
-                "overall_status": robust_result.get('status', 'unknown'),
-                "session_id": robust_result.get('session_id'),
+                "pipeline_type": "unified",
+                "overall_status": pipeline_result.get('status', 'unknown'),
+                "session_id": pipeline_result.get('session_id'),
                 "total_stages": execution_summary.get('total_stages', 0),
                 "successful_stages": execution_summary.get('successful_stages', 0),
                 "total_execution_time": execution_summary.get('total_time', 0),
-                "stage_details": robust_result.get('results', {}),
+                "stage_details": pipeline_result.get('results', {}),
                 "last_updated": datetime.now().isoformat()
             }
-            
-        elif legacy_result:
-            # Extract status from legacy pipeline
-            status_info = {
-                "pipeline_type": "legacy",
-                "overall_status": legacy_result.status.value if hasattr(legacy_result.status, 'value') else str(legacy_result.status),
-                "processing_time": session_data.get("processing_time", 0),
-                "data_shape": legacy_result.processed_features.shape if hasattr(legacy_result, 'processed_features') else None,
-                "column_roles": legacy_result.column_roles if hasattr(legacy_result, 'column_roles') else {},
-                "last_updated": datetime.now().isoformat()
-            }
-            
         else:
             # No pipeline execution found
             status_info = {
@@ -1145,16 +1280,16 @@ async def trigger_pipeline_recovery(session_id: str):
         session_data = session_store[session_id]
         
         # Check if there's a failed pipeline to recover
-        robust_result = session_data.get("robust_pipeline_result")
+        pipeline_result = session_data.get("pipeline_result")
         
-        if not robust_result:
-            raise HTTPException(status_code=400, detail="No robust pipeline execution found to recover")
+        if not pipeline_result:
+            raise HTTPException(status_code=400, detail="No pipeline execution found to recover")
         
-        if robust_result.get('status') != 'pipeline_failure':
+        if pipeline_result.get('status') != 'pipeline_failure':
             return {
                 "status": "success",
                 "message": "Pipeline is not in failed state, no recovery needed",
-                "current_status": robust_result.get('status')
+                "current_status": pipeline_result.get('status')
             }
         
         # Attempt recovery by re-running with more conservative settings
@@ -1165,7 +1300,6 @@ async def trigger_pipeline_recovery(session_id: str):
         df.to_csv(temp_file.name, index=False)
         
         # Initialize robust orchestrator with recovery configuration
-        from .core.pipeline_orchestrator import RobustPipelineOrchestrator, PipelineConfig
         recovery_config = PipelineConfig(
             max_memory_usage=0.6,  # More conservative
             enable_caching=False,   # Disable caching for recovery
@@ -1191,7 +1325,7 @@ async def trigger_pipeline_recovery(session_id: str):
         Path(temp_file.name).unlink()
         
         # Update session with recovery results
-        session_data["robust_pipeline_result"] = recovery_result
+        session_data["pipeline_result"] = recovery_result
         session_data["recovery_attempted"] = datetime.now().isoformat()
         
         return {
@@ -1215,6 +1349,272 @@ async def trigger_pipeline_recovery(session_id: str):
                 "Use legacy pipeline mode"
             ]
         }
+
+@app.post("/api/strategic/analyze")
+async def strategic_analysis(request: StrategicAnalysisRequest):
+    """Pillar 0: Strategic Control Layer - Comprehensive strategic analysis and recommendation"""
+    try:
+        # Initialize strategic control components
+        from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
+        from .core.strategy_translator import StrategyTranslator, TranslationStrategy
+        
+        # Convert API request to ProjectDefinition
+        config = request.project_definition
+        project_definition = ProjectDefinition(
+            project_id=config.project_id,
+            objective=Objective(config.objective.lower()),
+            domain=Domain(config.domain.lower()),
+            priority=Priority(config.priority.lower()),
+            risk_level=RiskLevel(config.risk_level.lower()),
+            business_context={
+                'goal': config.business_goal,
+                'success_criteria': config.success_criteria,
+                'stakeholders': config.stakeholders,
+                'timeline_months': config.timeline_months
+            },
+            technical_constraints={
+                'max_latency_ms': config.max_latency_ms,
+                'max_training_hours': config.max_training_hours,
+                'min_accuracy': config.min_accuracy
+            },
+            regulatory_constraints={
+                'interpretability_required': config.interpretability_required,
+                'compliance_rules': config.compliance_rules
+            }
+        )
+        
+        # Initialize strategy translator with specified approach
+        translation_strategy = TranslationStrategy(request.translation_strategy)
+        strategy_translator = StrategyTranslator(translation_strategy)
+        
+        # Perform comprehensive strategic analysis
+        technical_configuration = strategy_translator.translate(project_definition)
+        pipeline_config = strategy_translator.translate_to_pipeline_config(project_definition)
+        
+        # Validate project definition
+        validation_results = project_definition.validate_project_definition()
+        
+        # Calculate strategic scores and recommendations
+        strategic_assessment = {
+            "feasibility_score": _calculate_feasibility_score(project_definition, technical_configuration),
+            "complexity_assessment": technical_configuration.model_complexity.value,
+            "risk_mitigation_score": _calculate_risk_mitigation_score(project_definition, technical_configuration),
+            "resource_optimization_score": _calculate_resource_optimization_score(technical_configuration),
+            "compliance_readiness_score": _calculate_compliance_readiness_score(project_definition, technical_configuration)
+        }
+        
+        # Generate executive recommendations
+        executive_recommendations = _generate_executive_recommendations(
+            project_definition, technical_configuration, strategic_assessment
+        )
+        
+        # Strategic timeline estimation
+        timeline_estimate = _estimate_strategic_timeline(project_definition, technical_configuration)
+        
+        return {
+            "status": "success",
+            "strategic_analysis": {
+                "project_overview": {
+                    "project_id": project_definition.project_id,
+                    "objective": project_definition.objective.value,
+                    "domain": project_definition.domain.value,
+                    "priority": project_definition.priority.value,
+                    "risk_level": project_definition.risk_level.value
+                },
+                "strategic_assessment": strategic_assessment,
+                "technical_configuration": {
+                    "recommended_algorithms": technical_configuration.recommended_algorithms,
+                    "model_complexity": technical_configuration.model_complexity.value,
+                    "ensemble_strategy": technical_configuration.ensemble_strategy,
+                    "performance_targets": {
+                        "accuracy_target": technical_configuration.accuracy_target,
+                        "latency_target_ms": technical_configuration.latency_target_ms,
+                        "throughput_target": technical_configuration.throughput_target
+                    },
+                    "resource_allocation": {
+                        "max_training_hours": technical_configuration.max_training_time_hours,
+                        "max_memory_gb": technical_configuration.max_memory_gb,
+                        "compute_budget_priority": technical_configuration.compute_budget_priority
+                    },
+                    "feature_engineering": {
+                        "complexity": technical_configuration.feature_engineering_complexity,
+                        "selection_strategy": technical_configuration.feature_selection_strategy
+                    },
+                    "validation_strategy": {
+                        "rigor": technical_configuration.validation_rigor,
+                        "cross_validation_folds": technical_configuration.cross_validation_folds,
+                        "test_set_percentage": technical_configuration.test_set_percentage
+                    },
+                    "interpretability": {
+                        "level": technical_configuration.interpretability_level,
+                        "methods": technical_configuration.explanation_methods
+                    },
+                    "security_compliance": {
+                        "security_level": technical_configuration.security_level,
+                        "audit_requirements": technical_configuration.audit_requirements,
+                        "data_governance": technical_configuration.data_governance
+                    }
+                },
+                "pipeline_configuration": pipeline_config,
+                "executive_recommendations": executive_recommendations,
+                "timeline_estimate": timeline_estimate,
+                "validation_results": validation_results
+            },
+            "analysis_metadata": {
+                "translation_strategy": request.translation_strategy,
+                "analysis_timestamp": datetime.now().isoformat(),
+                "strategic_control_version": "2.0"
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Strategic analysis failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+def _calculate_feasibility_score(project_def: ProjectDefinition, tech_config) -> float:
+    """Calculate project feasibility score (0.0 to 1.0)"""
+    score = 0.8  # Base feasibility
+    
+    # Adjust for complexity vs timeline
+    if tech_config.model_complexity.value == "experimental" and project_def.business_context.get('timeline_months', 6) < 6:
+        score -= 0.2
+    
+    # Adjust for resource constraints
+    if tech_config.max_training_time_hours and tech_config.max_training_time_hours > 48:
+        score -= 0.1
+    
+    # Adjust for compliance requirements
+    if len(tech_config.audit_requirements) > 3:
+        score -= 0.1
+    
+    return max(0.0, min(1.0, score))
+
+def _calculate_risk_mitigation_score(project_def: ProjectDefinition, tech_config) -> float:
+    """Calculate risk mitigation score (0.0 to 1.0)"""
+    score = 0.6  # Base score
+    
+    # Higher validation rigor increases score
+    if tech_config.validation_rigor == "regulatory":
+        score += 0.2
+    elif tech_config.validation_rigor == "extensive":
+        score += 0.1
+    
+    # Interpretability increases score for critical projects
+    if project_def.risk_level.value == "critical" and tech_config.interpretability_level != "none":
+        score += 0.2
+    
+    # Ensemble methods increase robustness
+    if tech_config.ensemble_strategy:
+        score += 0.1
+    
+    return max(0.0, min(1.0, score))
+
+def _calculate_resource_optimization_score(tech_config) -> float:
+    """Calculate resource optimization score (0.0 to 1.0)"""
+    score = 0.7  # Base optimization
+    
+    # Budget priority alignment
+    if tech_config.compute_budget_priority == "cost_optimized":
+        score += 0.2
+    elif tech_config.compute_budget_priority == "balanced":
+        score += 0.1
+    
+    # Reasonable resource limits
+    if tech_config.max_training_time_hours and tech_config.max_training_time_hours <= 24:
+        score += 0.1
+    
+    return max(0.0, min(1.0, score))
+
+def _calculate_compliance_readiness_score(project_def: ProjectDefinition, tech_config) -> float:
+    """Calculate compliance readiness score (0.0 to 1.0)"""
+    score = 0.5  # Base compliance
+    
+    # Interpretability for regulated domains
+    if project_def.domain.value in ["finance", "healthcare"] and tech_config.interpretability_level != "none":
+        score += 0.3
+    
+    # Audit trail capabilities
+    if len(tech_config.audit_requirements) > 0:
+        score += 0.2
+    
+    # Data governance measures
+    if tech_config.data_governance.get("encryption_required", False):
+        score += 0.1
+    
+    return max(0.0, min(1.0, score))
+
+def _generate_executive_recommendations(project_def: ProjectDefinition, tech_config, assessment: Dict[str, Any]) -> List[str]:
+    """Generate executive-level strategic recommendations"""
+    recommendations = []
+    
+    # Feasibility recommendations
+    if assessment["feasibility_score"] < 0.6:
+        recommendations.append("Consider extending project timeline or reducing scope complexity to improve feasibility")
+    
+    # Risk mitigation recommendations
+    if assessment["risk_mitigation_score"] < 0.7:
+        recommendations.append("Implement additional validation measures and consider ensemble methods for risk mitigation")
+    
+    # Resource optimization recommendations
+    if assessment["resource_optimization_score"] < 0.7:
+        recommendations.append("Review resource allocation to optimize cost-performance balance")
+    
+    # Compliance recommendations
+    if project_def.domain.value in ["finance", "healthcare"] and assessment["compliance_readiness_score"] < 0.8:
+        recommendations.append("Strengthen compliance measures including interpretability and audit trail capabilities")
+    
+    # Performance optimization recommendations
+    if tech_config.model_complexity.value == "experimental":
+        recommendations.append("Consider proven algorithms first, then explore experimental approaches if needed")
+    
+    # Timeline recommendations
+    if project_def.business_context.get('timeline_months', 6) < 3:
+        recommendations.append("Aggressive timeline detected - prioritize simple, proven approaches for rapid deployment")
+    
+    return recommendations
+
+def _estimate_strategic_timeline(project_def: ProjectDefinition, tech_config) -> Dict[str, Any]:
+    """Estimate strategic project timeline"""
+    
+    base_weeks = 8  # Base project duration
+    
+    # Adjust for complexity
+    complexity_multiplier = {
+        "simple": 0.7,
+        "moderate": 1.0,
+        "complex": 1.3,
+        "experimental": 1.6
+    }
+    
+    total_weeks = base_weeks * complexity_multiplier.get(tech_config.model_complexity.value, 1.0)
+    
+    # Adjust for validation rigor
+    if tech_config.validation_rigor == "regulatory":
+        total_weeks *= 1.3
+    elif tech_config.validation_rigor == "extensive":
+        total_weeks *= 1.2
+    
+    # Adjust for interpretability requirements
+    if tech_config.interpretability_level == "full":
+        total_weeks *= 1.2
+    
+    phases = {
+        "data_preparation": max(1, int(total_weeks * 0.2)),
+        "model_development": max(2, int(total_weeks * 0.4)),
+        "validation_testing": max(1, int(total_weeks * 0.2)),
+        "deployment_preparation": max(1, int(total_weeks * 0.15)),
+        "monitoring_setup": max(1, int(total_weeks * 0.05))
+    }
+    
+    return {
+        "total_estimated_weeks": int(total_weeks),
+        "confidence_level": 0.8 if tech_config.model_complexity.value in ["simple", "moderate"] else 0.6,
+        "phase_breakdown": phases,
+        "critical_path": ["data_preparation", "model_development", "validation_testing"]
+    }
 
 @app.get("/api/data/{session_id}/relationship-graph")
 async def get_relationship_graph(session_id: str):
@@ -1302,10 +1702,96 @@ async def favicon():
     """Simple favicon to prevent 404 errors."""
     return {"status": "no favicon"}
 
+@app.get("/api/database/health")
+async def database_health():
+    """Database health check endpoint"""
+    if not DATABASE_AVAILABLE:
+        return {"status": "unavailable", "message": "Database components not installed"}
+    
+    try:
+        db_manager = get_database_manager()
+        health_status = db_manager.test_connection()
+        pool_status = db_manager.get_connection_pool_status()
+        
+        return {
+            "status": "healthy" if health_status["status"] == "healthy" else "unhealthy",
+            "database": health_status,
+            "connection_pool": pool_status,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/database/analytics")
+async def database_analytics():
+    """Database analytics and performance metrics"""
+    if not DATABASE_AVAILABLE:
+        return {"status": "unavailable"}
+    
+    try:
+        db_service = get_database_service()
+        
+        system_summary = db_service.get_system_summary()
+        domain_analytics = db_service.get_domain_analytics()
+        strategy_effectiveness = db_service.get_strategy_effectiveness()
+        
+        return {
+            "status": "success",
+            "system_summary": system_summary,
+            "domain_analytics": domain_analytics,
+            "strategy_effectiveness": strategy_effectiveness,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "error", 
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/api/database/cleanup")
+async def database_cleanup(retention_days: int = 365):
+    """Clean up old database records"""
+    if not DATABASE_AVAILABLE:
+        return {"status": "unavailable"}
+    
+    try:
+        db_service = get_database_service()
+        deleted_count = db_service.cleanup_old_data(retention_days)
+        
+        return {
+            "status": "success",
+            "deleted_records": deleted_count,
+            "retention_days": retention_days,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    """Application health check endpoint."""
+    health_status = {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    
+    if DATABASE_AVAILABLE:
+        try:
+            db_manager = get_database_manager()
+            db_health = db_manager.execute_health_check()
+            health_status["database"] = "healthy" if db_health else "degraded"
+        except:
+            health_status["database"] = "unavailable"
+    else:
+        health_status["database"] = "not_configured"
+    
+    return health_status
 
 if __name__ == "__main__":
     import uvicorn
