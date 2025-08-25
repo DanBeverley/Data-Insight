@@ -53,6 +53,12 @@ try:
 except ImportError:
     DATABASE_SERVICE_AVAILABLE = False
 
+try:
+    from ..llm.rag_system import LocalRAGSystem
+    RAG_SYSTEM_AVAILABLE = True
+except ImportError:
+    RAG_SYSTEM_AVAILABLE = False
+
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
     PROFILING = "data_profiling"
@@ -168,6 +174,9 @@ class RobustPipelineOrchestrator:
             )
         else:
             self.adaptive_system = None
+        
+        # RAG system for conversational AI
+        self.rag_system = LocalRAGSystem() if RAG_SYSTEM_AVAILABLE else None
         
         # MLOps integration
         if self.config.enable_mlops:
@@ -423,6 +432,9 @@ class RobustPipelineOrchestrator:
             final_results = self._synthesize_strategic_insights(
                 technical_config, modeling_result, validation_result, ingestion_result
             )
+            
+            # Store results in RAG system for conversational AI
+            self._store_results_in_rag(final_results, ingestion_result.data, profiling_result)
             
             return final_results
             
@@ -1879,3 +1891,59 @@ class RobustPipelineOrchestrator:
                 for result in self.execution_history
             }
         }
+    
+    def _store_results_in_rag(self, final_results: Dict[str, Any], 
+                              dataset: pd.DataFrame, 
+                              profiling_result: StageResult):
+        """Store pipeline execution results and intelligence profile in RAG system"""
+        
+        if not self.rag_system:
+            self.logger.info("RAG system not available - skipping result storage")
+            return
+        
+        try:
+            # Store execution report
+            self.rag_system.add_execution_report(final_results, self.session_id)
+            self.logger.info("Execution results stored in RAG system")
+            
+            # Store intelligence profile if available
+            if profiling_result and profiling_result.metadata:
+                intelligence_profile = profiling_result.metadata.get('intelligence_profile', {})
+                if intelligence_profile:
+                    self.rag_system.add_intelligence_profile(intelligence_profile, self.session_id)
+                    self.logger.info("Intelligence profile stored in RAG system")
+            
+            # Store dataset characteristics summary
+            dataset_summary = {
+                'shape': dataset.shape,
+                'columns': list(dataset.columns),
+                'dtypes': {col: str(dtype) for col, dtype in dataset.dtypes.items()},
+                'memory_usage': dataset.memory_usage().sum(),
+                'null_counts': dataset.isnull().sum().to_dict()
+            }
+            
+            dataset_content = f"""
+Dataset Analysis Summary:
+- Shape: {dataset.shape[0]} rows, {dataset.shape[1]} columns
+- Columns: {', '.join(dataset.columns)}
+- Memory usage: {dataset_summary['memory_usage'] / 1024 / 1024:.2f} MB
+- Missing values: {sum(dataset_summary['null_counts'].values())} total
+- Data types: {len(dataset.select_dtypes(include='number').columns)} numerical, {len(dataset.select_dtypes(include='object').columns)} categorical
+"""
+            
+            self.rag_system.add_document(
+                content=dataset_content,
+                metadata={
+                    'type': 'dataset_summary',
+                    'session_id': self.session_id,
+                    'shape': dataset.shape,
+                    'timestamp': datetime.now().isoformat()
+                },
+                document_type='dataset_summary',
+                session_id=self.session_id
+            )
+            
+            self.logger.info("Dataset summary stored in RAG system")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to store results in RAG system: {e}")
