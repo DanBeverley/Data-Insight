@@ -26,6 +26,8 @@ from .intelligence.data_profiler import IntelligentDataProfiler
 from .core.pipeline_orchestrator import RobustPipelineOrchestrator, PipelineConfig
 from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
 from .core.strategy_translator import StrategyTranslator
+from .llm.interface import LLMInterface
+from .llm.rag_system import LocalRAGSystem
 
 try:
     from .database.service import get_database_service
@@ -48,6 +50,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize LLM interface and RAG system
+llm_interface = LLMInterface()
+rag_system = LocalRAGSystem()
 
 # Serve static files with explicit routes
 static_dir = Path(__file__).parent.parent / "static"
@@ -1775,6 +1781,560 @@ async def database_cleanup(retention_days: int = 365):
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }
+
+# Chat/Conversational AI Endpoints
+
+class ChatMessage(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
+
+class ChatIntent(BaseModel):
+    session_id: str
+    user_message: str
+
+class ChatResponse(BaseModel):
+    intent: Dict[str, Any]
+    strategy: Dict[str, Any]
+    follow_up_questions: List[str]
+
+@app.post("/api/chat/start_project")
+async def start_project_conversation(request: ChatMessage):
+    """Start project conversation with intent-to-strategy conversion"""
+    try:
+        session_id = request.session_id or f"chat_{int(datetime.now().timestamp())}"
+        
+        # Get data context if session exists
+        data_context = None
+        if session_id in session_store and "dataframe" in session_store[session_id]:
+            df = session_store[session_id]["dataframe"]
+            data_context = {
+                "shape": df.shape,
+                "columns": list(df.columns),
+                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
+                "sample_data": df.head(3).to_dict()
+            }
+        
+        # Get RAG context for the query
+        rag_context = rag_system.get_context_for_query(request.message, session_id)
+        
+        # Enhance data context with RAG information
+        enhanced_context = data_context.copy() if data_context else {}
+        enhanced_context['rag_context'] = rag_context
+        
+        # Extract intent from user message with RAG context
+        intent_result = llm_interface.extract_intent(request.message, enhanced_context)
+        
+        # Convert intent to strategy
+        strategy_result = llm_interface.convert_intent_to_strategy(intent_result, enhanced_context)
+        
+        # Generate follow-up questions
+        follow_up_questions = llm_interface.generate_follow_up_questions(intent_result, enhanced_context)
+        
+        # Add to conversation history
+        llm_interface.add_to_conversation("user", request.message, {"session_id": session_id})
+        llm_interface.add_to_conversation("assistant", "Intent analyzed and strategy generated", {
+            "intent": intent_result,
+            "strategy": strategy_result
+        })
+        
+        # Store chat context in session
+        if session_id not in session_store:
+            session_store[session_id] = {}
+        
+        session_store[session_id]["chat_context"] = {
+            "conversation_history": llm_interface.get_conversation_context(),
+            "current_intent": intent_result,
+            "current_strategy": strategy_result,
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "response": {
+                "intent": intent_result,
+                "strategy": strategy_result,
+                "follow_up_questions": follow_up_questions,
+                "suggested_actions": _generate_action_suggestions(intent_result, strategy_result)
+            },
+            "chat_metadata": {
+                "has_data": data_context is not None,
+                "conversation_length": len(llm_interface.conversation_history),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Chat processing failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/api/chat/{session_id}/continue")
+async def continue_conversation(session_id: str, request: ChatMessage):
+    """Continue existing conversation with context awareness"""
+    try:
+        if session_id not in session_store:
+            return {
+                "status": "error",
+                "error": "Session not found. Please start a new conversation."
+            }
+        
+        # Get current chat context
+        chat_context = session_store[session_id].get("chat_context", {})
+        current_intent = chat_context.get("current_intent", {})
+        current_strategy = chat_context.get("current_strategy", {})
+        
+        # Get data context
+        data_context = None
+        if "dataframe" in session_store[session_id]:
+            df = session_store[session_id]["dataframe"]
+            data_context = {
+                "shape": df.shape,
+                "columns": list(df.columns),
+                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()}
+            }
+        
+        # Process follow-up message with context
+        updated_intent = llm_interface.extract_intent(request.message, {
+            **data_context if data_context else {},
+            "previous_intent": current_intent,
+            "previous_strategy": current_strategy
+        })
+        
+        # Update strategy based on refined intent
+        updated_strategy = llm_interface.convert_intent_to_strategy(updated_intent, data_context)
+        
+        # Generate new follow-up questions
+        follow_up_questions = llm_interface.generate_follow_up_questions(updated_intent, data_context)
+        
+        # Add to conversation
+        llm_interface.add_to_conversation("user", request.message, {"session_id": session_id})
+        llm_interface.add_to_conversation("assistant", "Intent refined and strategy updated", {
+            "updated_intent": updated_intent,
+            "updated_strategy": updated_strategy
+        })
+        
+        # Update session
+        session_store[session_id]["chat_context"] = {
+            "conversation_history": llm_interface.get_conversation_context(),
+            "current_intent": updated_intent,
+            "current_strategy": updated_strategy,
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        return {
+            "status": "success",
+            "response": {
+                "intent": updated_intent,
+                "strategy": updated_strategy,
+                "follow_up_questions": follow_up_questions,
+                "changes": _compare_intent_and_strategy(current_intent, current_strategy, updated_intent, updated_strategy)
+            },
+            "chat_metadata": {
+                "conversation_length": len(llm_interface.conversation_history),
+                "context_updated": True,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Conversation continuation failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/api/chat/{session_id}/execute")
+async def execute_chat_strategy(session_id: str):
+    """Execute the strategy derived from chat conversation"""
+    try:
+        if session_id not in session_store:
+            return {
+                "status": "error",
+                "error": "Session not found"
+            }
+        
+        # Get chat context and strategy
+        chat_context = session_store[session_id].get("chat_context", {})
+        strategy = chat_context.get("current_strategy", {})
+        
+        if not strategy:
+            return {
+                "status": "error",
+                "error": "No strategy found. Please complete the conversation first."
+            }
+        
+        # Convert chat strategy to processing config
+        processing_config = {
+            "task": strategy.get("task_type", "classification"),
+            "target_column": strategy.get("target_column"),
+            "enable_feature_generation": strategy.get("configuration", {}).get("enable_feature_generation", False),
+            "enable_feature_selection": strategy.get("configuration", {}).get("enable_feature_selection", False),
+            "enable_intelligence": strategy.get("configuration", {}).get("enable_intelligence", True)
+        }
+        
+        # Store the config for processing
+        session_store[session_id]["processing_config"] = processing_config
+        
+        # Execute the pipeline using the derived strategy
+        if "dataframe" not in session_store[session_id]:
+            return {
+                "status": "error", 
+                "error": "No data found. Please upload data first."
+            }
+        
+        df = session_store[session_id]["dataframe"]
+        
+        # Create temporary file for processing
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        df.to_csv(temp_file.name, index=False)
+        
+        # Execute pipeline with robust orchestrator
+        config = PipelineConfig(
+            max_memory_usage=0.8,
+            enable_caching=True,
+            auto_recovery=True
+        )
+        
+        robust_orchestrator = RobustPipelineOrchestrator(config)
+        
+        result = robust_orchestrator.execute_pipeline(
+            data_path=temp_file.name,
+            task_type=processing_config["task"],
+            target_column=processing_config.get("target_column"),
+            enable_feature_generation=processing_config["enable_feature_generation"],
+            enable_feature_selection=processing_config["enable_feature_selection"],
+            enable_intelligence=processing_config["enable_intelligence"]
+        )
+        
+        # Clean up temp file
+        Path(temp_file.name).unlink()
+        
+        # Store results
+        session_store[session_id]["pipeline_result"] = result
+        
+        # Add execution report to RAG system
+        rag_system.add_execution_report(result, session_id)
+        
+        # Add execution to conversation
+        llm_interface.add_to_conversation("system", "Pipeline executed successfully", {
+            "execution_result": {"status": result.get("status"), "execution_id": result.get("execution_id")}
+        })
+        
+        return {
+            "status": "success",
+            "execution_result": result,
+            "message": "Strategy executed successfully",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Strategy execution failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/chat/{session_id}/explain")
+async def explain_results(session_id: str, question: Optional[str] = None):
+    """Explain pipeline results in natural language"""
+    try:
+        if session_id not in session_store:
+            return {
+                "status": "error",
+                "error": "Session not found"
+            }
+        
+        # Get pipeline results
+        pipeline_result = session_store[session_id].get("pipeline_result")
+        if not pipeline_result:
+            return {
+                "status": "error",
+                "error": "No results to explain. Please execute a pipeline first."
+            }
+        
+        # Generate explanation
+        explanation = llm_interface.generate_explanation(pipeline_result, question)
+        
+        # Add to conversation
+        llm_interface.add_to_conversation("user", question or "Explain the results", {"session_id": session_id})
+        llm_interface.add_to_conversation("assistant", explanation, {"type": "explanation"})
+        
+        return {
+            "status": "success",
+            "explanation": explanation,
+            "result_summary": {
+                "status": pipeline_result.get("status"),
+                "execution_time": pipeline_result.get("execution_summary", {}).get("total_time"),
+                "stages_completed": pipeline_result.get("execution_summary", {}).get("successful_stages"),
+                "data_shape": pipeline_result.get("results", {}).get("processed_data", {}).get("shape") if isinstance(pipeline_result.get("results", {}), dict) else None
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Explanation generation failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/chat/{session_id}/history")
+async def get_conversation_history(session_id: str):
+    """Get conversation history for a session"""
+    try:
+        if session_id not in session_store:
+            return {
+                "status": "error",
+                "error": "Session not found"
+            }
+        
+        chat_context = session_store[session_id].get("chat_context", {})
+        conversation_history = chat_context.get("conversation_history", {})
+        
+        return {
+            "status": "success",
+            "conversation_history": conversation_history,
+            "current_intent": chat_context.get("current_intent"),
+            "current_strategy": chat_context.get("current_strategy"),
+            "session_metadata": {
+                "last_updated": chat_context.get("last_updated"),
+                "has_data": "dataframe" in session_store[session_id],
+                "has_results": "pipeline_result" in session_store[session_id]
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"History retrieval failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+def _generate_action_suggestions(intent: Dict, strategy: Dict) -> List[str]:
+    """Generate actionable suggestions based on intent and strategy"""
+    suggestions = []
+    
+    if intent.get("clarification_needed", False):
+        suggestions.append("Please provide more details about your target variable or analysis goals")
+    
+    if not strategy.get("target_column"):
+        suggestions.append("Specify which column you want to predict or analyze")
+    
+    if strategy.get("task_type") == "classification":
+        suggestions.append("Consider enabling feature generation for better classification performance")
+    elif strategy.get("task_type") == "regression":
+        suggestions.append("Feature selection might help improve regression accuracy")
+    
+    if intent.get("confidence", 0) < 0.7:
+        suggestions.append("Consider providing more specific details about your analysis requirements")
+    
+    return suggestions
+
+def _compare_intent_and_strategy(old_intent: Dict, old_strategy: Dict, new_intent: Dict, new_strategy: Dict) -> Dict:
+    """Compare old and new intent/strategy to highlight changes"""
+    changes = {
+        "intent_changes": [],
+        "strategy_changes": []
+    }
+    
+    # Compare intent changes
+    if old_intent.get("task_type") != new_intent.get("task_type"):
+        changes["intent_changes"].append(f"Task type changed from {old_intent.get('task_type')} to {new_intent.get('task_type')}")
+    
+    if old_intent.get("target_variable") != new_intent.get("target_variable"):
+        changes["intent_changes"].append(f"Target variable updated to {new_intent.get('target_variable')}")
+    
+    # Compare strategy changes
+    if old_strategy.get("target_column") != new_strategy.get("target_column"):
+        changes["strategy_changes"].append(f"Target column updated to {new_strategy.get('target_column')}")
+    
+    old_config = old_strategy.get("configuration", {})
+    new_config = new_strategy.get("configuration", {})
+    
+    for key in ["enable_feature_generation", "enable_feature_selection", "enable_intelligence"]:
+        if old_config.get(key) != new_config.get(key):
+            changes["strategy_changes"].append(f"{key} changed to {new_config.get(key)}")
+    
+    return changes
+
+# RAG System Endpoints
+
+@app.post("/api/rag/add_document")
+async def add_document_to_rag(content: str = Form(), metadata: str = Form(default="{}"), 
+                             document_type: str = Form(default="general"), session_id: Optional[str] = Form(default=None)):
+    """Add a document to the RAG system"""
+    try:
+        metadata_dict = json.loads(metadata) if metadata else {}
+        
+        doc_id = rag_system.add_document(
+            content=content,
+            metadata=metadata_dict,
+            document_type=document_type,
+            session_id=session_id
+        )
+        
+        return {
+            "status": "success" if doc_id else "failed",
+            "document_id": doc_id,
+            "message": "Document added successfully" if doc_id else "Failed to add document"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Document addition failed: {str(e)}"
+        }
+
+@app.get("/api/rag/search")
+async def search_rag_documents(query: str, top_k: int = 5, session_id: Optional[str] = None):
+    """Search for relevant documents in RAG system"""
+    try:
+        results = rag_system.retrieve_relevant_documents(query, top_k, session_id)
+        
+        search_results = []
+        for result in results:
+            search_results.append({
+                "document_id": result.document.id,
+                "content": result.document.content[:300] + "..." if len(result.document.content) > 300 else result.document.content,
+                "metadata": result.document.metadata,
+                "score": result.score,
+                "relevance": result.relevance,
+                "timestamp": result.document.timestamp
+            })
+        
+        return {
+            "status": "success",
+            "query": query,
+            "results": search_results,
+            "total_results": len(search_results)
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Search failed: {str(e)}"
+        }
+
+@app.get("/api/rag/{session_id}/context")
+async def get_session_rag_context(session_id: str):
+    """Get all RAG context for a specific session"""
+    try:
+        context = rag_system.get_session_context(session_id)
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "context": context
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Context retrieval failed: {str(e)}"
+        }
+
+@app.get("/api/rag/analytics")
+async def get_rag_analytics():
+    """Get RAG system analytics and statistics"""
+    try:
+        analytics = rag_system.get_analytics()
+        
+        return {
+            "status": "success",
+            "analytics": analytics,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Analytics generation failed: {str(e)}"
+        }
+
+@app.post("/api/rag/cleanup")
+async def cleanup_rag_documents(days: int = 30):
+    """Clean up old RAG documents"""
+    try:
+        deleted_count = rag_system.cleanup_old_documents(days)
+        
+        return {
+            "status": "success",
+            "deleted_documents": deleted_count,
+            "retention_days": days,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Cleanup failed: {str(e)}"
+        }
+
+# Enhanced data processing endpoints with RAG integration
+
+@app.post("/api/data/{session_id}/profile")
+async def generate_intelligence_profile_with_rag(session_id: str, request: ProfilingRequest):
+    """Generate comprehensive intelligent data profile with RAG storage"""
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    try:
+        df = session_store[session_id]["dataframe"]
+        
+        # Generate intelligence profile
+        if "intelligence_profile" in session_store[session_id] and not request.deep_analysis:
+            intelligence_profile = session_store[session_id]["intelligence_profile"]
+        else:
+            intelligence_profile = data_profiler.profile_dataset(df)
+            session_store[session_id]["intelligence_profile"] = intelligence_profile
+        
+        # Add intelligence profile to RAG system
+        rag_system.add_intelligence_profile(intelligence_profile, session_id)
+        
+        # Filter response based on request parameters (original logic)
+        response_data = {}
+        
+        column_profiles = intelligence_profile.get('column_profiles', {})
+        response_data['column_profiles'] = {
+            col: {
+                'semantic_type': profile.semantic_type.value,
+                'confidence': profile.confidence,
+                'evidence': profile.evidence,
+                'recommendations': profile.recommendations
+            }
+            for col, profile in column_profiles.items()
+        }
+        
+        if request.include_domain_detection:
+            domain_analysis = intelligence_profile.get('domain_analysis', {})
+            response_data['domain_analysis'] = domain_analysis
+        
+        if request.include_relationships:
+            relationship_analysis = intelligence_profile.get('relationship_analysis', {})
+            response_data['relationship_analysis'] = relationship_analysis
+        
+        response_data['overall_recommendations'] = intelligence_profile.get('overall_recommendations', [])
+        
+        response_data['profiling_metadata'] = {
+            'deep_analysis': request.deep_analysis,
+            'total_columns': len(df.columns),
+            'total_rows': len(df),
+            'profile_timestamp': datetime.now().isoformat(),
+            'rag_stored': True
+        }
+        
+        return {
+            "status": "success",
+            "intelligence_profile": response_data,
+            "session_id": session_id
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Profiling error: {str(e)}")
 
 @app.get("/api/health")
 async def health_check():
