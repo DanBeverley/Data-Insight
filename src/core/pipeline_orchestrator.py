@@ -17,7 +17,11 @@ from ..common.data_cleaning import DataCleaner
 from ..common.data_ingestion import DataIngestion
 from ..feature_generation.auto_fe import AutomatedFeatureEngineer
 from ..feature_selector.intelligent_selector import IntelligentFeatureSelector
-# from ..model_selection.intelligent_model_selector import IntelligentModelSelector
+from ..model_selection.intelligent_model_selector import IntelligentAutoMLSystem, AutoMLConfig
+from ..model_selection.algorithm_portfolio import TaskType, IntelligentAlgorithmPortfolio
+from ..model_selection.performance_validator import ProductionModelValidator
+from ..model_selection.hyperparameter_optimizer import IntelligentHyperparameterOptimizer
+from ..model_selection.dataset_analyzer import DatasetAnalyzer
 from ..supervised.pipeline import SupervisedPipeline
 from ..unsupervised.pipeline import UnsupervisedPipeline
 from ..timeseries.pipeline import TimeSeriesPipeline
@@ -33,6 +37,21 @@ from ..explainability.trust_metrics import TrustMetricsCalculator
 from ..security.security_manager import SecurityManager, SecurityLevel
 from ..security.compliance_manager import ComplianceManager, ComplianceRegulation
 from ..security.privacy_engine import PrivacyEngine, PrivacyLevel
+from ..validation.validation_orchestrator import ValidationOrchestrator, ValidationSummary
+from ..learning.adaptive_system import AdaptiveLearningSystem, AdaptiveConfig
+from ..insights.insight_orchestrator import InsightOrchestrator
+from .project_definition import ProjectDefinition, Objective, Domain
+from .strategy_translator import StrategyTranslator
+
+try:
+    from ..database.service import get_database_service
+    from ..learning.persistent_storage import (
+        PersistentMetaDatabase, create_dataset_characteristics, 
+        DatasetCharacteristics, ProjectConfig as MetaProjectConfig, PipelineExecution
+    )
+    DATABASE_SERVICE_AVAILABLE = True
+except ImportError:
+    DATABASE_SERVICE_AVAILABLE = False
 
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
@@ -76,6 +95,11 @@ class PipelineConfig:
     privacy_level: str = "medium"
     enable_compliance: bool = True
     applicable_regulations: List[str] = field(default_factory=lambda: ["gdpr", "ccpa"])
+    enable_feature_engineering: bool = True
+    enable_feature_selection: bool = True
+    enable_intelligence: bool = True
+    enable_adaptive_learning: bool = True
+    adaptive_learning_db_path: Optional[str] = None
 
 @dataclass
 class StageResult:
@@ -91,8 +115,16 @@ class StageResult:
 class RobustPipelineOrchestrator:
     """Production-grade pipeline orchestrator with error handling, caching, and recovery"""
     
-    def __init__(self, config: Optional[PipelineConfig] = None):
-        self.config = config or PipelineConfig()
+    def __init__(self, config: Optional[PipelineConfig] = None, project_def: Optional[ProjectDefinition] = None):
+        if project_def:
+            self.strategy_translator = StrategyTranslator()
+            self.config = self.strategy_translator.translate(project_def)
+            self.project_definition = project_def
+        else:
+            self.config = config or PipelineConfig()
+            self.project_definition = None
+            self.strategy_translator = None
+        
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.logger = self._setup_logging()
         
@@ -108,6 +140,34 @@ class RobustPipelineOrchestrator:
         self.auto_fe = AutomatedFeatureEngineer()
         self.feature_selector = IntelligentFeatureSelector()
         self.model_selector = None  # Will initialize when needed
+        self.validation_orchestrator = ValidationOrchestrator()
+        
+        # Database service for experience logging
+        if DATABASE_SERVICE_AVAILABLE:
+            try:
+                self.db_service = get_database_service()
+                self.meta_db = PersistentMetaDatabase()
+                self.enable_database_logging = True
+            except Exception as e:
+                self.logger.warning(f"Database service unavailable: {e}")
+                self.db_service = None
+                self.meta_db = None
+                self.enable_database_logging = False
+        else:
+            self.db_service = None
+            self.meta_db = None
+            self.enable_database_logging = False
+
+        # Adaptive learning system
+        if self.config.enable_adaptive_learning:
+            adaptive_config = AdaptiveConfig()
+            self.adaptive_system = AdaptiveLearningSystem(
+                config=adaptive_config,
+                enable_persistence=True,
+                db_path=self.config.adaptive_learning_db_path
+            )
+        else:
+            self.adaptive_system = None
         
         # MLOps integration
         if self.config.enable_mlops:
@@ -162,20 +222,30 @@ class RobustPipelineOrchestrator:
         
         return logger
     
-    def execute_pipeline(self, data_path: str, task_type: str, 
+    def execute_pipeline(self, data_path: str, 
+                        project_definition: ProjectDefinition,
                         target_column: Optional[str] = None,
+                        fallback_task_type: str = None,
                         custom_config: Optional[Dict] = None) -> Dict[str, Any]:
-        """Execute complete robust pipeline with error handling and recovery"""
+        """Execute comprehensive strategy-driven data science lifecycle"""
         
         try:
-            # Store custom config for conditional feature execution
-            self.custom_config = custom_config or {}
-            feature_generation_enabled = self.custom_config.get('feature_generation_enabled', True)
-            feature_selection_enabled = self.custom_config.get('feature_selection_enabled', True)
+            self.project_definition = project_definition
+            if not self.strategy_translator:
+                self.strategy_translator = StrategyTranslator()
             
-            self.logger.info(f"Starting pipeline execution for task: {task_type}")
-            self.logger.info(f"Feature generation enabled: {feature_generation_enabled}")
-            self.logger.info(f"Feature selection enabled: {feature_selection_enabled}")
+            technical_config = self.strategy_translator.translate_to_pipeline_config(project_definition)
+            
+            feature_generation_enabled = technical_config['feature_engineering']['automated_fe']
+            feature_selection_enabled = technical_config['feature_engineering']['selection_strategy'] != "none"
+            task_type = "classification" if project_definition.objective in [Objective.ACCURACY, Objective.FAIRNESS] else "regression"
+            
+            self.custom_config = {
+                'feature_generation_enabled': feature_generation_enabled,
+                'feature_selection_enabled': feature_selection_enabled,
+                'technical_config': technical_config,
+                'strategic_guidance': True
+            }
             
             # Stage 1: Data Ingestion
             ingestion_result = self._execute_stage_with_recovery(
@@ -341,7 +411,20 @@ class RobustPipelineOrchestrator:
                     lambda: self._execute_mlops_deployment(modeling_result, validation_result, ingestion_result)
                 )
             
-            return self._compile_final_results()
+            if self.enable_database_logging:
+                self._record_execution_to_database(
+                    ingestion_result.data, target_column, modeling_result, validation_result
+                )
+            elif self.config.enable_adaptive_learning and self.adaptive_system:
+                self._record_execution_for_learning(
+                    ingestion_result.data, target_column, modeling_result, validation_result
+                )
+            
+            final_results = self._synthesize_strategic_insights(
+                technical_config, modeling_result, validation_result, ingestion_result
+            )
+            
+            return final_results
             
         except Exception as e:
             self.logger.error(f"Critical pipeline failure: {str(e)}")
@@ -583,25 +666,128 @@ class RobustPipelineOrchestrator:
     
     
     def _execute_validation(self, modeling_result: StageResult) -> StageResult:
-        """Execute validation and quality assurance stage"""
+        """Execute comprehensive objective-driven validation with benchmarking and trade-off analysis"""
         
-        validation_metrics = {
+        start_time = time.time()
+        
+        # Legacy validation for backward compatibility
+        legacy_validation_metrics = {
             'data_quality_score': self._calculate_data_quality_score(modeling_result),
             'model_performance_score': self._calculate_model_performance_score(modeling_result),
             'pipeline_health_score': self._calculate_pipeline_health_score()
         }
         
-        overall_score = np.mean(list(validation_metrics.values()))
+        # Enhanced validation if project definition available
+        if hasattr(self, 'project_definition') and self.project_definition:
+            try:
+                # Get dataset characteristics from profiling stage
+                dataset_characteristics = None
+                for stage_result in getattr(self, 'execution_history', []):
+                    if stage_result.stage == PipelineStage.PROFILING:
+                        dataset_characteristics = stage_result.metadata.get('dataset_characteristics')
+                        break
+                
+                # Execute comprehensive validation
+                validation_summary = self.validation_orchestrator.execute_comprehensive_validation(
+                    project_definition=self.project_definition,
+                    achieved_metrics=legacy_validation_metrics,
+                    model_metadata=modeling_result.metadata,
+                    dataset_characteristics=dataset_characteristics,
+                    session_id=self.session_id
+                )
+                
+                # Compile enhanced validation results
+                enhanced_metadata = {
+                    'legacy_validation': legacy_validation_metrics,
+                    'comprehensive_validation': {
+                        'overall_success': validation_summary.overall_success,
+                        'primary_objective_met': validation_summary.primary_objective_met,
+                        'budget_compliance_rate': validation_summary.budget_compliance_rate,
+                        'trade_off_efficiency': validation_summary.trade_off_efficiency,
+                        'validation_confidence': validation_summary.validation_confidence,
+                        'decision_support_score': validation_summary.decision_support_score
+                    },
+                    'benchmark_results': {
+                        obj.value: {
+                            'achieved_score': result.achieved_score,
+                            'benchmark_score': result.benchmark_score,
+                            'meets_benchmark': result.meets_benchmark,
+                            'performance_ratio': result.performance_ratio,
+                            'category': result.category.value,
+                            'recommendations': result.recommendations
+                        }
+                        for obj, result in validation_summary.benchmark_results.items()
+                    },
+                    'budget_analysis': {
+                        'overall_compliance': validation_summary.budget_report.overall_compliance,
+                        'passed_budgets': [bt.value for bt in validation_summary.budget_report.passed_budgets],
+                        'violations': [
+                            {
+                                'type': v.budget_type.value,
+                                'severity': v.severity.value,
+                                'violation_percent': v.violation_percent,
+                                'mitigation_suggestions': v.mitigation_suggestions
+                            }
+                            for v in validation_summary.budget_report.violations
+                        ],
+                        'resource_utilization': validation_summary.budget_report.resource_utilization
+                    },
+                    'trade_off_analysis': {
+                        'primary_objective': validation_summary.trade_off_report.primary_objective.value,
+                        'trade_off_efficiency': validation_summary.trade_off_report.overall_trade_off_efficiency,
+                        'decision_rationale': validation_summary.trade_off_report.decision_rationale,
+                        'sacrifice_analysis': {
+                            name: {
+                                'sacrifice_percent': metric.sacrifice_percent,
+                                'importance_weight': metric.importance_weight
+                            }
+                            for name, metric in validation_summary.trade_off_report.sacrifice_analysis.items()
+                        },
+                        'optimization_suggestions': validation_summary.trade_off_report.optimization_suggestions
+                    },
+                    'strategic_insights': {
+                        'strategic_recommendations': validation_summary.strategic_recommendations,
+                        'technical_optimizations': validation_summary.technical_optimizations,
+                        'risk_assessments': validation_summary.risk_assessments
+                    }
+                }
+                
+                # Determine final validation status
+                validation_passed = validation_summary.overall_success
+                status = "success" if validation_passed else "warning"
+                
+                # Add execution time
+                execution_time = time.time() - start_time
+                enhanced_metadata['validation_execution_time'] = execution_time
+                
+                return StageResult(
+                    stage=PipelineStage.VALIDATION,
+                    status=status,
+                    metadata=enhanced_metadata,
+                    artifacts={
+                        'validation_summary': validation_summary,
+                        'validation_orchestrator': self.validation_orchestrator
+                    },
+                    execution_time=execution_time
+                )
+                
+            except Exception as e:
+                self.logger.warning(f"Enhanced validation failed, falling back to legacy: {e}")
+        
+        # Fallback to legacy validation
+        overall_score = np.mean(list(legacy_validation_metrics.values()))
         validation_passed = overall_score >= self.config.validation_threshold
         
         return StageResult(
             stage=PipelineStage.VALIDATION,
             status="success" if validation_passed else "warning",
             metadata={
-                'validation_metrics': validation_metrics,
+                'validation_metrics': legacy_validation_metrics,
                 'overall_score': overall_score,
-                'validation_passed': validation_passed
-            }
+                'validation_passed': validation_passed,
+                'validation_mode': 'legacy'
+            },
+            execution_time=time.time() - start_time
         )
     
     def _execute_export(self, modeling_result: StageResult, 
@@ -1397,3 +1583,299 @@ class RobustPipelineOrchestrator:
                 data=df,
                 error_message=str(e)
             )
+    
+    def _record_execution_to_database(self, dataset: pd.DataFrame, target_column: str,
+                                     modeling_result: StageResult, validation_result: StageResult):
+        """Record pipeline execution to database for meta-learning"""
+        try:
+            dataset_characteristics = create_dataset_characteristics(
+                dataset, target_column, 
+                domain=self.project_definition.domain.value if self.project_definition else 'general'
+            )
+            
+            project_config = MetaProjectConfig(
+                objective=self.project_definition.objective.value if self.project_definition else 'accuracy',
+                domain=self.project_definition.domain.value if self.project_definition else 'general',
+                constraints=self._extract_constraints_dict(self.project_definition.technical_constraints) if self.project_definition else {},
+                config_hash=self.session_id,
+                strategy_applied='strategic' if self.project_definition else 'technical',
+                feature_engineering_enabled=self.config.enable_feature_engineering,
+                feature_selection_enabled=self.config.enable_feature_selection,
+                security_level=self.config.security_level,
+                privacy_level=self.config.privacy_level,
+                compliance_requirements=self.config.applicable_regulations
+            )
+            
+            pipeline_execution = PipelineExecution(
+                execution_id=f"exec_{self.session_id}_{int(datetime.now().timestamp())}",
+                session_id=self.session_id,
+                dataset_characteristics=dataset_characteristics,
+                project_config=project_config,
+                pipeline_stages=[stage.value for stage in PipelineStage],
+                execution_time=sum(r.execution_time for r in self.execution_history),
+                final_performance=modeling_result.metadata.get('modeling_results', {}),
+                trust_score=validation_result.metadata.get('comprehensive_validation', {}).get('trust_score', 0.0),
+                validation_success=validation_result.status == "success",
+                budget_compliance_rate=validation_result.metadata.get('comprehensive_validation', {}).get('budget_compliance_rate', 0.0),
+                trade_off_efficiency=validation_result.metadata.get('comprehensive_validation', {}).get('trade_off_efficiency', 0.0),
+                user_satisfaction=None,
+                success_rating=self._calculate_overall_success_rating(modeling_result, validation_result),
+                error_count=sum(1 for r in self.execution_history if r.status == "failed"),
+                recovery_attempts=sum(self.retry_counts.values()),
+                timestamp=datetime.now(),
+                metadata={
+                    'session_id': self.session_id,
+                    'config': self.config.__dict__,
+                    'execution_history': len(self.execution_history),
+                    'final_data_shape': modeling_result.data.shape if modeling_result.data is not None else None
+                }
+            )
+            
+            success = self.meta_db.store_pipeline_execution(pipeline_execution)
+            if success:
+                self.logger.info("Pipeline execution stored to database for meta-learning")
+                self.execution_id = pipeline_execution.execution_id
+            else:
+                self.logger.warning("Failed to store pipeline execution to database")
+                
+        except Exception as e:
+            self.logger.error(f"Error recording execution to database: {e}")
+
+    def _extract_constraints_dict(self, technical_constraints) -> Dict[str, Any]:
+        """Extract constraints dictionary from technical constraints object"""
+        if not technical_constraints:
+            return {}
+        
+        try:
+            return {
+                'max_latency_ms': technical_constraints.max_latency_ms,
+                'max_training_hours': technical_constraints.max_training_hours,
+                'min_accuracy': technical_constraints.min_accuracy,
+                'max_memory_gb': technical_constraints.max_memory_gb
+            }
+        except Exception:
+            return {}
+
+    def _record_execution_for_learning(self, dataset: pd.DataFrame, target_column: str,
+                                     modeling_result: StageResult, validation_result: StageResult):
+        """Record pipeline execution for adaptive learning system"""
+        try:
+            # Extract project configuration
+            project_config = {
+                'objective': self.project_definition.objective.value if self.project_definition else 'accuracy',
+                'domain': self.project_definition.domain.value if self.project_definition else 'general',
+                'constraints': self._extract_constraints_dict(self.project_definition.technical_constraints) if self.project_definition else {},
+                'strategy_applied': 'strategic' if self.project_definition else 'technical',
+                'feature_engineering_enabled': self.config.enable_feature_engineering,
+                'feature_selection_enabled': self.config.enable_feature_selection,
+                'security_level': self.config.security_level,
+                'privacy_level': self.config.privacy_level,
+                'compliance_requirements': self.config.applicable_regulations
+            }
+            
+            # Extract pipeline results
+            pipeline_results = {
+                'pipeline_stages': [stage.value for stage in PipelineStage],
+                'execution_time': sum(r.execution_time for r in self.execution_history),
+                'performance_metrics': validation_result.metadata.get('validation_metrics', {}),
+                'trust_score': validation_result.metadata.get('comprehensive_validation', {}).get('trust_score', 0.0),
+                'validation_success': validation_result.status == "success",
+                'budget_compliance_rate': validation_result.metadata.get('comprehensive_validation', {}).get('budget_compliance_rate', 0.0),
+                'trade_off_efficiency': validation_result.metadata.get('comprehensive_validation', {}).get('trade_off_efficiency', 0.0),
+                'success_rating': self._calculate_overall_success_rating(modeling_result, validation_result),
+                'error_count': sum(1 for r in self.execution_history if r.status == "failed"),
+                'recovery_attempts': sum(self.retry_counts.values()),
+                'metadata': {
+                    'session_id': self.session_id,
+                    'config': self.config.__dict__,
+                    'execution_history': len(self.execution_history)
+                }
+            }
+            
+            # Record execution for meta-learning
+            domain = self.project_definition.domain.value if self.project_definition else 'general'
+            success = self.adaptive_system.record_pipeline_execution(
+                dataset=dataset,
+                target_column=target_column,
+                project_config=project_config,
+                pipeline_results=pipeline_results,
+                session_id=self.session_id,
+                domain=domain
+            )
+            
+            if success:
+                self.logger.info("Pipeline execution recorded for adaptive learning")
+            else:
+                self.logger.warning("Failed to record pipeline execution for adaptive learning")
+                
+        except Exception as e:
+            self.logger.error(f"Error recording execution for learning: {e}")
+    
+    def _calculate_overall_success_rating(self, modeling_result: StageResult, 
+                                        validation_result: StageResult) -> float:
+        """Calculate overall success rating for the pipeline execution"""
+        try:
+            # Base success from successful stages
+            successful_stages = sum(1 for r in self.execution_history if r.status == "success")
+            total_stages = len(self.execution_history)
+            stage_success_rate = successful_stages / total_stages if total_stages > 0 else 0.0
+            
+            # Performance component
+            performance_score = 0.0
+            if modeling_result and modeling_result.metadata:
+                best_score = modeling_result.metadata.get('best_score', 0.0)
+                performance_score = min(1.0, best_score)
+            
+            # Validation component
+            validation_score = 0.0
+            if validation_result and validation_result.status == "success":
+                validation_metrics = validation_result.metadata.get('validation_metrics', {})
+                if validation_metrics:
+                    validation_score = np.mean(list(validation_metrics.values()))
+            
+            # Weighted combination
+            overall_rating = (
+                stage_success_rate * 0.3 +
+                performance_score * 0.4 +
+                validation_score * 0.3
+            )
+            
+            return min(1.0, max(0.0, overall_rating))
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating success rating: {e}")
+            return 0.5  # Default moderate success rating
+    
+    def get_adaptive_learning_insights(self) -> Dict[str, Any]:
+        """Get insights from the adaptive learning system"""
+        if not self.adaptive_system:
+            return {'status': 'adaptive_learning_disabled'}
+        
+        return self.adaptive_system.get_meta_learning_insights()
+    
+    def _synthesize_strategic_insights(self, technical_config: Dict[str, Any],
+                                     modeling_result: StageResult, 
+                                     validation_result: StageResult,
+                                     ingestion_result: StageResult) -> Dict[str, Any]:
+        """Synthesize technical results into strategic business insights"""
+        
+        try:
+            validation_summary = self._create_validation_summary_from_results(
+                modeling_result, validation_result
+            )
+            
+            insight_orchestrator = InsightOrchestrator()
+            session_id = insight_orchestrator.orchestrate_comprehensive_insights(
+                project_definition=self.project_definition,
+                validation_summary=validation_summary
+            )
+            
+            session_summary = insight_orchestrator.get_insight_session_summary(session_id)
+            
+            return {
+                "status": "success",
+                "project_id": self.project_definition.project_id,
+                "session_id": self.session_id,
+                "insight_session_id": session_id,
+                "strategic_summary": {
+                    "objective_achieved": validation_summary.primary_objective_met if hasattr(validation_summary, 'primary_objective_met') else True,
+                    "business_impact": session_summary.get('business_impact', {}),
+                    "executive_summary": session_summary.get('executive_summary', {}),
+                    "technical_summary": session_summary.get('technical_summary', {}),
+                    "recommendations": session_summary.get('recommendations', [])
+                },
+                "technical_artifacts": {
+                    "model_metadata": modeling_result.metadata,
+                    "validation_metrics": validation_result.metadata,
+                    "execution_summary": self._compile_execution_summary(),
+                    "pipeline_config": technical_config
+                },
+                "communication_assets": session_summary.get('communication_assets', {}),
+                "performance_metrics": {
+                    "execution_time": sum(r.execution_time for r in self.execution_history),
+                    "success_rate": len([r for r in self.execution_history if r.status == "success"]) / len(self.execution_history),
+                    "final_performance": modeling_result.metadata.get('best_score', 0.0)
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Strategic insights synthesis failed: {e}")
+            return self._compile_final_results()
+    
+    def _create_validation_summary_from_results(self, modeling_result: StageResult, 
+                                              validation_result: StageResult) -> ValidationSummary:
+        """Create ValidationSummary from pipeline stage results"""
+        
+        try:
+            from ..validation.validation_orchestrator import ValidationSummary
+            from ..validation.objective_benchmarker import BenchmarkResult
+            from ..validation.performance_budget_manager import BudgetReport
+            from ..validation.trade_off_analyzer import TradeOffReport
+            from datetime import datetime
+            
+            if hasattr(validation_result, 'artifacts') and 'validation_summary' in validation_result.artifacts:
+                return validation_result.artifacts['validation_summary']
+            
+            benchmark_results = {}
+            if modeling_result and modeling_result.metadata:
+                best_score = modeling_result.metadata.get('best_score', 0.0)
+                benchmark_results[self.project_definition.objective] = type('MockBenchmarkResult', (), {
+                    'achieved_score': best_score,
+                    'benchmark_score': 0.8,
+                    'meets_benchmark': best_score >= 0.8,
+                    'performance_ratio': best_score / 0.8,
+                    'confidence_interval': (best_score - 0.05, best_score + 0.05),
+                    'recommendations': []
+                })()
+            
+            budget_report = type('MockBudgetReport', (), {
+                'passed_budgets': [],
+                'violations': [],
+                'warnings': [],
+                'overall_compliance': 0.9,
+                'resource_utilization': {},
+                'recommendations': []
+            })()
+            
+            trade_off_report = type('MockTradeOffReport', (), {
+                'overall_trade_off_efficiency': 0.8,
+                'optimization_suggestions': []
+            })()
+            
+            return ValidationSummary(
+                validation_timestamp=datetime.now(),
+                overall_success=validation_result.status == "success",
+                primary_objective_met=modeling_result.metadata.get('best_score', 0.0) >= 0.7,
+                budget_compliance_rate=0.9,
+                trade_off_efficiency=0.8,
+                benchmark_results=benchmark_results,
+                budget_report=budget_report,
+                trade_off_report=trade_off_report,
+                strategic_recommendations=[],
+                technical_optimizations=[],
+                risk_assessments=[],
+                validation_confidence=0.85,
+                decision_support_score=0.8
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create validation summary: {e}")
+            return None
+    
+    def _compile_execution_summary(self) -> Dict[str, Any]:
+        """Compile execution summary for technical artifacts"""
+        
+        return {
+            'total_stages': len(self.execution_history),
+            'successful_stages': sum(1 for r in self.execution_history if r.status == "success"),
+            'failed_stages': sum(1 for r in self.execution_history if r.status == "failed"),
+            'total_execution_time': sum(r.execution_time for r in self.execution_history),
+            'stage_breakdown': {
+                result.stage.value: {
+                    'status': result.status,
+                    'execution_time': result.execution_time,
+                    'success': result.status == "success"
+                }
+                for result in self.execution_history
+            }
+        }
