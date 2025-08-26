@@ -3,6 +3,7 @@
 import logging
 import re
 import string
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import numpy as np
@@ -16,31 +17,47 @@ try:
     from nltk.stem import WordNetLemmatizer
     from nltk.tokenize import word_tokenize
     from nltk.sentiment import SentimentIntensityAnalyzer
-    
-    # Download required NLTK data
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt', quiet=True)
-    
-    try:
-        nltk.data.find('corpora/stopwords')
-    except LookupError:
-        nltk.download('stopwords', quiet=True)
-        
-    try:
-        nltk.data.find('corpora/wordnet')
-    except LookupError:
-        nltk.download('wordnet', quiet=True)
-        
-    try:
-        nltk.data.find('vader_lexicon')
-    except LookupError:
-        nltk.download('vader_lexicon', quiet=True)
-        
 except ImportError:
     nltk = None
     logging.warning("NLTK not available. Basic text processing only.")
+
+# Use a local data directory to avoid system-wide corruption and ensure controlled downloads
+NLTK_DATA_DIR = (Path(__file__).resolve().parents[2] / ".nltk_data")
+if nltk:
+    try:
+        NLTK_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if str(NLTK_DATA_DIR) not in nltk.data.path:
+            nltk.data.path.insert(0, str(NLTK_DATA_DIR))
+    except Exception:
+        pass
+
+def ensure_nltk_resources() -> bool:
+    """Ensure required NLTK resources are available.
+    Returns True if resources are ready; False if unavailable.
+    Handles corrupted caches by re-downloading into local dir.
+    """
+    if not nltk:
+        return False
+    resources = [
+        ("tokenizers/punkt", "punkt"),
+        ("corpora/stopwords", "stopwords"),
+        ("corpora/wordnet", "wordnet"),
+        ("sentiment/vader_lexicon", "vader_lexicon"),
+    ]
+    for res_path, pkg in resources:
+        try:
+            nltk.data.find(res_path)
+            continue
+        except Exception:
+            pass
+        try:
+            NLTK_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            nltk.download(pkg, download_dir=str(NLTK_DATA_DIR), quiet=True)
+            nltk.data.find(res_path)
+        except Exception as e:
+            logging.warning(f"NLTK resource '{pkg}' not available ({e}). Proceeding with basic text processing.")
+            return False
+    return True
 
 class TextCleanerTransformer(BaseEstimator, TransformerMixin):
     """Clean and normalize text data with configurable options."""
@@ -60,10 +77,18 @@ class TextCleanerTransformer(BaseEstimator, TransformerMixin):
         self.remove_urls = remove_urls
         self.feature_names_ = []
         
-        if nltk:
-            self.lemmatizer = WordNetLemmatizer()
+        self.use_nltk = bool(nltk) and ensure_nltk_resources()
+        if self.use_nltk:
+            try:
+                self.lemmatizer = WordNetLemmatizer()
+            except Exception:
+                self.lemmatizer = None
+                self.use_nltk = False
             if self.remove_stopwords:
-                self.stop_words = set(stopwords.words('english'))
+                try:
+                    self.stop_words = set(stopwords.words('english'))
+                except Exception:
+                    self.stop_words = set()
         else:
             self.lemmatizer = None
             self.stop_words = set()
@@ -101,7 +126,7 @@ class TextCleanerTransformer(BaseEstimator, TransformerMixin):
         text = text.translate(str.maketrans('', '', string.punctuation))
         
         # Tokenize and process
-        if nltk:
+        if self.use_nltk:
             tokens = word_tokenize(text)
         else:
             tokens = text.split()
@@ -146,10 +171,13 @@ class TextFeatureExtractor(BaseEstimator, TransformerMixin):
         self.feature_names_ = []
         self.text_columns_ = []
         
-        if nltk and self.include_sentiment:
-            self.sentiment_analyzer = SentimentIntensityAnalyzer()
-        else:
-            self.sentiment_analyzer = None
+        self.sentiment_analyzer = None
+        if self.include_sentiment and nltk:
+            if ensure_nltk_resources():
+                try:
+                    self.sentiment_analyzer = SentimentIntensityAnalyzer()
+                except Exception:
+                    self.sentiment_analyzer = None
 
     def fit(self, X: pd.DataFrame, y=None):
         self.text_columns_ = X.select_dtypes(include=['object']).columns.tolist()
