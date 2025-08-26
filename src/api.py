@@ -151,7 +151,13 @@ class LearningFeedback(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the main application interface."""
+    """Serve the chat-first landing interface."""
+    html_path = Path(__file__).parent.parent / "static" / "index.html"
+    return HTMLResponse(html_path.read_text())
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Serve the classic dashboard interface."""
     html_path = Path(__file__).parent.parent / "static" / "dashboard.html"
     return HTMLResponse(html_path.read_text())
 
@@ -175,7 +181,8 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
         session_data = {
             "dataframe": df,
             "validation_report": validation_report,
-            "filename": file.filename
+            "filename": file.filename,
+            "created_at": datetime.now().isoformat()
         }
         
         response_data = {
@@ -236,6 +243,21 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
                 }
         
         session_store[session_id] = session_data
+
+        # Push compact dataset summary to RAG for this session
+        try:
+            dataset_content = f"""
+Dataset Summary:\n- Shape: {df.shape[0]} rows x {df.shape[1]} columns\n- Columns: {', '.join(df.columns[:30])}{'...' if len(df.columns) > 30 else ''}\n- Dtypes counts: {pd.Series(df.dtypes.astype(str)).value_counts().to_dict()}
+"""
+            rag_system.add_document(
+                content=dataset_content,
+                metadata={"type": "dataset_summary", "filename": file.filename, "columns": df.columns.tolist()},
+                document_type="dataset_summary",
+                session_id=session_id
+            )
+        except Exception as e:
+            logging.warning(f"Failed to add dataset summary to RAG: {e}")
+
         return response_data
     
     except Exception as e:
@@ -259,7 +281,8 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
         session_data = {
             "dataframe": df,
             "validation_report": validation_report,
-            "source_url": request.url
+            "source_url": request.url,
+            "created_at": datetime.now().isoformat()
         }
         
         response_data = {
@@ -320,6 +343,20 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
                 }
         
         session_store[session_id] = session_data
+
+        # Push compact dataset summary to RAG for this session (URL ingest)
+        try:
+            dataset_content = f"""
+Dataset Summary:\n- Shape: {df.shape[0]} rows x {df.shape[1]} columns\n- Columns: {', '.join(df.columns[:30])}{'...' if len(df.columns) > 30 else ''}\n- Dtypes counts: {pd.Series(df.dtypes.astype(str)).value_counts().to_dict()}
+"""
+            rag_system.add_document(
+                content=dataset_content,
+                metadata={"type": "dataset_summary", "source_url": request.url, "columns": df.columns.tolist()},
+                document_type="dataset_summary",
+                session_id=session_id
+            )
+        except Exception as e:
+            logging.warning(f"Failed to add dataset summary to RAG (URL): {e}")
         return response_data
     
     except Exception as e:
@@ -1802,7 +1839,22 @@ class ChatResponse(BaseModel):
 async def start_project_conversation(request: ChatMessage):
     """Start project conversation with intent-to-strategy conversion"""
     try:
-        session_id = request.session_id or f"chat_{int(datetime.now().timestamp())}"
+        # Use provided session_id, otherwise select the most recent session with data
+        session_id = request.session_id
+        if not session_id:
+            try:
+                candidates = [
+                    (sid, data.get("created_at"))
+                    for sid, data in session_store.items()
+                    if isinstance(data, dict) and "dataframe" in data
+                ]
+                if candidates:
+                    candidates.sort(key=lambda x: x[1] or "", reverse=True)
+                    session_id = candidates[0][0]
+                else:
+                    session_id = f"chat_{int(datetime.now().timestamp())}"
+            except Exception:
+                session_id = f"chat_{int(datetime.now().timestamp())}"
         
         # Get data context if session exists
         data_context = None
@@ -1898,11 +1950,15 @@ async def continue_conversation(session_id: str, request: ChatMessage):
             }
         
         # Process follow-up message with context
-        updated_intent = llm_interface.extract_intent(request.message, {
-            **data_context if data_context else {},
+        merged_context = {}
+        if data_context:
+            merged_context.update(data_context)
+        merged_context.update({
             "previous_intent": current_intent,
             "previous_strategy": current_strategy
         })
+
+        updated_intent = llm_interface.extract_intent(request.message, merged_context)
         
         # Update strategy based on refined intent
         updated_strategy = llm_interface.convert_intent_to_strategy(updated_intent, data_context)
@@ -2272,6 +2328,278 @@ async def cleanup_rag_documents(days: int = 30):
         return {
             "status": "error",
             "error": f"Cleanup failed: {str(e)}"
+        }
+
+# ===== KNOWLEDGE GRAPH API ENDPOINTS =====
+
+try:
+    from .knowledge_graph.service import KnowledgeGraphService
+    from .knowledge_graph.query_translator import NaturalLanguageQueryTranslator, QueryResult
+    KNOWLEDGE_GRAPH_AVAILABLE = True
+    
+    # Initialize knowledge graph service and translator
+    knowledge_graph_service = None
+    query_translator = None
+    
+    def get_knowledge_graph_service():
+        global knowledge_graph_service, query_translator
+        if knowledge_graph_service is None and DATABASE_AVAILABLE:
+            try:
+                from .knowledge_graph.service import Neo4jGraphDatabase, PostgresGraphDatabase
+                
+                # Use Neo4j by default, fallback to PostgreSQL
+                try:
+                    db = Neo4jGraphDatabase(
+                        uri="bolt://localhost:7687",
+                        username="neo4j", 
+                        password="password"
+                    )
+                    knowledge_graph_service = KnowledgeGraphService(db)
+                    if knowledge_graph_service.initialize():
+                        query_translator = NaturalLanguageQueryTranslator(llm_interface)
+                        return knowledge_graph_service
+                except Exception:
+                    # Fallback to PostgreSQL
+                    db = PostgresGraphDatabase("postgresql://user:password@localhost:5432/datainsight")
+                    knowledge_graph_service = KnowledgeGraphService(db)
+                    if knowledge_graph_service.initialize():
+                        query_translator = NaturalLanguageQueryTranslator(llm_interface)
+                        return knowledge_graph_service
+            except Exception as e:
+                print(f"Failed to initialize knowledge graph: {e}")
+        
+        return knowledge_graph_service
+
+except ImportError:
+    KNOWLEDGE_GRAPH_AVAILABLE = False
+
+
+class KnowledgeQueryRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 10
+    include_explanation: bool = True
+
+
+@app.post("/api/knowledge/query")
+async def query_knowledge_graph(request: KnowledgeQueryRequest):
+    """Query the knowledge graph using natural language"""
+    if not KNOWLEDGE_GRAPH_AVAILABLE:
+        raise HTTPException(
+            status_code=501, 
+            detail="Knowledge graph functionality not available"
+        )
+    
+    kg_service = get_knowledge_graph_service()
+    if not kg_service or not query_translator:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge graph service not initialized"
+        )
+    
+    try:
+        start_time = datetime.now()
+        
+        # Translate natural language to graph query
+        graph_query = query_translator.translate_query(
+            request.query, 
+            database_type="neo4j"  # or detect from service
+        )
+        
+        if not graph_query:
+            return {
+                "status": "error",
+                "error": "Could not translate query to graph format",
+                "query": request.query
+            }
+        
+        # Execute the query
+        results = kg_service.database.execute_query(graph_query)
+        
+        execution_time = (datetime.now() - start_time).total_seconds()
+        
+        # Generate natural language response
+        natural_response = ""
+        if request.include_explanation:
+            natural_response = query_translator.synthesize_natural_response(
+                graph_query, results, request.query
+            )
+        
+        return {
+            "status": "success",
+            "original_query": request.query,
+            "graph_query": graph_query,
+            "results": results[:request.limit],
+            "result_count": len(results),
+            "execution_time": execution_time,
+            "natural_language_response": natural_response,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Knowledge graph query failed: {str(e)}",
+            "query": request.query
+        }
+
+
+@app.get("/api/knowledge/insights")
+async def get_knowledge_insights():
+    """Get high-level insights from the knowledge graph"""
+    if not KNOWLEDGE_GRAPH_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Knowledge graph functionality not available"
+        )
+    
+    kg_service = get_knowledge_graph_service()
+    if not kg_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge graph service not initialized"
+        )
+    
+    try:
+        insights = {}
+        
+        # Get dataset statistics
+        dataset_query = """
+        MATCH (d:Dataset) 
+        RETURN count(d) as total_datasets, 
+               avg(d.quality_score) as avg_quality_score,
+               collect(DISTINCT d.domain) as domains
+        """
+        dataset_stats = kg_service.database.execute_query(dataset_query)
+        insights["datasets"] = dataset_stats[0] if dataset_stats else {}
+        
+        # Get model performance statistics
+        model_query = """
+        MATCH (m:Model)
+        RETURN count(m) as total_models,
+               avg(m.trust_score) as avg_trust_score,
+               collect(DISTINCT m.algorithm) as algorithms
+        """
+        model_stats = kg_service.database.execute_query(model_query)
+        insights["models"] = model_stats[0] if model_stats else {}
+        
+        # Get project statistics
+        project_query = """
+        MATCH (p:Project)
+        RETURN count(p) as total_projects,
+               count(CASE WHEN p.status = 'completed' THEN 1 END) as completed_projects,
+               collect(DISTINCT p.domain) as project_domains
+        """
+        project_stats = kg_service.database.execute_query(project_query)
+        insights["projects"] = project_stats[0] if project_stats else {}
+        
+        # Get top performing features
+        feature_query = """
+        MATCH (f:Feature)
+        WHERE f.importance_score IS NOT NULL
+        RETURN f.name, f.importance_score, f.generation_method
+        ORDER BY f.importance_score DESC
+        LIMIT 10
+        """
+        top_features = kg_service.database.execute_query(feature_query)
+        insights["top_features"] = top_features
+        
+        return {
+            "status": "success",
+            "insights": insights,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to generate insights: {str(e)}"
+        }
+
+
+@app.get("/api/knowledge/recommendations/{project_domain}")
+async def get_domain_recommendations(project_domain: str, limit: int = 5):
+    """Get recommendations for a specific project domain"""
+    if not KNOWLEDGE_GRAPH_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Knowledge graph functionality not available"
+        )
+    
+    kg_service = get_knowledge_graph_service()
+    if not kg_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge graph service not initialized"
+        )
+    
+    try:
+        # Get successful models for this domain
+        model_query = f"""
+        MATCH (m:Model)-[:APPLIES_TO]->(p:Project)
+        WHERE p.domain = '{project_domain}' AND p.status = 'completed'
+        RETURN m.algorithm, m.performance_metrics, m.trust_score, p.name
+        ORDER BY m.trust_score DESC
+        LIMIT {limit}
+        """
+        
+        successful_models = kg_service.database.execute_query(model_query)
+        
+        # Get important features for this domain
+        feature_query = f"""
+        MATCH (f:Feature)-[:TRAINED_ON]->(m:Model)-[:APPLIES_TO]->(p:Project)
+        WHERE p.domain = '{project_domain}' AND f.importance_score IS NOT NULL
+        RETURN f.name, avg(f.importance_score) as avg_importance, f.generation_method
+        ORDER BY avg_importance DESC
+        LIMIT {limit}
+        """
+        
+        important_features = kg_service.database.execute_query(feature_query)
+        
+        return {
+            "status": "success",
+            "domain": project_domain,
+            "recommendations": {
+                "successful_models": successful_models,
+                "important_features": important_features
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to generate recommendations: {str(e)}"
+        }
+
+
+@app.get("/api/knowledge/schema")
+async def get_knowledge_graph_schema():
+    """Get the knowledge graph schema information"""
+    if not KNOWLEDGE_GRAPH_AVAILABLE:
+        raise HTTPException(
+            status_code=501,
+            detail="Knowledge graph functionality not available"
+        )
+    
+    try:
+        from .knowledge_graph.schema import GraphSchema, NodeType, RelationshipType
+        
+        schema = GraphSchema()
+        
+        return {
+            "status": "success",
+            "schema": {
+                "node_types": [node_type.value for node_type in NodeType],
+                "relationship_types": [rel_type.value for rel_type in RelationshipType],
+                "relationship_constraints": schema.get_relationship_constraints()
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error", 
+            "error": f"Failed to get schema: {str(e)}"
         }
 
 # Enhanced data processing endpoints with RAG integration
