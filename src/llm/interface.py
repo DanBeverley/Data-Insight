@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+import requests
 import openai
 from anthropic import Anthropic
 from sentence_transformers import SentenceTransformer
@@ -46,7 +47,20 @@ class LLMInterface:
         if anthropic_key:
             self.providers['anthropic'] = Anthropic(api_key=anthropic_key)
             logger.info("Anthropic provider initialized")
-            
+
+        # Ollama (local) - optional local provider without subscription
+        try:
+            ollama_base = os.getenv('OLLAMA_BASE_URL') or self.config.get('ollama_base_url', 'http://localhost:11434')
+            ollama_model = os.getenv('OLLAMA_MODEL') or self.config.get('ollama_model', 'llama3.2:3b-instruct')
+            # Don't validate connectivity here to avoid blocking startup; try on first call
+            self.providers['ollama'] = {
+                'base_url': ollama_base.rstrip('/'),
+                'model': ollama_model
+            }
+            logger.info(f"Ollama provider configured: {ollama_model} @ {ollama_base}")
+        except Exception as e:
+            logger.warning(f"Ollama configuration failed: {e}")
+
         if not self.providers:
             logger.warning("No LLM providers configured. Using mock responses.")
             
@@ -179,7 +193,47 @@ class LLMInterface:
         Call LLM with fallback between providers
         """
         
-        # Try OpenAI first
+        # Try Ollama (local) first for zero-deps usage
+        if 'ollama' in self.providers:
+            try:
+                prov = self.providers['ollama']
+                base_url = prov['base_url']
+                model = prov['model']
+                # Build chat messages with short history for better coherence
+                messages = []
+                if system_message:
+                    messages.append({"role": "system", "content": system_message})
+                # include last up to 6 turns
+                try:
+                    history = self.conversation_history[-6:]
+                    for m in history:
+                        if m.get('role') in ('user','assistant') and m.get('content'):
+                            messages.append({"role": m['role'], "content": m['content']})
+                except Exception:
+                    pass
+                messages.append({"role": "user", "content": prompt})
+
+                payload = {
+                    'model': model,
+                    'messages': messages,
+                    'stream': False,
+                    'options': {
+                        'temperature': temperature
+                    }
+                }
+                resp = requests.post(f"{base_url}/api/chat", json=payload, timeout=45)
+                resp.raise_for_status()
+                data = resp.json()
+                # Ollama returns {message: {content: ...}} or {choices?: ...} depending on version
+                if isinstance(data, dict):
+                    if 'message' in data and isinstance(data['message'], dict) and 'content' in data['message']:
+                        return data['message']['content']
+                    if 'response' in data:
+                        return data['response']
+            except Exception as e:
+                logger.warning(f"Ollama call failed: {e}")
+
+        # Try OpenAI next
         if 'openai' in self.providers:
             try:
                 messages = []
@@ -188,7 +242,7 @@ class LLMInterface:
                 messages.append({"role": "user", "content": prompt})
                 
                 response = self.providers['openai'].chat.completions.create(
-                    model="gpt-4o-mini",  # Cost-effective model
+                    model="gpt-4o-mini",
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature
@@ -198,8 +252,8 @@ class LLMInterface:
                 
             except Exception as e:
                 logger.warning(f"OpenAI call failed: {e}, trying Anthropic...")
-        
-        # Try Anthropic as fallback
+
+        # Then Anthropic
         if 'anthropic' in self.providers:
             try:
                 full_prompt = prompt
@@ -207,7 +261,7 @@ class LLMInterface:
                     full_prompt = f"{system_message}\n\n{prompt}"
                 
                 response = self.providers['anthropic'].messages.create(
-                    model="claude-3-haiku-20240307",  # Fast, cost-effective model
+                    model="claude-3-haiku-20240307",
                     max_tokens=max_tokens,
                     temperature=temperature,
                     messages=[{"role": "user", "content": full_prompt}]
@@ -574,17 +628,47 @@ Keep the explanation concise but comprehensive.
     def _generate_mock_response(self, prompt: str) -> str:
         """Generate mock response when no providers available"""
         if "intent" in prompt.lower():
-            return '''
-            {
-                "task_type": "classification",
-                "confidence": 0.7,
-                "target_variable": null,
-                "features_mentioned": [],
-                "parameters": {},
-                "clarification_needed": true,
-                "clarifications": ["Please specify your target variable"]
-            }
-            '''
+            # Heuristic, data-aware mock intent
+            try:
+                start = prompt.find("Data context:")
+                columns = []
+                dtypes = {}
+                if start != -1:
+                    ctx_json_start = prompt.find("{", start)
+                    ctx_json_end = prompt.find("}\n", ctx_json_start)
+                    ctx_str = prompt[ctx_json_start:ctx_json_end+1]
+                    ctx = json.loads(ctx_str)
+                    columns = ctx.get("columns", [])
+                    dtypes = ctx.get("dtypes", {})
+                # Guess task
+                likely_target = None
+                for name in columns:
+                    ln = name.lower()
+                    if any(k in ln for k in ["target","label","churn","fraud","default","status","type","class"]):
+                        likely_target = name
+                        break
+                task_type = "classification"
+                if likely_target and str(dtypes.get(likely_target, "")).startswith("float"):
+                    task_type = "regression"
+                return json.dumps({
+                    "task_type": task_type,
+                    "confidence": 0.75,
+                    "target_variable": likely_target,
+                    "features_mentioned": [],
+                    "parameters": {},
+                    "clarification_needed": not bool(likely_target),
+                    "clarifications": [] if likely_target else ["Please confirm the target column"],
+                })
+            except Exception:
+                return json.dumps({
+                    "task_type": "classification",
+                    "confidence": 0.7,
+                    "target_variable": None,
+                    "features_mentioned": [],
+                    "parameters": {},
+                    "clarification_needed": True,
+                    "clarifications": ["Please specify your target variable"]
+                })
         elif "strategy" in prompt.lower():
             return '''
             {
