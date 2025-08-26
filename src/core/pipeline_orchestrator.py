@@ -44,6 +44,14 @@ from .project_definition import ProjectDefinition, Objective, Domain
 from .strategy_translator import StrategyTranslator
 
 try:
+    from ..knowledge_graph.service import KnowledgeGraphService
+    from ..knowledge_graph.schema import NodeType, RelationshipType
+    HAS_KNOWLEDGE_GRAPH = True
+except ImportError:
+    HAS_KNOWLEDGE_GRAPH = False
+    logging.warning("Knowledge graph dependencies not available")
+
+try:
     from ..database.service import get_database_service
     from ..learning.persistent_storage import (
         PersistentMetaDatabase, create_dataset_characteristics, 
@@ -106,6 +114,8 @@ class PipelineConfig:
     enable_intelligence: bool = True
     enable_adaptive_learning: bool = True
     adaptive_learning_db_path: Optional[str] = None
+    enable_knowledge_graph: bool = True
+    knowledge_graph_config: Optional[Dict[str, Any]] = None
 
 @dataclass
 class StageResult:
@@ -206,6 +216,12 @@ class RobustPipelineOrchestrator:
         else:
             self.compliance_manager = None
         
+        # Knowledge Graph Service
+        if self.config.enable_knowledge_graph and HAS_KNOWLEDGE_GRAPH:
+            self.knowledge_graph_service = self._initialize_knowledge_graph()
+        else:
+            self.knowledge_graph_service = None
+        
         # Pipeline state
         self.execution_history: List[StageResult] = []
         self.checkpoints: Dict[str, Any] = {}
@@ -230,6 +246,38 @@ class RobustPipelineOrchestrator:
             logger.addHandler(handler)
         
         return logger
+    
+    def _initialize_knowledge_graph(self) -> Optional[KnowledgeGraphService]:
+        """Initialize knowledge graph service based on configuration"""
+        try:
+            kg_config = self.config.knowledge_graph_config or {}
+            
+            # Choose database backend based on configuration
+            if kg_config.get('backend') == 'neo4j':
+                from ..knowledge_graph.service import Neo4jGraphDatabase
+                db = Neo4jGraphDatabase(
+                    uri=kg_config.get('uri', 'bolt://localhost:7687'),
+                    username=kg_config.get('username', 'neo4j'),
+                    password=kg_config.get('password', 'password')
+                )
+            else:
+                # Default to PostgreSQL with Age extension
+                from ..knowledge_graph.service import PostgresGraphDatabase
+                connection_string = kg_config.get('connection_string', 
+                    'postgresql://user:password@localhost:5432/datainsight')
+                db = PostgresGraphDatabase(connection_string)
+            
+            service = KnowledgeGraphService(db)
+            if service.initialize():
+                self.logger.info("Knowledge graph service initialized successfully")
+                return service
+            else:
+                self.logger.warning("Failed to initialize knowledge graph service")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error initializing knowledge graph: {e}")
+            return None
     
     def execute_pipeline(self, data_path: str, 
                         project_definition: ProjectDefinition,
@@ -628,53 +676,117 @@ class RobustPipelineOrchestrator:
                                target_column: Optional[str],
                                task_type: str,
                                profiling_metadata: Dict) -> StageResult:
-        """Execute intelligent model selection stage"""
-        
-        if target_column and target_column in df.columns:
-            y = df[target_column]
-            X = df.drop(columns=[target_column])
-            
-            # Simple model selection for testing
-            n_samples, n_features = X.shape
-            task = 'classification' if y.nunique() <= 20 else 'regression'
-            
-            if task == 'classification':
-                if n_samples < 1000:
-                    best_algorithm = 'logistic_regression'
-                    best_score = 0.75
-                else:
-                    best_algorithm = 'random_forest'
-                    best_score = 0.82
+        """Execute intelligent model selection stage using AutoML system with fallback"""
+
+        try:
+            if target_column and target_column in df.columns:
+                y = df[target_column]
+                X = df.drop(columns=[target_column])
+
+                # Determine task type
+                detected_task = 'classification' if y.nunique() <= 20 else 'regression'
+
+                # Configure and run IntelligentAutoMLSystem
+                automl_config = AutoMLConfig()
+                self.model_selector = IntelligentAutoMLSystem(config=automl_config)
+
+                portfolio_task_type = TaskType.CLASSIFICATION if detected_task == 'classification' else TaskType.REGRESSION
+                automl_result = self.model_selector.select_best_model(X, y, task_type=portfolio_task_type)
+
+                # Build rich metadata and artifacts
+                modeling_results = {
+                    'best_algorithm': automl_result.best_algorithm,
+                    'best_params': automl_result.best_params,
+                    'performance_metrics': {
+                        'primary_score': automl_result.best_score
+                    },
+                    'selection_time': automl_result.selection_time,
+                    'performance_ranking': automl_result.performance_details.get('performance_ranking', []),
+                    'recommendation': automl_result.recommendation
+                }
+
+                model_metadata = {
+                    'best_algorithm': automl_result.best_algorithm,
+                    'best_score': automl_result.best_score,
+                    'best_hyperparameters': automl_result.best_params,
+                    'selection_time': automl_result.selection_time,
+                    'task_type': detected_task,
+                    'n_samples': X.shape[0],
+                    'n_features': X.shape[1],
+                    'fallback_mode': False,
+                    'modeling_results': modeling_results
+                }
+
+                return StageResult(
+                    stage=PipelineStage.MODEL_SELECTION,
+                    status="success",
+                    data=df,
+                    metadata=model_metadata,
+                    artifacts={
+                        'best_model': automl_result.best_model,
+                        'all_model_results': automl_result.all_results
+                    }
+                )
             else:
-                if n_samples < 1000:
-                    best_algorithm = 'linear_regression' 
-                    best_score = 0.65
+                # Unsupervised or missing target
+                return StageResult(
+                    stage=PipelineStage.MODEL_SELECTION,
+                    status="success",
+                    data=df,
+                    metadata={
+                        'task_type': 'unsupervised',
+                        'message': 'Model selection skipped for unsupervised task'
+                    }
+                )
+
+        except Exception as e:
+            # Fallback to simple heuristic if AutoML path fails
+            self.logger.warning(f"AutoML model selection failed, falling back. Reason: {e}")
+
+            if target_column and target_column in df.columns:
+                y = df[target_column]
+                X = df.drop(columns=[target_column])
+                n_samples, n_features = X.shape
+                task = 'classification' if y.nunique() <= 20 else 'regression'
+
+                if task == 'classification':
+                    if n_samples < 1000:
+                        best_algorithm = 'logistic_regression'
+                        best_score = 0.75
+                    else:
+                        best_algorithm = 'random_forest'
+                        best_score = 0.82
                 else:
-                    best_algorithm = 'random_forest_regressor'
-                    best_score = 0.78
-            
-            model_metadata = {
-                'best_algorithm': best_algorithm,
-                'best_score': best_score,
-                'best_hyperparameters': {},
-                'selection_time': 0.1,
-                'task_type': task,
-                'n_samples': n_samples,
-                'n_features': n_features,
-                'fallback_mode': True
-            }
-        else:
-            model_metadata = {
-                'task_type': 'unsupervised',
-                'message': 'Model selection skipped for unsupervised task'
-            }
-        
-        return StageResult(
-            stage=PipelineStage.MODEL_SELECTION,
-            status="success",
-            data=df,
-            metadata=model_metadata
-        )
+                    if n_samples < 1000:
+                        best_algorithm = 'linear_regression'
+                        best_score = 0.65
+                    else:
+                        best_algorithm = 'random_forest_regressor'
+                        best_score = 0.78
+
+                return StageResult(
+                    stage=PipelineStage.MODEL_SELECTION,
+                    status="success",
+                    data=df,
+                    metadata={
+                        'best_algorithm': best_algorithm,
+                        'best_score': best_score,
+                        'best_hyperparameters': {},
+                        'selection_time': 0.1,
+                        'task_type': task,
+                        'n_samples': n_samples,
+                        'n_features': n_features,
+                        'fallback_mode': True,
+                        'modeling_results': {
+                            'best_algorithm': best_algorithm,
+                            'performance_metrics': {
+                                'primary_score': best_score
+                            },
+                            'selection_time': 0.1
+                        }
+                    }
+                )
+
     
     
     def _execute_validation(self, modeling_result: StageResult) -> StageResult:
@@ -1646,12 +1758,85 @@ class RobustPipelineOrchestrator:
             success = self.meta_db.store_pipeline_execution(pipeline_execution)
             if success:
                 self.logger.info("Pipeline execution stored to database for meta-learning")
+                
+            # Also record to knowledge graph if available
+            if self.knowledge_graph_service:
+                self._record_execution_to_knowledge_graph(
+                    dataset, target_column, modeling_result, validation_result, pipeline_execution
+                )
                 self.execution_id = pipeline_execution.execution_id
             else:
                 self.logger.warning("Failed to store pipeline execution to database")
                 
         except Exception as e:
             self.logger.error(f"Error recording execution to database: {e}")
+
+    def _record_execution_to_knowledge_graph(self, dataset: pd.DataFrame, target_column: str,
+                                           modeling_result: StageResult, validation_result: StageResult,
+                                           pipeline_execution) -> None:
+        """Record pipeline execution to knowledge graph"""
+        try:
+            # Prepare execution data for knowledge graph
+            execution_data = {
+                'execution_id': pipeline_execution.execution_id,
+                'session_id': self.session_id,
+                'start_time': datetime.now(),
+                'status': 'completed' if modeling_result.status == 'success' else 'failed',
+                'stage_results': {
+                    stage_result.stage.value: {
+                        'status': stage_result.status,
+                        'execution_time': stage_result.execution_time,
+                        'metadata': stage_result.metadata
+                    } for stage_result in self.execution_history
+                },
+                'resource_usage': {
+                    'total_execution_time': sum(r.execution_time for r in self.execution_history),
+                    'memory_usage': sum(r.memory_usage for r in self.execution_history)
+                },
+                'dataset_characteristics': {
+                    'name': f"dataset_{self.session_id}",
+                    'shape': dataset.shape,
+                    'file_hash': str(hash(str(dataset.head().to_dict()))),
+                    'data_types': dataset.dtypes.to_dict(),
+                    'overall_missing_percentage': dataset.isnull().sum().sum() / (dataset.shape[0] * dataset.shape[1]),
+                    'domain': self.project_definition.domain.value if self.project_definition else 'general',
+                    'quality_score': validation_result.metadata.get('comprehensive_validation', {}).get('trust_score', 0.0)
+                },
+                'project_definition': {
+                    'name': f"project_{self.session_id}",
+                    'objective': self.project_definition.objective.value if self.project_definition else 'accuracy',
+                    'domain': self.project_definition.domain.value if self.project_definition else 'general',
+                    'business_goal': self.project_definition.business_goal if self.project_definition else 'Data analysis',
+                    'constraints': self._extract_constraints_dict(self.project_definition.technical_constraints) if self.project_definition else {},
+                    'success_criteria': {'min_accuracy': 0.8}
+                },
+                'model_info': {
+                    'name': f"model_{self.session_id}",
+                    'algorithm': modeling_result.metadata.get('modeling_results', {}).get('best_algorithm', 'Unknown'),
+                    'hyperparameters': modeling_result.metadata.get('modeling_results', {}).get('best_params', {}),
+                    'trust_score': validation_result.metadata.get('comprehensive_validation', {}).get('trust_score', 0.0),
+                    'interpretability_score': validation_result.metadata.get('explainability_summary', {}).get('interpretability_score', 0.0),
+                    'training_time': modeling_result.execution_time,
+                    'metadata': modeling_result.metadata
+                },
+                'performance_metrics': modeling_result.metadata.get('modeling_results', {}).get('performance_metrics', {}),
+                'metadata': {
+                    'pipeline_config': self.config.__dict__,
+                    'error_count': sum(1 for r in self.execution_history if r.status == "failed"),
+                    'recovery_attempts': sum(self.retry_counts.values())
+                }
+            }
+            
+            # Record to knowledge graph
+            node_ids = self.knowledge_graph_service.record_pipeline_execution(execution_data)
+            
+            if node_ids:
+                self.logger.info(f"Pipeline execution recorded to knowledge graph: {node_ids}")
+            else:
+                self.logger.warning("Failed to record pipeline execution to knowledge graph")
+                
+        except Exception as e:
+            self.logger.error(f"Error recording execution to knowledge graph: {e}")
 
     def _extract_constraints_dict(self, technical_constraints) -> Dict[str, Any]:
         """Extract constraints dictionary from technical constraints object"""
