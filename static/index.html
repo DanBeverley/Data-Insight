@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DataInsight AI</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <link rel="stylesheet" href="/static/styles.css?v=2">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
@@ -24,12 +27,37 @@
             </div>
         </header>
 
+        <!-- Background Particles -->
+        <canvas id="bgParticles"></canvas>
+
         <!-- Main Content -->
         <main class="main">
             <div class="container">
+                <!-- Landing: Minimal Chatbot Interface -->
+                <section class="section hero-chat" id="heroChatSection">
+                    <div class="hero-content">
+                        <h1 class="hero-title"><i class="fas fa-brain"></i> DataInsight AI</h1>
+                        <p class="hero-subtitle">Ask in natural language. I'll analyze your data, pick a target, and run the pipeline for you.</p>
+                        
+                        <!-- Chat Interface -->
+                        <div class="chat-container">
+                            <div class="chat-messages" id="heroChatMessages"></div>
+                            <div class="chat-input-area">
+                                <textarea id="heroChatInput" placeholder="Ask me about your data..." rows="1"></textarea>
+                                <button id="heroSendMessage" class="send-btn"><i class="fas fa-paper-plane"></i></button>
+                            </div>
+                        </div>
+                        <div class="hero-actions">
+                            <button id="manualAnalyze" class="btn btn-secondary"><i class="fas fa-sliders-h"></i> Manual Analysis</button>
+                        </div>
+                    </div>
+                </section>
                 <!-- Step 1: Data Input -->
-                <section class="section" id="dataInputSection">
+                <section class="section hidden" id="dataInputSection">
                     <div class="section-header">
+                        <div class="section-nav">
+                            <button id="backToChatBtn" class="btn btn-ghost"><i class="fas fa-arrow-left"></i> Back to Chat</button>
+                        </div>
                         <h2><span class="step-number">01</span> Data Input</h2>
                         <p>Upload your dataset or provide a URL to get started</p>
                     </div>
@@ -498,7 +526,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/script.js"></script>
-    <script src="/static/chat_interface.js"></script>
+    <script src="/static/script.js?v=2"></script>
+    <script src="/static/chat_interface.js?v=2"></script>
 </body>
 </html>
