@@ -22,8 +22,8 @@ def open_browser():
     print("🚀 DataInsight AI is now running at http://localhost:8000")
 
 if __name__ == "__main__":
-    print("🤖 Starting DataInsight AI...")
-    print("⚡ Preparing to launch your browser...")
+    print("Starting DataInsight AI...")
+    print("Preparing to launch your browser...")
     
     # Start browser in a separate thread
     browser_thread = threading.Thread(target=open_browser)
