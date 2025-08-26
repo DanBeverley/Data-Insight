@@ -282,7 +282,13 @@ class DataInsightApp {
 
     initializeUI() {
         this.updateStatusIndicator('Ready', 'ready');
-        this.showSection('dataInputSection');
+        // If hero chat exists, show it by default; otherwise fallback to data input
+        const hero = document.getElementById('heroChatSection');
+        if (hero) {
+            this.showSection('heroChatSection');
+        } else {
+            this.showSection('dataInputSection');
+        }
     }
 
     setupAnimations() {
@@ -311,7 +317,7 @@ class DataInsightApp {
 
     addInputEffect(input) {
         input.style.transform = 'translateY(-2px)';
-        input.style.boxShadow = '0 8px 25px rgba(0, 255, 136, 0.15)';
+        input.style.boxShadow = '0 8px 25px rgba(200, 200, 200, 0.15)';
         input.style.transition = 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
         
         setTimeout(() => {
@@ -322,7 +328,7 @@ class DataInsightApp {
 
     addInputFocus(input) {
         input.style.borderColor = 'var(--color-accent-green)';
-        input.style.boxShadow = '0 0 0 2px rgba(0, 255, 136, 0.2)';
+        input.style.boxShadow = '0 0 0 2px rgba(220, 220, 220, 0.2)';
         input.style.transition = 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
     }
 
@@ -344,7 +350,7 @@ class DataInsightApp {
     }
 
     addSuccessGlow(element) {
-        element.style.boxShadow = '0 0 20px rgba(0, 255, 136, 0.4)';
+        element.style.boxShadow = '0 0 20px rgba(200, 200, 200, 0.25)';
         element.style.borderColor = 'var(--color-accent-green)';
         element.style.transition = 'all 0.3s ease';
         
@@ -392,7 +398,7 @@ class DataInsightApp {
             height: ${size}px;
             left: ${x}px;
             top: ${y}px;
-            background: rgba(0, 255, 136, 0.3);
+            background: rgba(200, 200, 200, 0.2);
             border-radius: 50%;
             transform: scale(0);
             animation: ripple 0.6s ease-out;
@@ -441,16 +447,16 @@ class DataInsightApp {
             
             @keyframes pulseGlow {
                 0%, 100% {
-                    box-shadow: 0 0 5px rgba(0, 255, 136, 0.3);
+                    box-shadow: 0 0 5px rgba(200, 200, 200, 0.2);
                 }
                 50% {
-                    box-shadow: 0 0 20px rgba(0, 255, 136, 0.6);
+                    box-shadow: 0 0 20px rgba(220, 220, 220, 0.25);
                 }
             }
             
             .drag-over {
                 border-color: var(--color-accent-green) !important;
-                background: rgba(0, 255, 136, 0.05) !important;
+                background: rgba(220, 220, 220, 0.05) !important;
                 animation: pulseGlow 1s infinite;
             }
             
@@ -2557,4 +2563,78 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('📄 DOM Content Loaded - Starting App...');
     window.dataInsightApp = new DataInsightApp();
     console.log('✅ App initialized successfully');
+    // Hero chat hooks
+    const manualBtn = document.getElementById('manualAnalyze');
+    if (manualBtn) {
+        manualBtn.addEventListener('click', () => {
+            // Hide hero, show manual pipeline path
+            document.getElementById('heroChatSection')?.classList.add('hidden');
+            document.getElementById('dataInputSection')?.classList.remove('hidden');
+        });
+    }
+    
+    // Back to chat hook
+    const backToChatBtn = document.getElementById('backToChatBtn');
+    if (backToChatBtn) {
+        backToChatBtn.addEventListener('click', () => {
+            // Hide all manual sections, show hero chat
+            document.querySelectorAll('.section').forEach(section => {
+                section.classList.add('hidden');
+            });
+            document.getElementById('heroChatSection')?.classList.remove('hidden');
+        });
+    }
+    // Chat interface is now embedded directly in the HTML
+    
+    // Background particles
+    const canvas = document.getElementById('bgParticles');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        const particles = Array.from({length: 120}, () => ({
+            x: Math.random() * window.innerWidth,
+            y: Math.random() * window.innerHeight,
+            r: Math.random() * 1.5 + 0.5,
+            vx: (Math.random() - 0.5) * 0.3,
+            vy: (Math.random() - 0.5) * 0.3,
+            glow: Math.random() < 0.02,
+            born: performance.now()
+        }));
+        const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
+        window.addEventListener('resize', resize); resize();
+        function tick() {
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            // Draw connections
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    const a = particles[i], b = particles[j];
+                    const dx = a.x - b.x, dy = a.y - b.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    if (dist < 100) {
+                        const alpha = 0.05 * (1 - dist / 100);
+                        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+                        ctx.beginPath();
+                        ctx.moveTo(a.x, a.y);
+                        ctx.lineTo(b.x, b.y);
+                        ctx.stroke();
+                    }
+                }
+            }
+            // Draw particles (no hard reset; continuous floating)
+            const now = performance.now();
+            particles.forEach(p => {
+                p.x += p.vx; p.y += p.vy;
+                if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+                if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+                const alpha = p.glow ? 0.7 : 0.18;
+                ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+                ctx.fill();
+                // occasional twinkle
+                if (Math.random() < 0.005) p.glow = !p.glow;
+            });
+            requestAnimationFrame(tick);
+        }
+        tick();
+    }
 });
