@@ -51,7 +51,8 @@ class LLMInterface:
         # Ollama (local) - optional local provider without subscription
         try:
             ollama_base = os.getenv('OLLAMA_BASE_URL') or self.config.get('ollama_base_url', 'http://localhost:11434')
-            ollama_model = os.getenv('OLLAMA_MODEL') or self.config.get('ollama_model', 'llama3.2:3b-instruct')
+            # Default to a widely available model; can be overridden via env
+            ollama_model = os.getenv('OLLAMA_MODEL') or self.config.get('ollama_model', 'llama3')
             # Don't validate connectivity here to avoid blocking startup; try on first call
             self.providers['ollama'] = {
                 'base_url': ollama_base.rstrip('/'),
@@ -96,6 +97,63 @@ class LLMInterface:
             
             if dataset_analysis and intent.get('task_type') in ['classification', 'regression', 'timeseries', 'nlp']:
                 intent = self._enhance_intent_with_target_detection(intent, dataset_analysis, user_message)
+
+            # Post-process using explicit user column mentions and keywords
+            try:
+                message_lower = (user_message or '').lower()
+                columns = [c for c in (context or {}).get('columns', [])]
+                dtypes = (context or {}).get('dtypes', {})
+                nunique = (context or {}).get('nunique', {})
+                numeric_cols = {c for c in columns if 'int' in str(dtypes.get(c,'')) or 'float' in str(dtypes.get(c,''))}
+                categorical_cols = {c for c in columns if c not in numeric_cols}
+
+                # Task type from message
+                if 'regression' in message_lower or 'predict' in message_lower:
+                    intent['task_type'] = 'regression'
+                if 'classif' in message_lower or 'classify' in message_lower:
+                    intent['task_type'] = 'classification'
+
+                # Explicit column mention
+                explicit = None
+                for col in columns:
+                    if col.lower() in message_lower:
+                        explicit = col
+                        break
+                # Keyword-based target like price/revenue/amount/value
+                if not explicit:
+                    for col in columns:
+                        cl = col.lower()
+                        if any(k in message_lower for k in ['price','amount','revenue','income','cost','value','sale','fare','charges','charge']):
+                            if 'price' in cl or 'amount' in cl or 'revenue' in cl or 'income' in cl or 'cost' in cl or 'value' in cl or 'sale' in cl or 'fare' in cl or 'charge' in cl:
+                                explicit = col
+                                break
+
+                if explicit:
+                    intent['target_variable'] = explicit
+                    # Prefer numeric for regression; low-cardinality categorical for classification
+                    if intent.get('task_type') == 'regression' and numeric_cols and explicit not in numeric_cols:
+                        # pick best numeric column mentioned or price-like
+                        for col in numeric_cols:
+                            if col.lower() in message_lower or 'price' in col.lower() or 'amount' in col.lower():
+                                intent['target_variable'] = col
+                                break
+                    if intent.get('task_type') == 'classification' and categorical_cols and explicit not in categorical_cols:
+                        # choose a categorical column with low nunique if available
+                        best = None
+                        for col in categorical_cols:
+                            if col.lower() in message_lower:
+                                best = col
+                                break
+                        if not best:
+                            candidates = sorted(list(categorical_cols), key=lambda c: nunique.get(c, 1))
+                            if candidates:
+                                best = candidates[0]
+                        if best:
+                            intent['target_variable'] = best
+                    intent['clarification_needed'] = False
+                    intent['confidence'] = max(intent.get('confidence', 0.7), 0.9)
+            except Exception:
+                pass
             
             return intent
             
@@ -127,6 +185,16 @@ class LLMInterface:
             strategy = self._parse_strategy_response(response)
             strategy['source_intent'] = intent
             strategy['timestamp'] = datetime.now().isoformat()
+
+            # Ensure target carries over from intent when present and valid
+            try:
+                target = intent.get('target_variable')
+                if target and (not strategy.get('target_column')):
+                    cols = set((data_context or {}).get('columns', []))
+                    if (not cols) or (target in cols):
+                        strategy['target_column'] = target
+            except Exception:
+                pass
             
             return strategy
             
@@ -218,10 +286,43 @@ class LLMInterface:
                     'messages': messages,
                     'stream': False,
                     'options': {
-                        'temperature': temperature
-                    }
+                        'temperature': temperature,
+                        'num_predict': 200
+                    },
+                    'keep_alive': '30m'
                 }
                 resp = requests.post(f"{base_url}/api/chat", json=payload, timeout=45)
+                if resp.status_code == 404:
+                    # Fallback for older Ollama versions that expose /api/generate
+                    # Build a single prompt from messages
+                    parts = []
+                    if system_message:
+                        parts.append(f"System: {system_message}\n")
+                    for m in messages:
+                        role = m.get('role', 'user')
+                        content = m.get('content', '')
+                        parts.append(f"{role.capitalize()}: {content}")
+                    combined_prompt = "\n\n".join(parts)
+                    gen_payload = {
+                        'model': model,
+                        'prompt': combined_prompt,
+                        'stream': False,
+                        'options': {
+                            'temperature': temperature,
+                            'num_predict': 200
+                        },
+                        'keep_alive': '30m'
+                    }
+                    gen_resp = requests.post(f"{base_url}/api/generate", json=gen_payload, timeout=45)
+                    gen_resp.raise_for_status()
+                    gen_data = gen_resp.json()
+                    if isinstance(gen_data, dict) and 'response' in gen_data:
+                        return gen_data['response']
+                    # Some versions nest under 'message'
+                    if isinstance(gen_data, dict) and 'message' in gen_data and isinstance(gen_data['message'], dict):
+                        if 'content' in gen_data['message']:
+                            return gen_data['message']['content']
+                    raise requests.HTTPError("Unexpected response from /api/generate")
                 resp.raise_for_status()
                 data = resp.json()
                 # Ollama returns {message: {content: ...}} or {choices?: ...} depending on version
@@ -273,6 +374,7 @@ class LLMInterface:
                 logger.warning(f"Anthropic call failed: {e}")
         
         # Mock response if no providers available
+        logger.info("Using enhanced mock response - no LLM providers available")
         return self._generate_mock_response(prompt)
     
     def _analyze_dataset_context(self, context: Dict) -> Dict[str, Any]:
@@ -626,7 +728,7 @@ Keep the explanation concise but comprehensive.
         }
     
     def _generate_mock_response(self, prompt: str) -> str:
-        """Generate mock response when no providers available"""
+        """Generate enhanced mock response when no LLM providers available"""
         if "intent" in prompt.lower():
             # Heuristic, data-aware mock intent
             try:
@@ -656,8 +758,8 @@ Keep the explanation concise but comprehensive.
                     "target_variable": likely_target,
                     "features_mentioned": [],
                     "parameters": {},
-                    "clarification_needed": not bool(likely_target),
-                    "clarifications": [] if likely_target else ["Please confirm the target column"],
+                    "clarification_needed": False,
+                    "clarifications": [],
                 })
             except Exception:
                 return json.dumps({
@@ -666,26 +768,77 @@ Keep the explanation concise but comprehensive.
                     "target_variable": None,
                     "features_mentioned": [],
                     "parameters": {},
-                    "clarification_needed": True,
-                    "clarifications": ["Please specify your target variable"]
+                    "clarification_needed": False,
+                    "clarifications": []
                 })
         elif "strategy" in prompt.lower():
-            return '''
-            {
-                "task_type": "classification",
-                "target_column": null,
-                "feature_columns": [],
-                "configuration": {
-                    "enable_feature_generation": true,
-                    "enable_feature_selection": true,
-                    "enable_intelligence": true
-                }
-            }
-            '''
+            # Extract data context for smarter strategy
+            try:
+                start = prompt.find("Data context:")
+                target_column = None
+                task_type = "regression"
+                
+                if start != -1:
+                    ctx_json_start = prompt.find("{", start)
+                    ctx_json_end = prompt.find("}\n", ctx_json_start)
+                    ctx_str = prompt[ctx_json_start:ctx_json_end+1]
+                    ctx = json.loads(ctx_str)
+                    columns = ctx.get("columns", [])
+                    dtypes = ctx.get("dtypes", {})
+                    nunique = ctx.get("nunique", {})
+                    
+                    # Auto-select best target
+                    priority_targets = []
+                    for col in columns:
+                        col_lower = col.lower()
+                        dtype_str = str(dtypes.get(col, ""))
+                        unique_count = nunique.get(col, 0)
+                        
+                        # Prioritize obvious targets
+                        if any(keyword in col_lower for keyword in ['price', 'amount', 'revenue', 'cost', 'sales', 'value']):
+                            if 'float' in dtype_str or 'int' in dtype_str:
+                                priority_targets.append((col, "regression", 0.9))
+                        elif any(keyword in col_lower for keyword in ['status', 'type', 'category', 'class']):
+                            if unique_count < 20:
+                                task = "binary_classification" if unique_count <= 2 else "multiclass_classification"
+                                priority_targets.append((col, task, 0.8))
+                    
+                    if priority_targets:
+                        target_column, task_type, confidence = priority_targets[0]
+                    elif columns:
+                        # Fallback to first numeric column
+                        for col in columns:
+                            if 'float' in str(dtypes.get(col, "")) or 'int' in str(dtypes.get(col, "")):
+                                target_column = col
+                                task_type = "regression"
+                                break
+                
+                return json.dumps({
+                    "task_type": task_type,
+                    "target_column": target_column,
+                    "feature_columns": [],
+                    "configuration": {
+                        "enable_feature_generation": True,
+                        "enable_feature_selection": True,
+                        "enable_intelligence": True
+                    }
+                })
+            except Exception:
+                return json.dumps({
+                    "task_type": "regression",
+                    "target_column": None,
+                    "feature_columns": [],
+                    "configuration": {
+                        "enable_feature_generation": True,
+                        "enable_feature_selection": True,
+                        "enable_intelligence": True
+                    }
+                })
         elif "question" in prompt.lower():
-            return '["What specific outcome would you like to predict?", "Which column should be the target variable?"]'
+            return '[]'
         else:
-            return "I understand you want to analyze your data. Could you provide more specific details about your goals?"
+            # Generate conversational mock response
+            return self._generate_conversational_mock_response(prompt)
     
     def get_conversation_context(self) -> Dict[str, Any]:
         """Get current conversation context for RAG"""
