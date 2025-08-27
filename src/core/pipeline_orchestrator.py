@@ -235,7 +235,7 @@ class RobustPipelineOrchestrator:
     def _setup_logging(self) -> logging.Logger:
         """Setup structured logging"""
         logger = logging.getLogger(f"DataInsight_Pipeline_{self.session_id}")
-        logger.setLevel(getattr(logging, self.config.log_level))
+        logger.setLevel(getattr(logging, getattr(self.config, 'log_level', 'INFO')))
         
         if not logger.handlers:
             handler = logging.StreamHandler()
