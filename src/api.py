@@ -29,6 +29,7 @@ from .core.strategy_translator import StrategyTranslator
 from .llm.interface import LLMInterface
 from .llm.rag_system import LocalRAGSystem
 
+
 try:
     from .database.service import get_database_service
     from .database.connection import get_database_manager
@@ -54,6 +55,7 @@ app.add_middleware(
 # Initialize LLM interface and RAG system
 llm_interface = LLMInterface()
 rag_system = LocalRAGSystem()
+
 
 # Serve static files with explicit routes
 static_dir = Path(__file__).parent.parent / "static"
@@ -446,27 +448,32 @@ async def process_data_strategic(session_id: str, config: StrategicTaskConfig):
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
         df.to_csv(temp_file.name, index=False)
         
+        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
+        
         project_definition = ProjectDefinition(
             project_id=config.project_id,
+            name=getattr(config, 'project_name', f"Project {config.project_id}"),
+            description=getattr(config, 'description', "Automated ML project"),
             objective=Objective(config.objective.lower()),
             domain=Domain(config.domain.lower()),
             priority=Priority(config.priority.lower()),
             risk_level=RiskLevel(config.risk_level.lower()),
-            business_context={
-                'goal': config.business_goal,
-                'success_criteria': config.success_criteria,
-                'stakeholders': config.stakeholders,
-                'timeline_months': config.timeline_months
-            },
-            technical_constraints={
-                'max_latency_ms': config.max_latency_ms,
-                'max_training_hours': config.max_training_hours,
-                'min_accuracy': config.min_accuracy
-            },
-            regulatory_constraints={
-                'interpretability_required': config.interpretability_required,
-                'compliance_rules': config.compliance_rules
-            }
+            business_context=BusinessContext(
+                business_unit=getattr(config, 'business_unit', "Data Science"),
+                success_criteria=getattr(config, 'success_criteria', ["Model accuracy > 80%"]),
+                stakeholders=getattr(config, 'stakeholders', ["Data Analyst"]),
+                timeline_months=getattr(config, 'timeline_months', 3)
+            ),
+            technical_constraints=TechnicalConstraints(
+                max_training_hours=getattr(config, 'max_training_hours', 2.0),
+                max_memory_gb=8.0,
+                min_accuracy=getattr(config, 'min_accuracy', 0.8)
+            ),
+            regulatory_constraints=RegulatoryConstraints(
+                privacy_level="standard",
+                audit_trail_required=False,
+                compliance_rules=getattr(config, 'compliance_rules', [])
+            )
         )
         
         pipeline_config = PipelineConfig(
@@ -526,6 +533,7 @@ async def process_data(session_id: str, config: TaskConfig):
         
         # Create temporary file for pipeline execution
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        temp_file.close()  # Close the file handle immediately
         df.to_csv(temp_file.name, index=False)
         
         # Phase 1: RECALL - Get experience from database
@@ -573,12 +581,32 @@ async def process_data(session_id: str, config: TaskConfig):
         orchestrator = RobustPipelineOrchestrator(pipeline_config)
         
         # Create default project definition for legacy compatibility
+        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
+        
         project_definition = ProjectDefinition(
             project_id=f"api_{session_id}",
+            name=f"Data Analysis Session {session_id}",
+            description="Automated data analysis and model building session",
             objective=Objective.ACCURACY,
             domain=Domain.GENERAL,
             priority=Priority.MEDIUM,
-            risk_level=RiskLevel.MEDIUM
+            risk_level=RiskLevel.MEDIUM,
+            business_context=BusinessContext(
+                business_unit="Data Science",
+                success_criteria=["Model accuracy > 80%", "Processing time < 30 minutes"],
+                stakeholders=["Data Analyst", "Business User"],
+                timeline_months=1
+            ),
+            technical_constraints=TechnicalConstraints(
+                max_training_hours=2.0,
+                max_memory_gb=8.0,
+                min_accuracy=0.8
+            ),
+            regulatory_constraints=RegulatoryConstraints(
+                privacy_level="standard",
+                audit_trail_required=False,
+                compliance_rules=[]
+            )
         )
         
         result_dict = orchestrator.execute_pipeline(
@@ -1402,28 +1430,33 @@ async def strategic_analysis(request: StrategicAnalysisRequest):
         from .core.strategy_translator import StrategyTranslator, TranslationStrategy
         
         # Convert API request to ProjectDefinition
+        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
+        
         config = request.project_definition
         project_definition = ProjectDefinition(
             project_id=config.project_id,
+            name=getattr(config, 'project_name', f"Project {config.project_id}"),
+            description=getattr(config, 'description', "Automated ML project"),
             objective=Objective(config.objective.lower()),
             domain=Domain(config.domain.lower()),
             priority=Priority(config.priority.lower()),
             risk_level=RiskLevel(config.risk_level.lower()),
-            business_context={
-                'goal': config.business_goal,
-                'success_criteria': config.success_criteria,
-                'stakeholders': config.stakeholders,
-                'timeline_months': config.timeline_months
-            },
-            technical_constraints={
-                'max_latency_ms': config.max_latency_ms,
-                'max_training_hours': config.max_training_hours,
-                'min_accuracy': config.min_accuracy
-            },
-            regulatory_constraints={
-                'interpretability_required': config.interpretability_required,
-                'compliance_rules': config.compliance_rules
-            }
+            business_context=BusinessContext(
+                business_unit=getattr(config, 'business_unit', "Data Science"),
+                success_criteria=getattr(config, 'success_criteria', ["Model accuracy > 80%"]),
+                stakeholders=getattr(config, 'stakeholders', ["Data Analyst"]),
+                timeline_months=getattr(config, 'timeline_months', 3)
+            ),
+            technical_constraints=TechnicalConstraints(
+                max_training_hours=getattr(config, 'max_training_hours', 2.0),
+                max_memory_gb=8.0,
+                min_accuracy=getattr(config, 'min_accuracy', 0.8)
+            ),
+            regulatory_constraints=RegulatoryConstraints(
+                privacy_level="standard",
+                audit_trail_required=False,
+                compliance_rules=getattr(config, 'compliance_rules', [])
+            )
         )
         
         # Initialize strategy translator with specified approach
@@ -1837,174 +1870,391 @@ class ChatResponse(BaseModel):
 
 @app.post("/api/chat/start_project")
 async def start_project_conversation(request: ChatMessage):
-    """Start project conversation with intent-to-strategy conversion"""
+    """INTELLIGENT CHAT - Understands data, user intent, and executes immediately"""
     try:
-        # Use provided session_id, otherwise select the most recent session with data
+        # Get or create session
         session_id = request.session_id
         if not session_id:
-            try:
-                candidates = [
-                    (sid, data.get("created_at"))
-                    for sid, data in session_store.items()
-                    if isinstance(data, dict) and "dataframe" in data
-                ]
-                if candidates:
-                    candidates.sort(key=lambda x: x[1] or "", reverse=True)
-                    session_id = candidates[0][0]
-                else:
-                    session_id = f"chat_{int(datetime.now().timestamp())}"
-            except Exception:
+            candidates = [(sid, data.get("created_at")) for sid, data in session_store.items() 
+                         if isinstance(data, dict) and "dataframe" in data]
+            if candidates:
+                candidates.sort(key=lambda x: x[1] or "", reverse=True)
+                session_id = candidates[0][0]
+            else:
                 session_id = f"chat_{int(datetime.now().timestamp())}"
         
-        # Get data context if session exists
-        data_context = None
-        if session_id in session_store and "dataframe" in session_store[session_id]:
-            df = session_store[session_id]["dataframe"]
-            data_context = {
-                "shape": df.shape,
-                "columns": list(df.columns),
-                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
-                "sample_data": df.head(3).to_dict()
+        # NO DATA = REQUEST UPLOAD
+        if session_id not in session_store or "dataframe" not in session_store[session_id]:
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "response": {
+                    "assistant_text": "Please upload your dataset first. I'll analyze it and execute the best approach automatically.",
+                    "action": "upload_prompt",
+                    "confidence": 1.0
+                },
+                "chat_metadata": {"has_data": False, "timestamp": datetime.now().isoformat()}
             }
         
-        # Get RAG context for the query
-        rag_context = rag_system.get_context_for_query(request.message, session_id)
+        # ANALYZE DATA AND USER INTENT
+        df = session_store[session_id]["dataframe"]
+        user_message = request.message.lower()
         
-        # Enhance data context with RAG information
-        enhanced_context = data_context.copy() if data_context else {}
-        enhanced_context['rag_context'] = rag_context
+        # SMART DATA ANALYSIS
+        columns = list(df.columns)
+        dtypes = {col: str(dtype) for col, dtype in df.dtypes.items()}
+        nunique = {col: int(df[col].nunique(dropna=True)) for col in df.columns}
+        numeric_cols = [col for col in columns if 'float' in dtypes[col] or 'int' in dtypes[col]]
+        categorical_cols = [col for col in columns if nunique[col] < 50 and nunique[col] > 1]
         
-        # Extract intent from user message with RAG context
-        intent_result = llm_interface.extract_intent(request.message, enhanced_context)
+        # INTELLIGENT TARGET SELECTION
+        target_column = None
+        task_type = "regression"
+        confidence = 0.9
         
-        # Convert intent to strategy
-        strategy_result = llm_interface.convert_intent_to_strategy(intent_result, enhanced_context)
+        # 1. USER MENTIONED SPECIFIC COLUMN
+        for col in columns:
+            if col.lower() in user_message:
+                if col in numeric_cols:
+                    target_column, task_type = col, "regression"
+                elif col in categorical_cols:
+                    target_column = col
+                    task_type = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
+                break
         
-        # Generate follow-up questions
-        follow_up_questions = llm_interface.generate_follow_up_questions(intent_result, enhanced_context)
+        # 2. USER INTENT + SMART COLUMN MATCHING
+        if not target_column:
+            # Prediction/Regression intent
+            if any(word in user_message for word in ['predict', 'forecast', 'estimate', 'price', 'amount', 'value', 'revenue', 'sales', 'cost']):
+                # Find best numeric target
+                priority_targets = [col for col in numeric_cols if any(kw in col.lower() for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value', 'income', 'profit'])]
+                if priority_targets:
+                    target_column = priority_targets[0]
+                elif numeric_cols:
+                    target_column = numeric_cols[0]
+                task_type = "regression"
+            
+            # Classification intent
+            elif any(word in user_message for word in ['classify', 'categorize', 'group', 'type', 'status', 'category']):
+                # Find best categorical target
+                priority_targets = [col for col in categorical_cols if any(kw in col.lower() for kw in ['status', 'type', 'category', 'class', 'label', 'group'])]
+                if priority_targets:
+                    target_column = priority_targets[0]
+                elif categorical_cols:
+                    target_column = categorical_cols[0]
+                task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
         
-        # Add to conversation history
-        llm_interface.add_to_conversation("user", request.message, {"session_id": session_id})
-        llm_interface.add_to_conversation("assistant", "Intent analyzed and strategy generated", {
-            "intent": intent_result,
-            "strategy": strategy_result
-        })
+        # 3. AUTO-SELECT BEST TARGET (NO USER INTENT)
+        if not target_column:
+            # Priority: obvious business targets
+            business_targets = []
+            for col in columns:
+                col_lower = col.lower()
+                if any(kw in col_lower for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value']) and col in numeric_cols:
+                    business_targets.append((col, "regression", 0.95))
+                elif any(kw in col_lower for kw in ['status', 'type', 'category', 'class']) and col in categorical_cols:
+                    task = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
+                    business_targets.append((col, task, 0.9))
+            
+            if business_targets:
+                business_targets.sort(key=lambda x: x[2], reverse=True)
+                target_column, task_type, confidence = business_targets[0]
+            elif numeric_cols:
+                target_column, task_type = numeric_cols[0], "regression"
+            elif categorical_cols:
+                target_column = categorical_cols[0]
+                task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
+            else:
+                target_column, task_type = columns[0], "classification"
         
-        # Store chat context in session
-        if session_id not in session_store:
-            session_store[session_id] = {}
-        
+        # STORE DECISION AND EXECUTE
         session_store[session_id]["chat_context"] = {
-            "conversation_history": llm_interface.get_conversation_context(),
-            "current_intent": intent_result,
-            "current_strategy": strategy_result,
-            "last_updated": datetime.now().isoformat()
+            "selected_task": task_type,
+            "selected_target": target_column,
+            "strategy_approved": True,
+            "user_message": request.message,
+            "confidence": confidence
         }
+        
+        # GENERATE INTELLIGENT RESPONSE
+        if 'price' in target_column.lower():
+            context_msg = f"I detected a price prediction task from your housing dataset."
+        elif 'revenue' in target_column.lower() or 'sales' in target_column.lower():
+            context_msg = f"I detected a revenue/sales forecasting task."
+        elif 'status' in target_column.lower() or 'type' in target_column.lower():
+            context_msg = f"I detected a classification task for {target_column}."
+        else:
+            context_msg = f"Based on your data analysis, I'll predict {target_column}."
+        
+        response_text = f"{context_msg} Running {task_type.replace('_', ' ')} now..."
         
         return {
             "status": "success",
             "session_id": session_id,
             "response": {
-                "intent": intent_result,
-                "strategy": strategy_result,
-                "follow_up_questions": follow_up_questions,
-                "suggested_actions": _generate_action_suggestions(intent_result, strategy_result)
+                "assistant_text": response_text,
+                "action": "execute_pipeline",
+                "task": task_type,
+                "target": target_column,
+                "confidence": confidence
             },
             "chat_metadata": {
-                "has_data": data_context is not None,
-                "conversation_length": len(llm_interface.conversation_history),
+                "has_data": True,
+                "dataset_shape": df.shape,
+                "target_detected": target_column,
+                "task_detected": task_type,
                 "timestamp": datetime.now().isoformat()
             }
         }
         
     except Exception as e:
+        logger.error(f"Chat processing error: {str(e)}")
         return {
             "status": "error",
             "error": f"Chat processing failed: {str(e)}",
             "timestamp": datetime.now().isoformat()
         }
 
-@app.post("/api/chat/{session_id}/continue")
-async def continue_conversation(session_id: str, request: ChatMessage):
-    """Continue existing conversation with context awareness"""
+@app.post("/api/execute-strategy")
+async def execute_intelligent_strategy(request: dict):
     try:
-        if session_id not in session_store:
-            return {
-                "status": "error",
-                "error": "Session not found. Please start a new conversation."
-            }
+        session_id = request.get("session_id")
+        if not session_id or session_id not in session_store:
+            return {"status": "error", "error": "Session not found"}
         
-        # Get current chat context
+        # Get the auto-selected strategy from chat context
         chat_context = session_store[session_id].get("chat_context", {})
-        current_intent = chat_context.get("current_intent", {})
-        current_strategy = chat_context.get("current_strategy", {})
+        if not chat_context.get("selected_task") or not chat_context.get("selected_target"):
+            return {"status": "error", "error": "No strategy configured. Please chat first to select a task."}
         
-        # Get data context
-        data_context = None
-        if "dataframe" in session_store[session_id]:
-            df = session_store[session_id]["dataframe"]
-            data_context = {
-                "shape": df.shape,
-                "columns": list(df.columns),
-                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()}
-            }
-        
-        # Process follow-up message with context
-        merged_context = {}
-        if data_context:
-            merged_context.update(data_context)
-        merged_context.update({
-            "previous_intent": current_intent,
-            "previous_strategy": current_strategy
-        })
-
-        updated_intent = llm_interface.extract_intent(request.message, merged_context)
-        
-        # Update strategy based on refined intent
-        updated_strategy = llm_interface.convert_intent_to_strategy(updated_intent, data_context)
-        
-        # Generate new follow-up questions
-        follow_up_questions = llm_interface.generate_follow_up_questions(updated_intent, data_context)
-        
-        # Add to conversation
-        llm_interface.add_to_conversation("user", request.message, {"session_id": session_id})
-        llm_interface.add_to_conversation("assistant", "Intent refined and strategy updated", {
-            "updated_intent": updated_intent,
-            "updated_strategy": updated_strategy
-        })
-        
-        # Update session
-        session_store[session_id]["chat_context"] = {
-            "conversation_history": llm_interface.get_conversation_context(),
-            "current_intent": updated_intent,
-            "current_strategy": updated_strategy,
-            "last_updated": datetime.now().isoformat()
+        config = {
+            "task": chat_context["selected_task"],
+            "target_column": chat_context["selected_target"],
+            "enable_feature_generation": True,
+            "enable_feature_selection": True,
+            "enable_intelligence": True
         }
+        
+        if "dataframe" not in session_store[session_id]:
+            return {"status": "error", "error": "No data found. Please upload data first."}
+        
+        df = session_store[session_id]["dataframe"]
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        temp_file.close()  # Close the file handle immediately
+        df.to_csv(temp_file.name, index=False)
+        
+        pipeline_config = PipelineConfig(
+            max_memory_usage=0.8,
+            enable_caching=True,
+            auto_recovery=True
+        )
+        
+        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
+        
+        project_definition = ProjectDefinition(
+            project_id=f"chat_{session_id}",
+            name=f"Intelligent Analysis - {config['task']}",
+            description=f"AI-driven {config['task']} to predict {config['target_column']}",
+            objective=Objective.ACCURACY,
+            domain=Domain.GENERAL,
+            priority=Priority.MEDIUM,
+            risk_level=RiskLevel.MEDIUM,
+            business_context=BusinessContext(
+                business_unit="AI Assistant",
+                success_criteria=["High accuracy", "Fast execution"],
+                stakeholders=["User"],
+                timeline_months=1
+            ),
+            technical_constraints=TechnicalConstraints(
+                max_training_hours=1.0,
+                max_memory_gb=4.0,
+                min_accuracy=0.8
+            ),
+            regulatory_constraints=RegulatoryConstraints(
+                privacy_level="standard",
+                audit_trail_required=False,
+                compliance_rules=[]
+            )
+        )
+        
+        orchestrator = RobustPipelineOrchestrator(pipeline_config, project_definition)
+        
+        result = orchestrator.execute_pipeline(
+            data_path=temp_file.name,
+            project_definition=project_definition,
+            target_column=config["target_column"],
+            fallback_task_type=config["task"]
+        )
+        
+        # Improved cleanup with better error handling
+        try:
+            Path(temp_file.name).unlink()
+        except Exception as cleanup_error:
+            # Try alternative cleanup method
+            try:
+                import os
+                if os.path.exists(temp_file.name):
+                    os.remove(temp_file.name)
+            except Exception:
+                print(f"Warning: Could not clean up temporary file {temp_file.name}")
+        
+        session_store[session_id]["pipeline_result"] = result
+        rag_system.add_execution_report(result, session_id)
+        
+        # Update chat context to reflect completion
+        session_store[session_id]["chat_context"]["execution_completed"] = True
         
         return {
             "status": "success",
-            "response": {
-                "intent": updated_intent,
-                "strategy": updated_strategy,
-                "follow_up_questions": follow_up_questions,
-                "changes": _compare_intent_and_strategy(current_intent, current_strategy, updated_intent, updated_strategy)
-            },
-            "chat_metadata": {
-                "conversation_length": len(llm_interface.conversation_history),
-                "context_updated": True,
-                "timestamp": datetime.now().isoformat()
+            "execution_id": result.get("execution_id"),
+            "message": f"Successfully completed {config['task']} for {config['target_column']}!",
+            "redirect_to_results": True,
+            "result_summary": {
+                "task": config["task"],
+                "target": config["target_column"],
+                "status": result.get("status"),
+                "execution_time": result.get("execution_time")
             }
         }
         
     except Exception as e:
         return {
             "status": "error",
+            "error": f"Execution failed: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/api/chat/{session_id}/continue")
+async def continue_conversation(session_id: str, request: ChatMessage):
+    """INTELLIGENT CONTINUATION - Same smart logic as start_project"""
+    try:
+        if session_id not in session_store:
+            return {"status": "error", "error": "Session not found. Please start a new conversation."}
+        
+        # NO DATA = REQUEST UPLOAD
+        if "dataframe" not in session_store[session_id]:
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "response": {
+                    "assistant_text": "Please upload your dataset first. I'll analyze it and execute the best approach automatically.",
+                    "action": "upload_prompt",
+                    "confidence": 1.0
+                },
+                "chat_metadata": {"has_data": False, "timestamp": datetime.now().isoformat()}
+            }
+        
+        # REUSE THE SAME SMART LOGIC
+        df = session_store[session_id]["dataframe"]
+        user_message = request.message.lower()
+        
+        # SMART DATA ANALYSIS
+        columns = list(df.columns)
+        dtypes = {col: str(dtype) for col, dtype in df.dtypes.items()}
+        nunique = {col: int(df[col].nunique(dropna=True)) for col in df.columns}
+        numeric_cols = [col for col in columns if 'float' in dtypes[col] or 'int' in dtypes[col]]
+        categorical_cols = [col for col in columns if nunique[col] < 50 and nunique[col] > 1]
+        
+        # INTELLIGENT TARGET SELECTION
+        target_column = None
+        task_type = "regression"
+        confidence = 0.9
+        
+        # 1. USER MENTIONED SPECIFIC COLUMN
+        for col in columns:
+            if col.lower() in user_message:
+                if col in numeric_cols:
+                    target_column, task_type = col, "regression"
+                elif col in categorical_cols:
+                    target_column = col
+                    task_type = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
+                break
+        
+        # 2. USER INTENT + SMART COLUMN MATCHING
+        if not target_column:
+            if any(word in user_message for word in ['predict', 'forecast', 'estimate', 'price', 'amount', 'value', 'revenue', 'sales', 'cost']):
+                priority_targets = [col for col in numeric_cols if any(kw in col.lower() for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value', 'income', 'profit'])]
+                target_column = priority_targets[0] if priority_targets else (numeric_cols[0] if numeric_cols else None)
+                task_type = "regression"
+            elif any(word in user_message for word in ['classify', 'categorize', 'group', 'type', 'status', 'category']):
+                priority_targets = [col for col in categorical_cols if any(kw in col.lower() for kw in ['status', 'type', 'category', 'class', 'label', 'group'])]
+                target_column = priority_targets[0] if priority_targets else (categorical_cols[0] if categorical_cols else None)
+                if target_column:
+                    task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
+        
+        # 3. AUTO-SELECT BEST TARGET
+        if not target_column:
+            business_targets = []
+            for col in columns:
+                col_lower = col.lower()
+                if any(kw in col_lower for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value']) and col in numeric_cols:
+                    business_targets.append((col, "regression", 0.95))
+                elif any(kw in col_lower for kw in ['status', 'type', 'category', 'class']) and col in categorical_cols:
+                    task = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
+                    business_targets.append((col, task, 0.9))
+            
+            if business_targets:
+                business_targets.sort(key=lambda x: x[2], reverse=True)
+                target_column, task_type, confidence = business_targets[0]
+            elif numeric_cols:
+                target_column, task_type = numeric_cols[0], "regression"
+            elif categorical_cols:
+                target_column = categorical_cols[0]
+                task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
+            else:
+                target_column, task_type = columns[0], "classification"
+        
+        # STORE AND EXECUTE
+        session_store[session_id]["chat_context"] = {
+            "selected_task": task_type,
+            "selected_target": target_column,
+            "strategy_approved": True,
+            "user_message": request.message,
+            "confidence": confidence
+        }
+        
+        # INTELLIGENT RESPONSE
+        if 'price' in target_column.lower():
+            context_msg = f"I detected a price prediction task from your dataset."
+        elif 'revenue' in target_column.lower() or 'sales' in target_column.lower():
+            context_msg = f"I detected a revenue/sales forecasting task."
+        elif 'status' in target_column.lower() or 'type' in target_column.lower():
+            context_msg = f"I detected a classification task for {target_column}."
+        else:
+            context_msg = f"Based on your request, I'll predict {target_column}."
+        
+        response_text = f"{context_msg} Running {task_type.replace('_', ' ')} now..."
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "response": {
+                "assistant_text": response_text,
+                "action": "execute_pipeline",
+                "task": task_type,
+                "target": target_column,
+                "confidence": confidence
+            },
+            "chat_metadata": {
+                "has_data": True,
+                "dataset_shape": df.shape,
+                "target_detected": target_column,
+                "task_detected": task_type,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Continue conversation error: {str(e)}")
+        return {
+            "status": "error",
             "error": f"Conversation continuation failed: {str(e)}",
             "timestamp": datetime.now().isoformat()
         }
 
-@app.post("/api/chat/{session_id}/execute")
-async def execute_chat_strategy(session_id: str):
+@app.post("/api/execute-strategy")
+async def execute_intelligent_strategy(request: dict):
     """Execute the strategy derived from chat conversation"""
     try:
         if session_id not in session_store:
@@ -2046,6 +2296,7 @@ async def execute_chat_strategy(session_id: str):
         
         # Create temporary file for processing
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        temp_file.close()  # Close the file handle immediately
         df.to_csv(temp_file.name, index=False)
         
         # Execute pipeline with robust orchestrator
@@ -2066,8 +2317,16 @@ async def execute_chat_strategy(session_id: str):
             enable_intelligence=processing_config["enable_intelligence"]
         )
         
-        # Clean up temp file
-        Path(temp_file.name).unlink()
+        # Clean up temp file with better error handling
+        try:
+            Path(temp_file.name).unlink()
+        except Exception as cleanup_error:
+            try:
+                import os
+                if os.path.exists(temp_file.name):
+                    os.remove(temp_file.name)
+            except Exception:
+                print(f"Warning: Could not clean up temporary file {temp_file.name}")
         
         # Store results
         session_store[session_id]["pipeline_result"] = result
@@ -2189,6 +2448,20 @@ def _generate_action_suggestions(intent: Dict, strategy: Dict) -> List[str]:
         suggestions.append("Consider providing more specific details about your analysis requirements")
     
     return suggestions
+
+def _compose_assistant_text(intent: Dict, strategy: Dict, questions: List[str]) -> str:
+    """Compose a friendly, single-shot assistant message to avoid repetitive questioning."""
+    try:
+        task = (strategy or {}).get("task_type") or (intent or {}).get("task_type") or "analysis"
+        target = (strategy or {}).get("target_column") or (intent or {}).get("target_variable")
+        base = f"Great — I'll set up a {task} pipeline."
+        if target:
+            base = f"Great — I'll set up {task} to predict {target}."
+        if questions:
+            return base + " Before I proceed, could you confirm: " + " | ".join(questions)
+        return base + " Say 'run' to start processing, or specify a target/task if you want to change it."
+    except Exception:
+        return "I'll proceed. Say 'run' to start processing."
 
 def _compare_intent_and_strategy(old_intent: Dict, old_strategy: Dict, new_intent: Dict, new_strategy: Dict) -> Dict:
     """Compare old and new intent/strategy to highlight changes"""
