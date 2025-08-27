@@ -257,7 +257,7 @@ class DataInsightApp {
                 
                 // Null check for section display method
                 if (typeof this.showSection === 'function') {
-                    this.showSection('configSection');
+                    this.showSection('taskConfigSection');
                 } else {
                     console.error('showSection method not available');
                     return;
@@ -286,8 +286,12 @@ class DataInsightApp {
         const hero = document.getElementById('heroChatSection');
         if (hero) {
             this.showSection('heroChatSection');
+            // Hide header on landing page
+            this.updateHeaderVisibility('landing');
         } else {
             this.showSection('dataInputSection');
+            // Show minimal header for manual analysis
+            this.updateHeaderVisibility('manual');
         }
     }
 
@@ -2556,6 +2560,28 @@ class DataInsightApp {
         this.updateStatusIndicator('Ready', 'ready');
         this.showElegantSuccess('Workflow restarted');
     }
+
+    updateHeaderVisibility(mode) {
+        const header = document.getElementById('mainHeader');
+        if (!header) return;
+        
+        // Remove all header classes
+        header.classList.remove('header-hidden', 'header-minimal');
+        
+        switch (mode) {
+            case 'landing':
+                // Hide header completely on landing page
+                header.classList.add('header-hidden');
+                break;
+            case 'manual':
+                // Show minimal corner header for manual analysis
+                header.classList.add('header-minimal');
+                break;
+            default:
+                // Show full header (default state)
+                break;
+        }
+    }
 }
 
 // Initialize the application when DOM is loaded
@@ -2570,6 +2596,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // Hide hero, show manual pipeline path
             document.getElementById('heroChatSection')?.classList.add('hidden');
             document.getElementById('dataInputSection')?.classList.remove('hidden');
+            // Show minimal header for manual analysis
+            window.dataInsightApp.updateHeaderVisibility('manual');
         });
     }
     
@@ -2582,6 +2610,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 section.classList.add('hidden');
             });
             document.getElementById('heroChatSection')?.classList.remove('hidden');
+            // Hide header on landing page
+            window.dataInsightApp.updateHeaderVisibility('landing');
         });
     }
     // Chat interface is now embedded directly in the HTML
