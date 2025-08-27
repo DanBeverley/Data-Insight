@@ -108,6 +108,26 @@ body {
     position: sticky;
     top: 0;
     z-index: 100;
+    transition: var(--transition-normal);
+}
+
+/* Header states */
+.header.header-hidden {
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.header.header-minimal {
+    position: fixed;
+    top: var(--spacing-md);
+    left: var(--spacing-md);
+    right: auto;
+    width: auto;
+    background: rgba(26, 26, 26, 0.8);
+    border-radius: var(--border-radius-lg);
+    border: 1px solid var(--color-medium-grey);
+    padding: var(--spacing-sm) var(--spacing-md);
 }
 
 .header .container {
@@ -124,6 +144,15 @@ body {
     font-size: var(--font-size-xl);
     font-weight: 700;
     color: var(--color-white);
+}
+
+.logo-corner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    color: var(--color-text-grey);
 }
 
 .logo i {
