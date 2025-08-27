@@ -15,7 +15,6 @@ class ChatInterface {
     }
     
     init() {
-        // Wait for DOM to be ready
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => this.setupEmbeddedChat());
         } else {
@@ -24,10 +23,11 @@ class ChatInterface {
     }
     
     setupEmbeddedChat() {
-        // Find the embedded chat elements
         this.messagesContainer = document.getElementById('heroChatMessages');
         this.inputField = document.getElementById('heroChatInput');
         this.sendButton = document.getElementById('heroSendMessage');
+        this.uploadBtn = document.getElementById('heroUploadBtn');
+        this.fileInput = document.getElementById('heroFileInput');
         
         if (!this.messagesContainer || !this.inputField || !this.sendButton) {
             console.warn('Chat elements not found, waiting...');
@@ -40,12 +40,19 @@ class ChatInterface {
     }
     
     setupEventListeners() {
-        // Send message on button click
         this.sendButton.addEventListener('click', () => {
             this.sendMessage();
         });
         
-        // Send message on Enter (but allow Shift+Enter for new lines)
+        if (this.uploadBtn && this.fileInput) {
+            this.uploadBtn.addEventListener('click', () => this.fileInput.click());
+            this.fileInput.addEventListener('change', (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (file) this.uploadDataset(file);
+            });
+        }
+        
+        
         this.inputField.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -53,17 +60,34 @@ class ChatInterface {
             }
         });
         
-        // Auto-resize textarea
+        
         this.inputField.addEventListener('input', () => {
             this.autoResizeTextarea();
         });
         
-        // Back to chat button (when in manual analysis mode)
         const backToChatBtn = document.getElementById('backToChatBtn');
         if (backToChatBtn) {
             backToChatBtn.addEventListener('click', () => {
                 this.showChatLanding();
             });
+        }
+    }
+
+    async uploadDataset(file) {
+        try {
+            this.addMessage('assistant', `Uploading dataset: ${file.name} ...`);
+            const form = new FormData();
+            form.append('file', file);
+            const resp = await fetch('/api/upload', { method: 'POST', body: form });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (data && data.session_id) {
+                this.currentSessionId = data.session_id;
+            }
+            this.addMessage('assistant', 'Dataset uploaded successfully. You can now ask questions or start processing.');
+        } catch (err) {
+            console.error('Upload failed:', err);
+            this.addMessage('assistant', 'Upload failed. Please try again with a CSV/XLSX file.');
         }
     }
     
@@ -73,7 +97,6 @@ class ChatInterface {
     }
     
     initializeChat() {
-        // Add welcome message
         this.addMessage('assistant', `Hello! I'm your AI assistant. I can help you analyze your data through natural conversation.
 
 Try saying something like:
@@ -88,28 +111,49 @@ Or upload your data first and I'll guide you through the analysis.`);
         const message = this.inputField.value.trim();
         if (!message || this.isProcessing) return;
         
-        // Add user message
         this.addMessage('user', message);
         this.inputField.value = '';
         this.autoResizeTextarea();
         
-        // Show typing indicator
         this.isProcessing = true;
         this.showTypingIndicator();
         
         try {
-            // Send to backend
             const response = await this.callChatAPI(message);
             this.hideTypingIndicator();
             
-            // Add assistant response with streaming effect
-            if (response.response) {
-                this.addMessage('assistant', response.response);
+            // Handle response - debug and fix
+            console.log('Full API response:', response);
+            
+            if (response && response.status === 'success') {
+                const assistantText = response.response?.assistant_text;
+                const action = response.response?.action;
+                const suggestions = response.response?.suggestions;
                 
-                // Handle any special actions
-                if (response.action === 'execute_strategy' && response.strategy) {
-                    this.handleStrategyExecution(response.strategy);
+                // Always show the assistant text
+                this.addMessage('assistant', assistantText || 'I processed your request.');
+                
+                // Handle actions
+                if (action === 'execute_pipeline') {
+                    console.log('Auto-executing pipeline...');
+                    setTimeout(() => {
+                        this.executeStrategy();
+                    }, 1000);
+                } else if (action === 'ready_to_execute') {
+                    this.addExecuteButton();
+                } else if (action === 'upload_prompt') {
+                    console.log('Prompting for upload...');
                 }
+                
+                // Handle suggestions
+                if (suggestions && suggestions.length > 0) {
+                    this.addSuggestions(suggestions);
+                }
+            } else if (response && response.status === 'error') {
+                this.addMessage('assistant', `Error: ${response.error || 'Unknown error occurred'}`);
+            } else {
+                console.error('Unexpected response format:', response);
+                this.addMessage('assistant', 'I received an unexpected response format. Please check the console for details.');
             }
         } catch (error) {
             console.error('Chat error:', error);
@@ -123,17 +167,23 @@ Or upload your data first and I'll guide you through the analysis.`);
     async callChatAPI(message) {
         const endpoint = this.currentSessionId 
             ? `/api/chat/${this.currentSessionId}/continue`
-            : '/api/chat/start';
+            : '/api/chat/start_project';
+        
+        const requestBody = {
+            message: message
+        };
+        
+        // Add session_id for start_project endpoint
+        if (!this.currentSessionId) {
+            requestBody.session_id = null; // Let backend auto-select or create
+        }
             
         const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                message: message,
-                context_type: 'conversational'
-            })
+            body: JSON.stringify(requestBody)
         });
         
         if (!response.ok) {
@@ -142,7 +192,6 @@ Or upload your data first and I'll guide you through the analysis.`);
         
         const data = await response.json();
         
-        // Update session ID if this was the first message
         if (!this.currentSessionId && data.session_id) {
             this.currentSessionId = data.session_id;
         }
@@ -163,12 +212,11 @@ Or upload your data first and I'll guide you through the analysis.`);
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
         
-        messageDiv.appendChild(avatar);
-        messageDiv.appendChild(bubble);
+            messageDiv.appendChild(avatar);
+            messageDiv.appendChild(bubble);
         this.messagesContainer.appendChild(messageDiv);
         this.scrollToBottom();
         
-        // Simulate typing effect for assistant messages
         if (role === 'assistant') {
             this.typeMessage(bubble, content);
         } else {
@@ -187,7 +235,6 @@ Or upload your data first and I'll guide you through the analysis.`);
                 i++;
             } else {
                 clearInterval(typeInterval);
-                // Ensure proper line breaks
                 element.innerHTML = text.replace(/\n/g, '<br>');
             }
         }, 20);
@@ -224,12 +271,10 @@ Or upload your data first and I'll guide you through the analysis.`);
     }
     
     showChatLanding() {
-        // Hide all manual sections
         document.querySelectorAll('.section').forEach(section => {
             section.classList.add('hidden');
         });
         
-        // Show hero chat section
         const heroSection = document.getElementById('heroChatSection');
         if (heroSection) {
             heroSection.classList.remove('hidden');
@@ -237,7 +282,6 @@ Or upload your data first and I'll guide you through the analysis.`);
     }
     
     handleStrategyExecution(strategy) {
-        // Add strategy execution button
         const executeBtn = document.createElement('button');
         executeBtn.className = 'btn btn-primary strategy-execute-btn';
         executeBtn.innerHTML = '<i class="fas fa-play"></i> Execute Strategy';
@@ -249,8 +293,41 @@ Or upload your data first and I'll guide you through the analysis.`);
         }
     }
     
-    async executeStrategy(strategy) {
-        this.addMessage('assistant', 'Executing your strategy... This may take a few moments.');
+    addExecuteButton() {
+        const executeBtn = document.createElement('button');
+        executeBtn.className = 'btn btn-primary execute-strategy-btn';
+        executeBtn.innerHTML = '<i class="fas fa-play"></i> Run Analysis';
+        executeBtn.onclick = () => this.executeStrategy();
+        
+        const lastMessage = this.messagesContainer.lastElementChild;
+        if (lastMessage && lastMessage.classList.contains('assistant')) {
+            lastMessage.querySelector('.message-bubble').appendChild(executeBtn);
+        }
+    }
+    
+    addSuggestions(suggestions) {
+        const suggestionsDiv = document.createElement('div');
+        suggestionsDiv.className = 'chat-suggestions';
+        
+        suggestions.forEach(suggestion => {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-outline suggestion-btn';
+            btn.textContent = suggestion;
+            btn.onclick = () => {
+                this.inputField.value = suggestion;
+                this.sendMessage();
+            };
+            suggestionsDiv.appendChild(btn);
+        });
+        
+        const lastMessage = this.messagesContainer.lastElementChild;
+        if (lastMessage && lastMessage.classList.contains('assistant')) {
+            lastMessage.querySelector('.message-bubble').appendChild(suggestionsDiv);
+        }
+    }
+
+    async executeStrategy() {
+        this.addMessage('assistant', 'Executing your analysis... This may take a few moments.');
         
         try {
             const response = await fetch('/api/execute-strategy', {
@@ -259,28 +336,25 @@ Or upload your data first and I'll guide you through the analysis.`);
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    session_id: this.currentSessionId,
-                    strategy: strategy
+                    session_id: this.currentSessionId
                 })
             });
             
             const result = await response.json();
             
-            if (result.success) {
-                this.addMessage('assistant', `Strategy executed successfully! ${result.message || ''}`);
-                
-                // Optionally switch to results view
+            if (result.status === 'success') {
+                this.addMessage('assistant', result.message || 'Analysis completed successfully!');
                 if (result.redirect_to_results) {
                     setTimeout(() => {
                         window.dataInsightApp?.showSection('resultsSection');
                     }, 2000);
                 }
             } else {
-                this.addMessage('assistant', `Strategy execution failed: ${result.error || 'Unknown error'}`);
+                this.addMessage('assistant', `Execution failed: ${result.error || 'Unknown error'}`);
             }
         } catch (error) {
             console.error('Strategy execution error:', error);
-            this.addMessage('assistant', 'Failed to execute strategy. Please try again or use manual analysis.');
+            this.addMessage('assistant', 'Failed to execute analysis. Please try again or use manual analysis.');
         }
     }
 }
