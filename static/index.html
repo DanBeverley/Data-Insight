@@ -7,16 +7,16 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="/static/styles.css?v=2">
+    <link rel="stylesheet" href="/static/styles.css?v=3">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
     <div id="app">
-        <!-- Header -->
-        <header class="header">
+        <!-- Header - Hidden on landing, minimal on manual analysis -->
+        <header class="header header-minimal" id="mainHeader">
             <div class="container">
-                <div class="logo">
+                <div class="logo-corner">
                     <i class="fas fa-brain"></i>
                     <span>DataInsight AI</span>
                 </div>
@@ -43,7 +43,9 @@
                         <div class="chat-container">
                             <div class="chat-messages" id="heroChatMessages"></div>
                             <div class="chat-input-area">
-                                <textarea id="heroChatInput" placeholder="Ask me about your data..." rows="1"></textarea>
+                                <input type="file" id="heroFileInput" accept=".csv,.xlsx,.xls" hidden>
+                                <button id="heroUploadBtn" class="btn btn-secondary" title="Upload dataset"><i class="fas fa-upload"></i></button>
+                                <textarea id="heroChatInput" placeholder="Ask me about your data... or upload a CSV/XLSX" rows="1"></textarea>
                                 <button id="heroSendMessage" class="send-btn"><i class="fas fa-paper-plane"></i></button>
                             </div>
                         </div>
@@ -526,7 +528,7 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <script src="/static/script.js?v=2"></script>
-    <script src="/static/chat_interface.js?v=2"></script>
+    <script src="/static/script.js?v=3"></script>
+    <script src="/static/chat_interface.js?v=3"></script>
 </body>
 </html>
