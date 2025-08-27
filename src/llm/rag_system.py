@@ -53,6 +53,24 @@ class LocalRAGSystem:
         self._load_embedding_model()
         self._load_documents()
         
+    @staticmethod
+    def _json_default(o):
+        """Convert numpy and datetime types to JSON-serializable values."""
+        try:
+            import numpy as _np  # local alias to avoid shadowing
+            from datetime import datetime as _dt
+            if isinstance(o, (_np.float32, _np.float64)):
+                return float(o)
+            if isinstance(o, (_np.int32, _np.int64)):
+                return int(o)
+            if isinstance(o, _np.ndarray):
+                return o.tolist()
+            if isinstance(o, _dt):
+                return o.isoformat()
+        except Exception:
+            pass
+        return str(o)
+
     def _initialize_database(self):
         """Initialize SQLite database for document storage"""
         try:
@@ -110,7 +128,17 @@ class LocalRAGSystem:
                 doc_id, content, metadata_str, embedding_blob, timestamp = row
                 
                 metadata = json.loads(metadata_str) if metadata_str else {}
-                embedding = np.frombuffer(embedding_blob) if embedding_blob else None
+                embedding = None
+                if embedding_blob:
+                    try:
+                        embedding = np.frombuffer(embedding_blob, dtype=np.float32)
+                        # Ensure consistent embedding dimensions (384 for all-MiniLM-L6-v2)
+                        if len(embedding) != 384:
+                            logger.warning(f"Embedding dimension mismatch for doc {doc_id}: {len(embedding)} != 384")
+                            embedding = None  # Skip this embedding, will regenerate if needed
+                    except Exception as e:
+                        logger.warning(f"Failed to load embedding for doc {doc_id}: {e}")
+                        embedding = None
                 
                 document = Document(
                     id=doc_id,
@@ -140,7 +168,7 @@ class LocalRAGSystem:
             # Generate embedding if model available
             embedding = None
             if self.embedding_model:
-                embedding = self.embedding_model.encode([content])[0]
+                embedding = self.embedding_model.encode([content])[0].astype(np.float32)
                 self.embeddings[doc_id] = embedding
             
             # Create document
@@ -273,7 +301,8 @@ class LocalRAGSystem:
             results_data = [
                 {
                     "document_id": result.document.id,
-                    "score": result.score,
+                    # Ensure JSON-serializable primitive
+                    "score": float(result.score),
                     "relevance": result.relevance
                 }
                 for result in results
@@ -288,7 +317,7 @@ class LocalRAGSystem:
             ''', (
                 query_id,
                 query,
-                json.dumps(results_data),
+                json.dumps(results_data, default=self._json_default),
                 datetime.now().isoformat(),
                 session_id
             ))
