@@ -5,14 +5,12 @@ paths:
   models_dir: "models"
   reports_dir: "reports"
 
-# HEURISTICS FOR AUTOMATED COLUMN CLASSIFICATION
 heuristics:
   missing_value_drop_threshold: 0.90
   id_cardinality_threshold: 1.0
   high_cardinality_threshold: 0.10
   skewed_feature_threshold: 2.0
 
-# PIPELINE & PREPROCESSING PARAMETERS
 pipeline_params:
   numeric_imputer_strategy: "median"
   categorical_imputer_strategy: "most_frequent"
@@ -20,25 +18,17 @@ pipeline_params:
   hashing_n_features: 20
   imbalance_smote_threshold: 0.20
 
-# FEATURE CONTROLS
 advanced_features:
-  # Set to true to enable the intelligent, model-based categorical grouper.
-  # If false, the pipeline will rely on standard one-hot encoding without grouping.
   use_semantic_categorical_grouping: true
 
-  # Parameters for the SemanticCategoricalGrouper
   semantic_grouping:
-    # The pre-trained model to use for generating string embeddings.
     embedding_model: "all-MiniLM-L6-v2"
-    # Higher values mean more conservative clustering (fewer, tighter groups).
     min_cluster_size: 2
 
-# DATA DRIFT & MONITORING PARAMETERS
 drift_params:
   psi_threshold: 0.25
   ks_p_value_threshold: 0.05
 
-# PHASE 2: FEATURE ENGINEERING & SELECTION
 feature_generation:
   enabled: true
   dfs_max_depth: 2
@@ -51,19 +41,16 @@ feature_selection:
   correlation_threshold: 0.95
   max_features_model_based: 50
 
-# KNOWLEDGE GRAPH CONFIGURATION
 knowledge_graph:
   enabled: true
   backend: "neo4j"  # Options: "neo4j", "postgres"
   
-  # Neo4j Configuration
   neo4j:
     uri: "bolt://localhost:7687"
     username: "neo4j"
     password: "password"
     database: "datainsight"
   
-  # PostgreSQL with Age Extension Configuration  
   postgres:
     connection_string: "postgresql://user:password@localhost:5432/datainsight"
     database: "datainsight"
