@@ -61,12 +61,6 @@ try:
 except ImportError:
     DATABASE_SERVICE_AVAILABLE = False
 
-try:
-    from ..llm.rag_system import LocalRAGSystem
-    RAG_SYSTEM_AVAILABLE = True
-except ImportError:
-    RAG_SYSTEM_AVAILABLE = False
-
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
     PROFILING = "data_profiling"
@@ -144,7 +138,6 @@ class RobustPipelineOrchestrator:
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.logger = self._setup_logging()
         
-        # Initialize components
         self.data_ingestion = DataIngestion()
         self.data_profiler = IntelligentDataProfiler()
         self.feature_intelligence = AdvancedFeatureIntelligence()
@@ -155,7 +148,7 @@ class RobustPipelineOrchestrator:
         self.data_cleaner = DataCleaner()
         self.auto_fe = AutomatedFeatureEngineer()
         self.feature_selector = IntelligentFeatureSelector()
-        self.model_selector = None  # Will initialize when needed
+        self.model_selector = None  
         self.validation_orchestrator = ValidationOrchestrator()
         
         # Database service for experience logging
@@ -184,10 +177,7 @@ class RobustPipelineOrchestrator:
             )
         else:
             self.adaptive_system = None
-        
-        # RAG system for conversational AI
-        self.rag_system = LocalRAGSystem() if RAG_SYSTEM_AVAILABLE else None
-        
+                
         # MLOps integration
         if self.config.enable_mlops:
             self.mlops = MLOpsOrchestrator()
