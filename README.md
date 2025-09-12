@@ -1,6 +1,21 @@
 # Data Insight
 
-ML automation platform with intelligence-driven data processing, automated feature engineering, and integrated MLOps pipeline.
+AI-powered data analysis platform with automated ML pipelines and intelligent dataset profiling.
+
+## Current Status
+
+**Active Features:**
+- Dataset-aware AI agent with conversational data analysis
+- Session-persistent visualization generation (matplotlib/seaborn)
+- Comprehensive data profiling (anomalies, quality, semantic analysis)
+- Multi-chart support (heatmaps, scatter plots, bar charts, bubble charts)
+- E2B sandbox code execution for secure Python analysis
+
+**Architecture:**
+- FastAPI + Flask dual backend with LangGraph agent system
+- Hybrid data profiler integrating 6+ intelligence modules
+- Persistent session management with stateful code execution
+- Smart graph termination preventing recursive tool calls
 
 ## Core Functionality
 
