@@ -265,15 +265,11 @@ class AdvancedMissingValueIntelligence:
         if missing_mask.sum() == 0:
             return MissingPattern.MCAR, 1.0
         
-        # Test for MCAR using Little's MCAR test approximation
-        # This is a simplified version - in practice, you'd use more sophisticated tests
         other_columns = [col for col in df.columns if col != column and df[col].dtype in ['int64', 'float64']]
         
         if len(other_columns) == 0:
-            # No numeric columns to test against, assume MCAR
             return MissingPattern.MCAR, 0.5
         
-        # Sample correlation analysis
         try:
             correlations = []
             for other_col in other_columns[:10]:  # Limit to first 10 for efficiency
