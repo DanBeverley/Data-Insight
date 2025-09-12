@@ -1,15 +1,12 @@
-"""DataInsight AI - FastAPI Backend
-
-Professional REST API for the DataInsight AI platform with comprehensive
-data processing, feature engineering, and EDA capabilities.
-"""
-
 import io
 import json
+import logging
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import numpy as np
 
 import pandas as pd
 import joblib
@@ -18,17 +15,57 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from langchain_core.messages import ToolMessage
+import uuid
+import re
+
+try:
+    import sys
+    import os
+    from pathlib import Path
+    import importlib.util
+    
+    project_root = Path(__file__).parent.parent
+    chatbot_path = project_root / "data_scientist_chatbot"
+    app_path = chatbot_path / "app"
+    
+    # Add both chatbot paths to sys.path for proper module resolution
+    sys.path.insert(0, str(chatbot_path))
+    sys.path.insert(0, str(app_path))
+    
+    # Import the agent module directly
+    from data_scientist_chatbot.app.agent import create_agent_executor, create_enhanced_agent_executor
+    
+    CHAT_AVAILABLE = True
+    print("✅ Chat functionality loaded successfully")
+except Exception as e:
+    CHAT_AVAILABLE = False
+    create_agent_executor = None
+    print(f"⚠️  Chat functionality not available: {e}")
+    import traceback
+    traceback.print_exc()
 
 from .common.data_ingestion import ingest_data, ingest_from_url
 from .data_quality.validator import DataQualityValidator
-from .utils import generate_eda_report
 from .intelligence.data_profiler import IntelligentDataProfiler
 from .core.pipeline_orchestrator import RobustPipelineOrchestrator, PipelineConfig
 from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
-from .core.strategy_translator import StrategyTranslator
-from .llm.interface import LLMInterface
-from .llm.rag_system import LocalRAGSystem
+from .visualization.data_explorer import IntelligentDataExplorer, VisualizationRequest
 
+def convert_pandas_output_to_html(output_text):
+    if not output_text or not isinstance(output_text, str):
+        return output_text
+    
+    lines = output_text.strip().split('\n')
+    
+    shape_line = next((line for line in lines if 'Shape:' in line), '')
+    columns_line = next((line for line in lines if 'Columns:' in line), '')
+    
+    if shape_line and columns_line:
+        columns_text = columns_line.split(': ')[1] if ': ' in columns_line else 'N/A'
+        return f"📊 Dataset loaded successfully!\n{shape_line}\nColumns: {columns_text}"
+    
+    return "📊 Dataset loaded successfully!"
 
 try:
     from .database.service import get_database_service
@@ -37,6 +74,14 @@ try:
     DATABASE_AVAILABLE = True
 except ImportError:
     DATABASE_AVAILABLE = False
+
+GLOBAL_SESSION_ID = "persistent_app_session"
+session_agents = {}
+
+def get_session_agent(session_id: str):
+    if CHAT_AVAILABLE and session_id not in session_agents:
+        session_agents[session_id] = create_enhanced_agent_executor(session_id)
+    return session_agents.get(session_id)
 
 app = FastAPI(
     title="DataInsight AI",
@@ -52,12 +97,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize LLM interface and RAG system
-llm_interface = LLMInterface()
-rag_system = LocalRAGSystem()
-
-
-# Serve static files with explicit routes
+logger = logging.getLogger(__name__)
+data_explorer = IntelligentDataExplorer()
 static_dir = Path(__file__).parent.parent / "static"
 
 @app.get("/static/script.js")
@@ -72,10 +113,8 @@ async def get_styles():
     css_path = static_dir / "styles.css"
     return FileResponse(css_path, media_type="text/css")
 
-# Mount remaining static files
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-# Data models
 class TaskConfig(BaseModel):
     task: str
     target_column: Optional[str] = None
@@ -120,13 +159,14 @@ class IntelligenceProfile(BaseModel):
     relationship_summary: Dict[str, Any]
     overall_recommendations: List[str]
 
-# In-memory storage (in production, use Redis/database)
 session_store = {}
 
-# Initialize intelligence components
+# Make session_store globally accessible for tools
+import builtins
+builtins._session_store = session_store
+
 data_profiler = IntelligentDataProfiler()
 
-# Additional models for new endpoints
 class ProfilingRequest(BaseModel):
     deep_analysis: bool = True
     include_relationships: bool = True
@@ -151,6 +191,15 @@ class LearningFeedback(BaseModel):
     issues_encountered: List[str] = []
     suggestions: Optional[str] = None
 
+class ChatMessage(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    status: str
+    response: str
+    plots: List[str] = []
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the chat-first landing interface."""
@@ -163,11 +212,111 @@ async def dashboard():
     html_path = Path(__file__).parent.parent / "static" / "dashboard.html"
     return HTMLResponse(html_path.read_text())
 
+@app.post("/api/agent/chat", response_model=ChatResponse)
+async def chat_endpoint(chat_request: ChatMessage):
+    """Handle chat messages with the AI agent"""
+    try:
+        session_id = GLOBAL_SESSION_ID
+        agent = get_session_agent(session_id)
+        
+        if not agent:
+            if not CHAT_AVAILABLE:
+                return ChatResponse(
+                    status="error",
+                    response="I apologize, but the chat functionality is currently unavailable. This appears to be due to missing dependencies (like dotenv, langchain, etc.). Please run 'pip install -r requirements.txt' to install all required packages, or use the Flask server on port 5000 for chat functionality.",
+                    plots=[]
+                )
+            else:
+                raise HTTPException(status_code=500, detail="Failed to initialize chat agent for this session")
+        
+        input_state = {
+            "messages": [("user", chat_request.message)],
+            "session_id": session_id,
+            "python_executions": 0
+        }
+        
+        final_response_content = ""
+        all_plot_urls = []
+        
+        try:
+            print(f"FastAPI DEBUG: Starting agent stream for session {session_id}")
+            for chunk in agent.stream(input_state, config={"configurable": {"thread_id": session_id}, "recursion_limit": 10}):
+                print(f"FastAPI DEBUG: Received chunk with keys: {list(chunk.keys())}")
+                
+                if "action" in chunk:
+                    print("FastAPI DEBUG: Processing tool execution")
+                    tool_messages = chunk["action"]["messages"]
+                    print(f"FastAPI DEBUG: Found {len(tool_messages)} tool messages")
+                    
+                    for i, tool_msg in enumerate(tool_messages):
+                        print(f"FastAPI DEBUG: Tool message {i} type: {type(tool_msg)}")
+                        print(f"FastAPI DEBUG: Tool message {i} attributes: {dir(tool_msg)}")
+                        
+                        # Check different possible attribute names for tool identification
+                        tool_name = getattr(tool_msg, 'name', None) or getattr(tool_msg, 'tool_name', None) or getattr(tool_msg, 'type', None)
+                        print(f"FastAPI DEBUG: Tool message {i} identifier: {tool_name}")
+                        
+                        content = str(getattr(tool_msg, 'content', ''))
+                        print(f"FastAPI DEBUG: Tool message {i} content preview: {content[:100]}...")
+                        
+                        # Always check for PLOT_SAVED regardless of message type
+                        if "PLOT_SAVED:" in content:
+                            print("FastAPI DEBUG: Found PLOT_SAVED in content!")
+                            plot_saved_matches = re.findall(r"PLOT_SAVED:([^\n\r\s]+\.png)", content)
+                            print(f"FastAPI DEBUG: Plot saved matches: {plot_saved_matches}")
+                            
+                            for plot_file in plot_saved_matches:
+                                url = f"/static/plots/{plot_file}"
+                                if url not in all_plot_urls:
+                                    all_plot_urls.append(url)
+                                    print(f"FastAPI DEBUG: ✅ Added plot URL: {url}")
+                        
+                        # Also check for any PNG files mentioned
+                        if ".png" in content:
+                            print("FastAPI DEBUG: Found .png in content!")
+                            plot_files = re.findall(r"([a-zA-Z0-9_\-]+\.png)", content)
+                            print(f"FastAPI DEBUG: All PNG files found: {plot_files}")
+                            
+                            for pf in plot_files:
+                                if "plot" in pf:  # Only plot files
+                                    url = f"/static/plots/{pf}"
+                                    if url not in all_plot_urls:
+                                        all_plot_urls.append(url)
+                                        print(f"FastAPI DEBUG: ✅ Added plot URL from PNG: {url}")
+                                        
+                if "agent" in chunk:
+                    print("FastAPI DEBUG: Processing agent response")
+                    final_message = chunk["agent"]["messages"][-1]
+                    if final_message:
+                        final_response_content = final_message.content
+                        print(f"FastAPI DEBUG: Final response: {final_response_content[:100]}...")
+            
+            if not final_response_content:
+                final_state = agent.invoke(input_state, config={"configurable": {"thread_id": session_id}, "recursion_limit": 10})
+                final_response_content = final_state["messages"][-1].content
+                
+        except Exception as agent_error:
+            print(f"Agent streaming error: {str(agent_error)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Agent error: {str(agent_error)}")
+        
+        return ChatResponse(
+            status="success",
+            response=final_response_content,
+            plots=all_plot_urls
+        )
+        
+    except Exception as e:
+        print(f"Chat endpoint error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
+
 @app.post("/api/upload")
 async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True)):
     """Upload and validate dataset with intelligent profiling."""
     try:
-        # Read uploaded file
         contents = await file.read()
         df = ingest_data(io.BytesIO(contents), filename=file.filename)
         
@@ -179,7 +328,7 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
         validation_report = validator.validate()
         
         # Generate session ID and store basic data
-        session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        session_id = GLOBAL_SESSION_ID
         session_data = {
             "dataframe": df,
             "validation_report": validation_report,
@@ -189,7 +338,7 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
         
         response_data = {
             "session_id": session_id,
-            "status": "success",
+            "status": "success", 
             "filename": file.filename,
             "shape": df.shape,
             "columns": df.columns.tolist(),
@@ -210,7 +359,6 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
             }
         }
         
-        # Add intelligent profiling if enabled
         if enable_profiling:
             try:
                 intelligence_profile = data_profiler.profile_dataset(df)
@@ -238,7 +386,6 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
                 session_data["intelligence_profile"] = intelligence_profile
                 
             except Exception as prof_e:
-                # Don't fail the upload if profiling fails
                 response_data["intelligence_summary"] = {
                     "profiling_completed": False,
                     "profiling_error": str(prof_e)
@@ -246,19 +393,68 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
         
         session_store[session_id] = session_data
 
-        # Push compact dataset summary to RAG for this session
+        # Store data in builtins for agent access
+        import builtins
+        if not hasattr(builtins, '_session_store'):
+            builtins._session_store = {}
         try:
-            dataset_content = f"""
-Dataset Summary:\n- Shape: {df.shape[0]} rows x {df.shape[1]} columns\n- Columns: {', '.join(df.columns[:30])}{'...' if len(df.columns) > 30 else ''}\n- Dtypes counts: {pd.Series(df.dtypes.astype(str)).value_counts().to_dict()}
-"""
-            rag_system.add_document(
-                content=dataset_content,
-                metadata={"type": "dataset_summary", "filename": file.filename, "columns": df.columns.tolist()},
-                document_type="dataset_summary",
-                session_id=session_id
-            )
+            from intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+            data_profile = generate_dataset_profile_for_agent(df, context={'filename': file.filename, 'upload_session': session_id})
+            builtins._session_store[session_id] = {
+                'dataframe': df,
+                'data_profile': data_profile,
+                'filename': file.filename
+            }
         except Exception as e:
-            logging.warning(f"Failed to add dataset summary to RAG: {e}")
+            logging.warning(f"Failed to generate dataset profile: {e}")
+            builtins._session_store[session_id] = {"dataframe": df}
+
+        # Initialize agent session and load data into sandbox if available  
+        if AGENT_AVAILABLE:
+            try:
+                from data_scientist_chatbot.app.tools import execute_python_in_sandbox
+                
+                if session_id not in agent_sessions:
+                    agent_sessions[session_id] = create_enhanced_agent_executor(session_id)
+                
+                # Convert dataframe to CSV string for direct transfer to sandbox
+                csv_data = df.to_csv(index=False)
+                
+                # Load data directly into the stateful sandbox
+                load_code = f"""
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from io import StringIO
+
+# Create dataframe from CSV data
+csv_data = '''{csv_data}'''
+df = pd.read_csv(StringIO(csv_data))
+print(f"Dataset loaded successfully!")
+print(f"Shape: {{df.shape[0]}} rows x {{df.shape[1]}} columns")
+print(f"Columns: {{list(df.columns)}}")
+print("First 5 rows:")
+print(df.head())
+"""
+                
+                # Execute load code in sandbox
+                load_result = execute_python_in_sandbox(load_code, session_id)
+                
+                if load_result["success"]:
+                    # Convert raw table output to HTML table
+                    clean_output = load_result['stdout']
+                    html_output = convert_pandas_output_to_html(clean_output)
+                    response_data["agent_analysis"] = f"✅ Data loaded successfully!\n\n{html_output}"
+                    response_data["agent_session_id"] = session_id
+                else:
+                    response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {load_result['stderr']}"
+                    response_data["agent_session_id"] = session_id
+                
+                
+            except Exception as agent_e:
+                logging.warning(f"Agent data loading failed: {agent_e}")
+                response_data["agent_analysis"] = None
 
         return response_data
     
@@ -279,7 +475,7 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
         validation_report = validator.validate()
         
         # Generate session ID and store basic data
-        session_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        session_id = GLOBAL_SESSION_ID
         session_data = {
             "dataframe": df,
             "validation_report": validation_report,
@@ -310,7 +506,6 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
             }
         }
         
-        # Add intelligent profiling if enabled
         if request.enable_profiling:
             try:
                 intelligence_profile = data_profiler.profile_dataset(df)
@@ -338,7 +533,6 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
                 session_data["intelligence_profile"] = intelligence_profile
                 
             except Exception as prof_e:
-                # Don't fail the ingestion if profiling fails
                 response_data["intelligence_summary"] = {
                     "profiling_completed": False,
                     "profiling_error": str(prof_e)
@@ -346,17 +540,16 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
         
         session_store[session_id] = session_data
 
-        # Push compact dataset summary to RAG for this session (URL ingest)
+        # Store data in builtins for agent access
+        import builtins
+        if not hasattr(builtins, '_session_store'):
+            builtins._session_store = {}
+        builtins._session_store[session_id] = {"dataframe": df}
+
         try:
             dataset_content = f"""
 Dataset Summary:\n- Shape: {df.shape[0]} rows x {df.shape[1]} columns\n- Columns: {', '.join(df.columns[:30])}{'...' if len(df.columns) > 30 else ''}\n- Dtypes counts: {pd.Series(df.dtypes.astype(str)).value_counts().to_dict()}
 """
-            rag_system.add_document(
-                content=dataset_content,
-                metadata={"type": "dataset_summary", "source_url": request.url, "columns": df.columns.tolist()},
-                document_type="dataset_summary",
-                session_id=session_id
-            )
         except Exception as e:
             logging.warning(f"Failed to add dataset summary to RAG (URL): {e}")
         return response_data
@@ -388,7 +581,6 @@ async def generate_eda(session_id: str):
     try:
         df = session_store[session_id]["dataframe"]
         
-        # Use basic analysis to avoid dependency issues
         eda_report = {
             "basic_info": {
                 "shape": list(df.shape),
@@ -531,9 +723,8 @@ async def process_data(session_id: str, config: TaskConfig):
         session_data = session_store[session_id]
         df = session_data["dataframe"]
         
-        # Create temporary file for pipeline execution
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-        temp_file.close()  # Close the file handle immediately
+        temp_file.close()  
         df.to_csv(temp_file.name, index=False)
         
         # Phase 1: RECALL - Get experience from database
@@ -734,7 +925,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                         headers={"Content-Disposition": f"attachment; filename=pipeline_info_{session_id}.json"}
                     )
                 
-                # Test if pipeline is serializable
                 try:
                     # Use a temporary file approach instead of BytesIO to avoid memory issues
                     import tempfile
@@ -841,7 +1031,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                         'recommendations': profile.recommendations
                     }
             
-            # Copy other sections as-is
             for key in ['domain_analysis', 'relationship_analysis', 'overall_recommendations']:
                 if key in intelligence_profile:
                     serializable_profile[key] = intelligence_profile[key]
@@ -872,24 +1061,19 @@ async def download_artifact(session_id: str, artifact_type: str):
                             print(f"🔧 Processing key: {key}, value type: {type(value)}")
                             
                             if key in ['pipeline', 'final_pipeline']:
-                                # Don't include pipeline objects in metadata
                                 safe_metadata[key] = f"<Pipeline object of type {type(value)}>"
                             elif key in ['dataframe', 'processed_data', 'final_data', 'enhanced_data']:
-                                # Handle DataFrame objects
                                 if hasattr(value, 'shape'):
                                     safe_metadata[key] = f"<DataFrame with shape {value.shape}>"
                                 else:
                                     safe_metadata[key] = f"<Data object of type {type(value)}>"
                             elif hasattr(value, '__dict__') and not isinstance(value, (str, int, float, bool, list, dict)):
-                                # Convert objects to string representation
                                 safe_metadata[key] = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
                             else:
-                                # Try to include the value directly
                                 try:
-                                    json.dumps(value)  # Test if serializable
+                                    json.dumps(value) 
                                     safe_metadata[key] = value
                                 except:
-                                    # If not serializable, convert to string
                                     safe_metadata[key] = str(value)[:500] + "..." if len(str(value)) > 500 else str(value)
                         except Exception as key_error:
                             print(f"❌ Error processing key {key}: {str(key_error)}")
@@ -900,7 +1084,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                         "pipeline_result_str": str(pipeline_result)[:1000] + "..." if len(str(pipeline_result)) > 1000 else str(pipeline_result)
                     }
                 
-                # Add session info
                 safe_metadata["session_id"] = session_id
                 safe_metadata["export_timestamp"] = datetime.now().isoformat()
                 
@@ -916,7 +1099,6 @@ async def download_artifact(session_id: str, artifact_type: str):
                 raise HTTPException(status_code=500, detail=f"Metadata export failed: {str(e)}")
         
         elif artifact_type == "enhanced-data":
-            # Look for enhanced data in multiple locations
             enhanced_df = None
             
             if "enhanced_data" in session_data:
@@ -1029,33 +1211,26 @@ async def get_feature_recommendations(session_id: str,
     try:
         df = session_store[session_id]["dataframe"]
         
-        # Ensure we have intelligence profile
         if "intelligence_profile" not in session_store[session_id]:
             intelligence_profile = data_profiler.profile_dataset(df)
             session_store[session_id]["intelligence_profile"] = intelligence_profile
         else:
             intelligence_profile = session_store[session_id]["intelligence_profile"]
         
-        # Initialize feature intelligence if not exists
         from .intelligence.feature_intelligence import AdvancedFeatureIntelligence
         feature_intelligence = AdvancedFeatureIntelligence()
         
-        # Get feature engineering analysis
         fe_analysis = feature_intelligence.analyze_feature_engineering_opportunities(
             df, intelligence_profile, target_column
         )
         
-        # Extract and filter recommendations
         recommendations = fe_analysis.get('feature_engineering_recommendations', [])
         
-        # Filter by priority if specified
         if priority_filter:
             recommendations = [rec for rec in recommendations if rec.priority == priority_filter]
         
-        # Limit number of recommendations
         recommendations = recommendations[:max_recommendations]
         
-        # Convert to serializable format
         serializable_recommendations = []
         for rec in recommendations:
             serializable_recommendations.append({
@@ -1067,7 +1242,6 @@ async def get_feature_recommendations(session_id: str,
                 'computational_cost': rec.computational_cost
             })
         
-        # Store analysis for later use
         session_store[session_id]["feature_analysis"] = fe_analysis
         
         return {
@@ -1425,11 +1599,7 @@ async def trigger_pipeline_recovery(session_id: str):
 async def strategic_analysis(request: StrategicAnalysisRequest):
     """Pillar 0: Strategic Control Layer - Comprehensive strategic analysis and recommendation"""
     try:
-        # Initialize strategic control components
         from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
-        from .core.strategy_translator import StrategyTranslator, TranslationStrategy
-        
-        # Convert API request to ProjectDefinition
         from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
         
         config = request.project_definition
@@ -1457,35 +1627,9 @@ async def strategic_analysis(request: StrategicAnalysisRequest):
                 audit_trail_required=False,
                 compliance_rules=getattr(config, 'compliance_rules', [])
             )
-        )
+        )    
         
-        # Initialize strategy translator with specified approach
-        translation_strategy = TranslationStrategy(request.translation_strategy)
-        strategy_translator = StrategyTranslator(translation_strategy)
-        
-        # Perform comprehensive strategic analysis
-        technical_configuration = strategy_translator.translate(project_definition)
-        pipeline_config = strategy_translator.translate_to_pipeline_config(project_definition)
-        
-        # Validate project definition
         validation_results = project_definition.validate_project_definition()
-        
-        # Calculate strategic scores and recommendations
-        strategic_assessment = {
-            "feasibility_score": _calculate_feasibility_score(project_definition, technical_configuration),
-            "complexity_assessment": technical_configuration.model_complexity.value,
-            "risk_mitigation_score": _calculate_risk_mitigation_score(project_definition, technical_configuration),
-            "resource_optimization_score": _calculate_resource_optimization_score(technical_configuration),
-            "compliance_readiness_score": _calculate_compliance_readiness_score(project_definition, technical_configuration)
-        }
-        
-        # Generate executive recommendations
-        executive_recommendations = _generate_executive_recommendations(
-            project_definition, technical_configuration, strategic_assessment
-        )
-        
-        # Strategic timeline estimation
-        timeline_estimate = _estimate_strategic_timeline(project_definition, technical_configuration)
         
         return {
             "status": "success",
@@ -1497,44 +1641,7 @@ async def strategic_analysis(request: StrategicAnalysisRequest):
                     "priority": project_definition.priority.value,
                     "risk_level": project_definition.risk_level.value
                 },
-                "strategic_assessment": strategic_assessment,
-                "technical_configuration": {
-                    "recommended_algorithms": technical_configuration.recommended_algorithms,
-                    "model_complexity": technical_configuration.model_complexity.value,
-                    "ensemble_strategy": technical_configuration.ensemble_strategy,
-                    "performance_targets": {
-                        "accuracy_target": technical_configuration.accuracy_target,
-                        "latency_target_ms": technical_configuration.latency_target_ms,
-                        "throughput_target": technical_configuration.throughput_target
-                    },
-                    "resource_allocation": {
-                        "max_training_hours": technical_configuration.max_training_time_hours,
-                        "max_memory_gb": technical_configuration.max_memory_gb,
-                        "compute_budget_priority": technical_configuration.compute_budget_priority
-                    },
-                    "feature_engineering": {
-                        "complexity": technical_configuration.feature_engineering_complexity,
-                        "selection_strategy": technical_configuration.feature_selection_strategy
-                    },
-                    "validation_strategy": {
-                        "rigor": technical_configuration.validation_rigor,
-                        "cross_validation_folds": technical_configuration.cross_validation_folds,
-                        "test_set_percentage": technical_configuration.test_set_percentage
-                    },
-                    "interpretability": {
-                        "level": technical_configuration.interpretability_level,
-                        "methods": technical_configuration.explanation_methods
-                    },
-                    "security_compliance": {
-                        "security_level": technical_configuration.security_level,
-                        "audit_requirements": technical_configuration.audit_requirements,
-                        "data_governance": technical_configuration.data_governance
-                    }
-                },
-                "pipeline_configuration": pipeline_config,
-                "executive_recommendations": executive_recommendations,
-                "timeline_estimate": timeline_estimate,
-                "validation_results": validation_results
+                
             },
             "analysis_metadata": {
                 "translation_strategy": request.translation_strategy,
@@ -1667,13 +1774,11 @@ def _estimate_strategic_timeline(project_def: ProjectDefinition, tech_config) ->
     
     total_weeks = base_weeks * complexity_multiplier.get(tech_config.model_complexity.value, 1.0)
     
-    # Adjust for validation rigor
     if tech_config.validation_rigor == "regulatory":
         total_weeks *= 1.3
     elif tech_config.validation_rigor == "extensive":
         total_weeks *= 1.2
     
-    # Adjust for interpretability requirements
     if tech_config.interpretability_level == "full":
         total_weeks *= 1.2
     
@@ -1719,14 +1824,11 @@ async def get_relationship_graph(session_id: str):
                 }
             }
         
-        # Generate relationship graph
         from .intelligence.relationship_discovery import RelationshipDiscovery
         relationship_discovery = RelationshipDiscovery()
         
-        # Convert dict relationships back to objects for graph generation
         relationship_objects = []
         for rel_dict in relationships:
-            # Create a mock relationship object with required attributes
             class MockRelationship:
                 def __init__(self, **kwargs):
                     for key, value in kwargs.items():
@@ -1854,1092 +1956,482 @@ async def database_cleanup(retention_days: int = 365):
 
 # Chat/Conversational AI Endpoints
 
-class ChatMessage(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-
 class ChatIntent(BaseModel):
     session_id: str
     user_message: str
-
-class ChatResponse(BaseModel):
-    intent: Dict[str, Any]
-    strategy: Dict[str, Any]
-    follow_up_questions: List[str]
-
-@app.post("/api/chat/start_project")
-async def start_project_conversation(request: ChatMessage):
-    """INTELLIGENT CHAT - Understands data, user intent, and executes immediately"""
-    try:
-        # Get or create session
-        session_id = request.session_id
-        if not session_id:
-            candidates = [(sid, data.get("created_at")) for sid, data in session_store.items() 
-                         if isinstance(data, dict) and "dataframe" in data]
-            if candidates:
-                candidates.sort(key=lambda x: x[1] or "", reverse=True)
-                session_id = candidates[0][0]
-            else:
-                session_id = f"chat_{int(datetime.now().timestamp())}"
-        
-        # NO DATA = REQUEST UPLOAD
-        if session_id not in session_store or "dataframe" not in session_store[session_id]:
-            return {
-                "status": "success",
-                "session_id": session_id,
-                "response": {
-                    "assistant_text": "Please upload your dataset first. I'll analyze it and execute the best approach automatically.",
-                    "action": "upload_prompt",
-                    "confidence": 1.0
-                },
-                "chat_metadata": {"has_data": False, "timestamp": datetime.now().isoformat()}
-            }
-        
-        # ANALYZE DATA AND USER INTENT
-        df = session_store[session_id]["dataframe"]
-        user_message = request.message.lower()
-        
-        # SMART DATA ANALYSIS
-        columns = list(df.columns)
-        dtypes = {col: str(dtype) for col, dtype in df.dtypes.items()}
-        nunique = {col: int(df[col].nunique(dropna=True)) for col in df.columns}
-        numeric_cols = [col for col in columns if 'float' in dtypes[col] or 'int' in dtypes[col]]
-        categorical_cols = [col for col in columns if nunique[col] < 50 and nunique[col] > 1]
-        
-        # INTELLIGENT TARGET SELECTION
-        target_column = None
-        task_type = "regression"
-        confidence = 0.9
-        
-        # 1. USER MENTIONED SPECIFIC COLUMN
-        for col in columns:
-            if col.lower() in user_message:
-                if col in numeric_cols:
-                    target_column, task_type = col, "regression"
-                elif col in categorical_cols:
-                    target_column = col
-                    task_type = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
-                break
-        
-        # 2. USER INTENT + SMART COLUMN MATCHING
-        if not target_column:
-            # Prediction/Regression intent
-            if any(word in user_message for word in ['predict', 'forecast', 'estimate', 'price', 'amount', 'value', 'revenue', 'sales', 'cost']):
-                # Find best numeric target
-                priority_targets = [col for col in numeric_cols if any(kw in col.lower() for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value', 'income', 'profit'])]
-                if priority_targets:
-                    target_column = priority_targets[0]
-                elif numeric_cols:
-                    target_column = numeric_cols[0]
-                task_type = "regression"
-            
-            # Classification intent
-            elif any(word in user_message for word in ['classify', 'categorize', 'group', 'type', 'status', 'category']):
-                # Find best categorical target
-                priority_targets = [col for col in categorical_cols if any(kw in col.lower() for kw in ['status', 'type', 'category', 'class', 'label', 'group'])]
-                if priority_targets:
-                    target_column = priority_targets[0]
-                elif categorical_cols:
-                    target_column = categorical_cols[0]
-                task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
-        
-        # 3. AUTO-SELECT BEST TARGET (NO USER INTENT)
-        if not target_column:
-            # Priority: obvious business targets
-            business_targets = []
-            for col in columns:
-                col_lower = col.lower()
-                if any(kw in col_lower for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value']) and col in numeric_cols:
-                    business_targets.append((col, "regression", 0.95))
-                elif any(kw in col_lower for kw in ['status', 'type', 'category', 'class']) and col in categorical_cols:
-                    task = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
-                    business_targets.append((col, task, 0.9))
-            
-            if business_targets:
-                business_targets.sort(key=lambda x: x[2], reverse=True)
-                target_column, task_type, confidence = business_targets[0]
-            elif numeric_cols:
-                target_column, task_type = numeric_cols[0], "regression"
-            elif categorical_cols:
-                target_column = categorical_cols[0]
-                task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
-            else:
-                target_column, task_type = columns[0], "classification"
-        
-        # STORE DECISION AND EXECUTE
-        session_store[session_id]["chat_context"] = {
-            "selected_task": task_type,
-            "selected_target": target_column,
-            "strategy_approved": True,
-            "user_message": request.message,
-            "confidence": confidence
-        }
-        
-        # GENERATE INTELLIGENT RESPONSE
-        if 'price' in target_column.lower():
-            context_msg = f"I detected a price prediction task from your housing dataset."
-        elif 'revenue' in target_column.lower() or 'sales' in target_column.lower():
-            context_msg = f"I detected a revenue/sales forecasting task."
-        elif 'status' in target_column.lower() or 'type' in target_column.lower():
-            context_msg = f"I detected a classification task for {target_column}."
-        else:
-            context_msg = f"Based on your data analysis, I'll predict {target_column}."
-        
-        response_text = f"{context_msg} Running {task_type.replace('_', ' ')} now..."
-        
-        return {
-            "status": "success",
-            "session_id": session_id,
-            "response": {
-                "assistant_text": response_text,
-                "action": "execute_pipeline",
-                "task": task_type,
-                "target": target_column,
-                "confidence": confidence
-            },
-            "chat_metadata": {
-                "has_data": True,
-                "dataset_shape": df.shape,
-                "target_detected": target_column,
-                "task_detected": task_type,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Chat processing error: {str(e)}")
-        return {
-            "status": "error",
-            "error": f"Chat processing failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/api/execute-strategy")
-async def execute_intelligent_strategy(request: dict):
-    try:
-        session_id = request.get("session_id")
-        if not session_id or session_id not in session_store:
-            return {"status": "error", "error": "Session not found"}
-        
-        # Get the auto-selected strategy from chat context
-        chat_context = session_store[session_id].get("chat_context", {})
-        if not chat_context.get("selected_task") or not chat_context.get("selected_target"):
-            return {"status": "error", "error": "No strategy configured. Please chat first to select a task."}
-        
-        config = {
-            "task": chat_context["selected_task"],
-            "target_column": chat_context["selected_target"],
-            "enable_feature_generation": True,
-            "enable_feature_selection": True,
-            "enable_intelligence": True
-        }
-        
-        if "dataframe" not in session_store[session_id]:
-            return {"status": "error", "error": "No data found. Please upload data first."}
-        
-        df = session_store[session_id]["dataframe"]
-        
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-        temp_file.close()  # Close the file handle immediately
-        df.to_csv(temp_file.name, index=False)
-        
-        pipeline_config = PipelineConfig(
-            max_memory_usage=0.8,
-            enable_caching=True,
-            auto_recovery=True
-        )
-        
-        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
-        
-        project_definition = ProjectDefinition(
-            project_id=f"chat_{session_id}",
-            name=f"Intelligent Analysis - {config['task']}",
-            description=f"AI-driven {config['task']} to predict {config['target_column']}",
-            objective=Objective.ACCURACY,
-            domain=Domain.GENERAL,
-            priority=Priority.MEDIUM,
-            risk_level=RiskLevel.MEDIUM,
-            business_context=BusinessContext(
-                business_unit="AI Assistant",
-                success_criteria=["High accuracy", "Fast execution"],
-                stakeholders=["User"],
-                timeline_months=1
-            ),
-            technical_constraints=TechnicalConstraints(
-                max_training_hours=1.0,
-                max_memory_gb=4.0,
-                min_accuracy=0.8
-            ),
-            regulatory_constraints=RegulatoryConstraints(
-                privacy_level="standard",
-                audit_trail_required=False,
-                compliance_rules=[]
-            )
-        )
-        
-        orchestrator = RobustPipelineOrchestrator(pipeline_config, project_definition)
-        
-        result = orchestrator.execute_pipeline(
-            data_path=temp_file.name,
-            project_definition=project_definition,
-            target_column=config["target_column"],
-            fallback_task_type=config["task"]
-        )
-        
-        # Improved cleanup with better error handling
-        try:
-            Path(temp_file.name).unlink()
-        except Exception as cleanup_error:
-            # Try alternative cleanup method
-            try:
-                import os
-                if os.path.exists(temp_file.name):
-                    os.remove(temp_file.name)
-            except Exception:
-                print(f"Warning: Could not clean up temporary file {temp_file.name}")
-        
-        session_store[session_id]["pipeline_result"] = result
-        rag_system.add_execution_report(result, session_id)
-        
-        # Update chat context to reflect completion
-        session_store[session_id]["chat_context"]["execution_completed"] = True
-        
-        return {
-            "status": "success",
-            "execution_id": result.get("execution_id"),
-            "message": f"Successfully completed {config['task']} for {config['target_column']}!",
-            "redirect_to_results": True,
-            "result_summary": {
-                "task": config["task"],
-                "target": config["target_column"],
-                "status": result.get("status"),
-                "execution_time": result.get("execution_time")
-            }
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Execution failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/api/chat/{session_id}/continue")
-async def continue_conversation(session_id: str, request: ChatMessage):
-    """INTELLIGENT CONTINUATION - Same smart logic as start_project"""
-    try:
-        if session_id not in session_store:
-            return {"status": "error", "error": "Session not found. Please start a new conversation."}
-        
-        # NO DATA = REQUEST UPLOAD
-        if "dataframe" not in session_store[session_id]:
-            return {
-                "status": "success",
-                "session_id": session_id,
-                "response": {
-                    "assistant_text": "Please upload your dataset first. I'll analyze it and execute the best approach automatically.",
-                    "action": "upload_prompt",
-                    "confidence": 1.0
-                },
-                "chat_metadata": {"has_data": False, "timestamp": datetime.now().isoformat()}
-            }
-        
-        # REUSE THE SAME SMART LOGIC
-        df = session_store[session_id]["dataframe"]
-        user_message = request.message.lower()
-        
-        # SMART DATA ANALYSIS
-        columns = list(df.columns)
-        dtypes = {col: str(dtype) for col, dtype in df.dtypes.items()}
-        nunique = {col: int(df[col].nunique(dropna=True)) for col in df.columns}
-        numeric_cols = [col for col in columns if 'float' in dtypes[col] or 'int' in dtypes[col]]
-        categorical_cols = [col for col in columns if nunique[col] < 50 and nunique[col] > 1]
-        
-        # INTELLIGENT TARGET SELECTION
-        target_column = None
-        task_type = "regression"
-        confidence = 0.9
-        
-        # 1. USER MENTIONED SPECIFIC COLUMN
-        for col in columns:
-            if col.lower() in user_message:
-                if col in numeric_cols:
-                    target_column, task_type = col, "regression"
-                elif col in categorical_cols:
-                    target_column = col
-                    task_type = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
-                break
-        
-        # 2. USER INTENT + SMART COLUMN MATCHING
-        if not target_column:
-            if any(word in user_message for word in ['predict', 'forecast', 'estimate', 'price', 'amount', 'value', 'revenue', 'sales', 'cost']):
-                priority_targets = [col for col in numeric_cols if any(kw in col.lower() for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value', 'income', 'profit'])]
-                target_column = priority_targets[0] if priority_targets else (numeric_cols[0] if numeric_cols else None)
-                task_type = "regression"
-            elif any(word in user_message for word in ['classify', 'categorize', 'group', 'type', 'status', 'category']):
-                priority_targets = [col for col in categorical_cols if any(kw in col.lower() for kw in ['status', 'type', 'category', 'class', 'label', 'group'])]
-                target_column = priority_targets[0] if priority_targets else (categorical_cols[0] if categorical_cols else None)
-                if target_column:
-                    task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
-        
-        # 3. AUTO-SELECT BEST TARGET
-        if not target_column:
-            business_targets = []
-            for col in columns:
-                col_lower = col.lower()
-                if any(kw in col_lower for kw in ['price', 'amount', 'revenue', 'cost', 'sales', 'value']) and col in numeric_cols:
-                    business_targets.append((col, "regression", 0.95))
-                elif any(kw in col_lower for kw in ['status', 'type', 'category', 'class']) and col in categorical_cols:
-                    task = "binary_classification" if nunique[col] <= 2 else "multiclass_classification"
-                    business_targets.append((col, task, 0.9))
-            
-            if business_targets:
-                business_targets.sort(key=lambda x: x[2], reverse=True)
-                target_column, task_type, confidence = business_targets[0]
-            elif numeric_cols:
-                target_column, task_type = numeric_cols[0], "regression"
-            elif categorical_cols:
-                target_column = categorical_cols[0]
-                task_type = "binary_classification" if nunique[target_column] <= 2 else "multiclass_classification"
-            else:
-                target_column, task_type = columns[0], "classification"
-        
-        # STORE AND EXECUTE
-        session_store[session_id]["chat_context"] = {
-            "selected_task": task_type,
-            "selected_target": target_column,
-            "strategy_approved": True,
-            "user_message": request.message,
-            "confidence": confidence
-        }
-        
-        # INTELLIGENT RESPONSE
-        if 'price' in target_column.lower():
-            context_msg = f"I detected a price prediction task from your dataset."
-        elif 'revenue' in target_column.lower() or 'sales' in target_column.lower():
-            context_msg = f"I detected a revenue/sales forecasting task."
-        elif 'status' in target_column.lower() or 'type' in target_column.lower():
-            context_msg = f"I detected a classification task for {target_column}."
-        else:
-            context_msg = f"Based on your request, I'll predict {target_column}."
-        
-        response_text = f"{context_msg} Running {task_type.replace('_', ' ')} now..."
-        
-        return {
-            "status": "success",
-            "session_id": session_id,
-            "response": {
-                "assistant_text": response_text,
-                "action": "execute_pipeline",
-                "task": task_type,
-                "target": target_column,
-                "confidence": confidence
-            },
-            "chat_metadata": {
-                "has_data": True,
-                "dataset_shape": df.shape,
-                "target_detected": target_column,
-                "task_detected": task_type,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"Continue conversation error: {str(e)}")
-        return {
-            "status": "error",
-            "error": f"Conversation continuation failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/api/execute-strategy")
-async def execute_intelligent_strategy(request: dict):
-    """Execute the strategy derived from chat conversation"""
-    try:
-        if session_id not in session_store:
-            return {
-                "status": "error",
-                "error": "Session not found"
-            }
-        
-        # Get chat context and strategy
-        chat_context = session_store[session_id].get("chat_context", {})
-        strategy = chat_context.get("current_strategy", {})
-        
-        if not strategy:
-            return {
-                "status": "error",
-                "error": "No strategy found. Please complete the conversation first."
-            }
-        
-        # Convert chat strategy to processing config
-        processing_config = {
-            "task": strategy.get("task_type", "classification"),
-            "target_column": strategy.get("target_column"),
-            "enable_feature_generation": strategy.get("configuration", {}).get("enable_feature_generation", False),
-            "enable_feature_selection": strategy.get("configuration", {}).get("enable_feature_selection", False),
-            "enable_intelligence": strategy.get("configuration", {}).get("enable_intelligence", True)
-        }
-        
-        # Store the config for processing
-        session_store[session_id]["processing_config"] = processing_config
-        
-        # Execute the pipeline using the derived strategy
-        if "dataframe" not in session_store[session_id]:
-            return {
-                "status": "error", 
-                "error": "No data found. Please upload data first."
-            }
-        
-        df = session_store[session_id]["dataframe"]
-        
-        # Create temporary file for processing
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-        temp_file.close()  # Close the file handle immediately
-        df.to_csv(temp_file.name, index=False)
-        
-        # Execute pipeline with robust orchestrator
-        config = PipelineConfig(
-            max_memory_usage=0.8,
-            enable_caching=True,
-            auto_recovery=True
-        )
-        
-        robust_orchestrator = RobustPipelineOrchestrator(config)
-        
-        result = robust_orchestrator.execute_pipeline(
-            data_path=temp_file.name,
-            task_type=processing_config["task"],
-            target_column=processing_config.get("target_column"),
-            enable_feature_generation=processing_config["enable_feature_generation"],
-            enable_feature_selection=processing_config["enable_feature_selection"],
-            enable_intelligence=processing_config["enable_intelligence"]
-        )
-        
-        # Clean up temp file with better error handling
-        try:
-            Path(temp_file.name).unlink()
-        except Exception as cleanup_error:
-            try:
-                import os
-                if os.path.exists(temp_file.name):
-                    os.remove(temp_file.name)
-            except Exception:
-                print(f"Warning: Could not clean up temporary file {temp_file.name}")
-        
-        # Store results
-        session_store[session_id]["pipeline_result"] = result
-        
-        # Add execution report to RAG system
-        rag_system.add_execution_report(result, session_id)
-        
-        # Add execution to conversation
-        llm_interface.add_to_conversation("system", "Pipeline executed successfully", {
-            "execution_result": {"status": result.get("status"), "execution_id": result.get("execution_id")}
-        })
-        
-        return {
-            "status": "success",
-            "execution_result": result,
-            "message": "Strategy executed successfully",
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Strategy execution failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.get("/api/chat/{session_id}/explain")
-async def explain_results(session_id: str, question: Optional[str] = None):
-    """Explain pipeline results in natural language"""
-    try:
-        if session_id not in session_store:
-            return {
-                "status": "error",
-                "error": "Session not found"
-            }
-        
-        # Get pipeline results
-        pipeline_result = session_store[session_id].get("pipeline_result")
-        if not pipeline_result:
-            return {
-                "status": "error",
-                "error": "No results to explain. Please execute a pipeline first."
-            }
-        
-        # Generate explanation
-        explanation = llm_interface.generate_explanation(pipeline_result, question)
-        
-        # Add to conversation
-        llm_interface.add_to_conversation("user", question or "Explain the results", {"session_id": session_id})
-        llm_interface.add_to_conversation("assistant", explanation, {"type": "explanation"})
-        
-        return {
-            "status": "success",
-            "explanation": explanation,
-            "result_summary": {
-                "status": pipeline_result.get("status"),
-                "execution_time": pipeline_result.get("execution_summary", {}).get("total_time"),
-                "stages_completed": pipeline_result.get("execution_summary", {}).get("successful_stages"),
-                "data_shape": pipeline_result.get("results", {}).get("processed_data", {}).get("shape") if isinstance(pipeline_result.get("results", {}), dict) else None
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Explanation generation failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.get("/api/chat/{session_id}/history")
-async def get_conversation_history(session_id: str):
-    """Get conversation history for a session"""
-    try:
-        if session_id not in session_store:
-            return {
-                "status": "error",
-                "error": "Session not found"
-            }
-        
-        chat_context = session_store[session_id].get("chat_context", {})
-        conversation_history = chat_context.get("conversation_history", {})
-        
-        return {
-            "status": "success",
-            "conversation_history": conversation_history,
-            "current_intent": chat_context.get("current_intent"),
-            "current_strategy": chat_context.get("current_strategy"),
-            "session_metadata": {
-                "last_updated": chat_context.get("last_updated"),
-                "has_data": "dataframe" in session_store[session_id],
-                "has_results": "pipeline_result" in session_store[session_id]
-            }
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"History retrieval failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-def _generate_action_suggestions(intent: Dict, strategy: Dict) -> List[str]:
-    """Generate actionable suggestions based on intent and strategy"""
-    suggestions = []
-    
-    if intent.get("clarification_needed", False):
-        suggestions.append("Please provide more details about your target variable or analysis goals")
-    
-    if not strategy.get("target_column"):
-        suggestions.append("Specify which column you want to predict or analyze")
-    
-    if strategy.get("task_type") == "classification":
-        suggestions.append("Consider enabling feature generation for better classification performance")
-    elif strategy.get("task_type") == "regression":
-        suggestions.append("Feature selection might help improve regression accuracy")
-    
-    if intent.get("confidence", 0) < 0.7:
-        suggestions.append("Consider providing more specific details about your analysis requirements")
-    
-    return suggestions
-
-def _compose_assistant_text(intent: Dict, strategy: Dict, questions: List[str]) -> str:
-    """Compose a friendly, single-shot assistant message to avoid repetitive questioning."""
-    try:
-        task = (strategy or {}).get("task_type") or (intent or {}).get("task_type") or "analysis"
-        target = (strategy or {}).get("target_column") or (intent or {}).get("target_variable")
-        base = f"Great — I'll set up a {task} pipeline."
-        if target:
-            base = f"Great — I'll set up {task} to predict {target}."
-        if questions:
-            return base + " Before I proceed, could you confirm: " + " | ".join(questions)
-        return base + " Say 'run' to start processing, or specify a target/task if you want to change it."
-    except Exception:
-        return "I'll proceed. Say 'run' to start processing."
-
-def _compare_intent_and_strategy(old_intent: Dict, old_strategy: Dict, new_intent: Dict, new_strategy: Dict) -> Dict:
-    """Compare old and new intent/strategy to highlight changes"""
-    changes = {
-        "intent_changes": [],
-        "strategy_changes": []
-    }
-    
-    # Compare intent changes
-    if old_intent.get("task_type") != new_intent.get("task_type"):
-        changes["intent_changes"].append(f"Task type changed from {old_intent.get('task_type')} to {new_intent.get('task_type')}")
-    
-    if old_intent.get("target_variable") != new_intent.get("target_variable"):
-        changes["intent_changes"].append(f"Target variable updated to {new_intent.get('target_variable')}")
-    
-    # Compare strategy changes
-    if old_strategy.get("target_column") != new_strategy.get("target_column"):
-        changes["strategy_changes"].append(f"Target column updated to {new_strategy.get('target_column')}")
-    
-    old_config = old_strategy.get("configuration", {})
-    new_config = new_strategy.get("configuration", {})
-    
-    for key in ["enable_feature_generation", "enable_feature_selection", "enable_intelligence"]:
-        if old_config.get(key) != new_config.get(key):
-            changes["strategy_changes"].append(f"{key} changed to {new_config.get(key)}")
-    
-    return changes
-
-# RAG System Endpoints
-
-@app.post("/api/rag/add_document")
-async def add_document_to_rag(content: str = Form(), metadata: str = Form(default="{}"), 
-                             document_type: str = Form(default="general"), session_id: Optional[str] = Form(default=None)):
-    """Add a document to the RAG system"""
-    try:
-        metadata_dict = json.loads(metadata) if metadata else {}
-        
-        doc_id = rag_system.add_document(
-            content=content,
-            metadata=metadata_dict,
-            document_type=document_type,
-            session_id=session_id
-        )
-        
-        return {
-            "status": "success" if doc_id else "failed",
-            "document_id": doc_id,
-            "message": "Document added successfully" if doc_id else "Failed to add document"
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Document addition failed: {str(e)}"
-        }
-
-@app.get("/api/rag/search")
-async def search_rag_documents(query: str, top_k: int = 5, session_id: Optional[str] = None):
-    """Search for relevant documents in RAG system"""
-    try:
-        results = rag_system.retrieve_relevant_documents(query, top_k, session_id)
-        
-        search_results = []
-        for result in results:
-            search_results.append({
-                "document_id": result.document.id,
-                "content": result.document.content[:300] + "..." if len(result.document.content) > 300 else result.document.content,
-                "metadata": result.document.metadata,
-                "score": result.score,
-                "relevance": result.relevance,
-                "timestamp": result.document.timestamp
-            })
-        
-        return {
-            "status": "success",
-            "query": query,
-            "results": search_results,
-            "total_results": len(search_results)
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Search failed: {str(e)}"
-        }
-
-@app.get("/api/rag/{session_id}/context")
-async def get_session_rag_context(session_id: str):
-    """Get all RAG context for a specific session"""
-    try:
-        context = rag_system.get_session_context(session_id)
-        
-        return {
-            "status": "success",
-            "session_id": session_id,
-            "context": context
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Context retrieval failed: {str(e)}"
-        }
-
-@app.get("/api/rag/analytics")
-async def get_rag_analytics():
-    """Get RAG system analytics and statistics"""
-    try:
-        analytics = rag_system.get_analytics()
-        
-        return {
-            "status": "success",
-            "analytics": analytics,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Analytics generation failed: {str(e)}"
-        }
-
-@app.post("/api/rag/cleanup")
-async def cleanup_rag_documents(days: int = 30):
-    """Clean up old RAG documents"""
-    try:
-        deleted_count = rag_system.cleanup_old_documents(days)
-        
-        return {
-            "status": "success",
-            "deleted_documents": deleted_count,
-            "retention_days": days,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Cleanup failed: {str(e)}"
-        }
-
-# ===== KNOWLEDGE GRAPH API ENDPOINTS =====
-
-try:
-    from .knowledge_graph.service import KnowledgeGraphService
-    from .knowledge_graph.query_translator import NaturalLanguageQueryTranslator, QueryResult
-    KNOWLEDGE_GRAPH_AVAILABLE = True
-    
-    # Initialize knowledge graph service and translator
-    knowledge_graph_service = None
-    query_translator = None
-    
-    def get_knowledge_graph_service():
-        global knowledge_graph_service, query_translator
-        if knowledge_graph_service is None and DATABASE_AVAILABLE:
-            try:
-                from .knowledge_graph.service import Neo4jGraphDatabase, PostgresGraphDatabase
-                
-                # Use Neo4j by default, fallback to PostgreSQL
-                try:
-                    db = Neo4jGraphDatabase(
-                        uri="bolt://localhost:7687",
-                        username="neo4j", 
-                        password="password"
-                    )
-                    knowledge_graph_service = KnowledgeGraphService(db)
-                    if knowledge_graph_service.initialize():
-                        query_translator = NaturalLanguageQueryTranslator(llm_interface)
-                        return knowledge_graph_service
-                except Exception:
-                    # Fallback to PostgreSQL
-                    db = PostgresGraphDatabase("postgresql://user:password@localhost:5432/datainsight")
-                    knowledge_graph_service = KnowledgeGraphService(db)
-                    if knowledge_graph_service.initialize():
-                        query_translator = NaturalLanguageQueryTranslator(llm_interface)
-                        return knowledge_graph_service
-            except Exception as e:
-                print(f"Failed to initialize knowledge graph: {e}")
-        
-        return knowledge_graph_service
-
-except ImportError:
-    KNOWLEDGE_GRAPH_AVAILABLE = False
-
 
 class KnowledgeQueryRequest(BaseModel):
     query: str
     limit: Optional[int] = 10
     include_explanation: bool = True
 
+class DataExplorationRequest(BaseModel):
+    session_id: str
+    request_type: str
+    parameters: Optional[Dict[str, Any]] = None
 
-@app.post("/api/knowledge/query")
-async def query_knowledge_graph(request: KnowledgeQueryRequest):
-    """Query the knowledge graph using natural language"""
-    if not KNOWLEDGE_GRAPH_AVAILABLE:
-        raise HTTPException(
-            status_code=501, 
-            detail="Knowledge graph functionality not available"
-        )
-    
-    kg_service = get_knowledge_graph_service()
-    if not kg_service or not query_translator:
-        raise HTTPException(
-            status_code=503,
-            detail="Knowledge graph service not initialized"
-        )
-    
+@app.post("/api/explore")
+async def explore_data(request: DataExplorationRequest):
+    """Handle data exploration and visualization requests"""
     try:
-        start_time = datetime.now()
+        session_id = request.session_id
         
-        # Translate natural language to graph query
-        graph_query = query_translator.translate_query(
-            request.query, 
-            database_type="neo4j"  # or detect from service
-        )
+        if session_id not in session_store or "dataframe" not in session_store[session_id]:
+            raise HTTPException(status_code=400, detail="No data found for this session. Please upload data first.")
         
-        if not graph_query:
+        df = session_store[session_id]["dataframe"]
+        request_type = request.request_type.lower()
+        params = request.parameters or {}
+        
+        if request_type in ["head", "first", "top", "beginning"]:
+            n = params.get("n", 10)
+            result = data_explorer.get_data_head(df, n)
             return {
-                "status": "error",
-                "error": "Could not translate query to graph format",
-                "query": request.query
+                "status": "success",
+                "type": "data_table",
+                "data": result,
+                "description": f"First {n} rows of the dataset"
             }
         
-        # Execute the query
-        results = kg_service.database.execute_query(graph_query)
+        elif request_type in ["tail", "last", "bottom", "end"]:
+            n = params.get("n", 10)
+            result = data_explorer.get_data_tail(df, n)
+            return {
+                "status": "success",
+                "type": "data_table", 
+                "data": result,
+                "description": f"Last {n} rows of the dataset"
+            }
         
-        execution_time = (datetime.now() - start_time).total_seconds()
+        elif request_type in ["sample", "random"]:
+            n = params.get("n", 10)
+            result = data_explorer.get_data_sample(df, n)
+            return {
+                "status": "success",
+                "type": "data_table",
+                "data": result,
+                "description": f"Random sample of {n} rows from the dataset"
+            }
         
-        # Generate natural language response
-        natural_response = ""
-        if request.include_explanation:
-            natural_response = query_translator.synthesize_natural_response(
-                graph_query, results, request.query
+        elif request_type in ["info", "summary", "describe"]:
+            result = data_explorer.get_data_info(df)
+            return {
+                "status": "success",
+                "type": "data_info",
+                "data": result,
+                "description": "Dataset information and statistics"
+            }
+        
+        elif request_type in ["correlation", "heatmap", "corr"]:
+            viz_result = data_explorer.create_correlation_heatmap(df)
+            return {
+                "status": "success",
+                "type": "visualization",
+                "chart_base64": viz_result.chart_base64,
+                "description": viz_result.description,
+                "insights": viz_result.insights
+            }
+        
+        elif request_type in ["distribution", "histogram", "dist"]:
+            columns = params.get("columns")
+            viz_result = data_explorer.create_distribution_plots(df, columns)
+            return {
+                "status": "success",
+                "type": "visualization",
+                "chart_base64": viz_result.chart_base64,
+                "description": viz_result.description,
+                "insights": viz_result.insights
+            }
+        
+        elif request_type in ["scatter", "scatterplot"]:
+            x_col = params.get("x_column")
+            y_col = params.get("y_column")
+            color_col = params.get("color_column")
+            
+            if not x_col or not y_col:
+                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                if len(numeric_cols) >= 2:
+                    x_col = x_col or numeric_cols[0]
+                    y_col = y_col or numeric_cols[1]
+                else:
+                    raise HTTPException(status_code=400, detail="Need at least 2 numeric columns for scatter plot")
+            
+            viz_result = data_explorer.create_scatter_plot(df, x_col, y_col, color_col)
+            return {
+                "status": "success",
+                "type": "visualization",
+                "chart_base64": viz_result.chart_base64,
+                "description": viz_result.description,
+                "insights": viz_result.insights
+            }
+        
+        elif request_type in ["boxplot", "box", "outliers"]:
+            columns = params.get("columns")
+            viz_result = data_explorer.create_box_plots(df, columns)
+            return {
+                "status": "success",
+                "type": "visualization",
+                "chart_base64": viz_result.chart_base64,
+                "description": viz_result.description,
+                "insights": viz_result.insights
+            }
+        
+        elif request_type in ["missing", "null", "na"]:
+            viz_result = data_explorer.create_missing_data_heatmap(df)
+            return {
+                "status": "success",
+                "type": "visualization",
+                "chart_base64": viz_result.chart_base64,
+                "description": viz_result.description,
+                "insights": viz_result.insights
+            }
+        
+        elif request_type == "suggestions":
+            characteristics = data_explorer.analyze_data_characteristics(df)
+            return {
+                "status": "success",
+                "type": "suggestions",
+                "data": characteristics,
+                "description": "Data characteristics and visualization suggestions"
+            }
+        
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown request type: {request_type}")
+    
+    except Exception as e:
+        logger.error(f"Data exploration error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Exploration failed: {str(e)}")
+
+class AgentChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+    async_execution: bool = False
+
+class AgentTaskStatus(BaseModel):
+    task_id: str
+    status: str
+    result: Optional[str] = None
+    error: Optional[str] = None
+
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import uuid
+
+agent_sessions = {}
+async_tasks = {}
+task_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="DataInsight-Agent-")
+performance_monitor = None
+context_manager = None
+create_enhanced_agent_executor = None
+
+try:
+    from data_scientist_chatbot.app.agent import create_enhanced_agent_executor
+    from data_scientist_chatbot.app.performance_monitor import PerformanceMonitor
+    from data_scientist_chatbot.app.context_manager import ContextManager
+    performance_monitor = PerformanceMonitor()
+    context_manager = ContextManager()
+    AGENT_AVAILABLE = True
+except ImportError as e:
+    print(f"Agent import failed: {e}")
+    print("Agent service will not be available - install missing dependencies")
+    AGENT_AVAILABLE = False
+    create_enhanced_agent_executor = None
+
+def run_agent_task(agent, user_message, session_id):
+    start_time = time.time()
+    
+    try:
+        if performance_monitor:
+            performance_monitor.record_metric(
+                session_id=session_id,
+                metric_name="agent_task_started",
+                value=1.0,
+                context={"message_length": len(user_message)}
             )
         
-        return {
-            "status": "success",
-            "original_query": request.query,
-            "graph_query": graph_query,
-            "results": results[:request.limit],
-            "result_count": len(results),
-            "execution_time": execution_time,
-            "natural_language_response": natural_response,
-            "timestamp": datetime.now().isoformat()
-        }
+        from langchain_core.messages import HumanMessage
+        response = agent.invoke(
+            {"messages": [HumanMessage(content=user_message)], "session_id": session_id},
+            config={"configurable": {"thread_id": session_id}}
+        )
+        
+        execution_time = time.time() - start_time
+        if performance_monitor:
+            performance_monitor.record_metric(
+                session_id=session_id,
+                metric_name="agent_task_completed",
+                value=execution_time,
+                context={
+                    "success": True,
+                    "response_length": len(response['messages'][-1].content) if response.get('messages') else 0
+                }
+            )
+        
+        return {"success": True, "response": response['messages'][-1].content, "execution_time": execution_time}
         
     except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Knowledge graph query failed: {str(e)}",
-            "query": request.query
-        }
+        execution_time = time.time() - start_time
+        
+        if performance_monitor:
+            performance_monitor.record_metric(
+                session_id=session_id,
+                metric_name="agent_task_failed",
+                value=execution_time,
+                context={"error": str(e), "success": False}
+            )
+        
+        return {"success": False, "error": str(e), "execution_time": execution_time}
 
-
-@app.get("/api/knowledge/insights")
-async def get_knowledge_insights():
-    """Get high-level insights from the knowledge graph"""
-    if not KNOWLEDGE_GRAPH_AVAILABLE:
-        raise HTTPException(
-            status_code=501,
-            detail="Knowledge graph functionality not available"
-        )
-    
-    kg_service = get_knowledge_graph_service()
-    if not kg_service:
-        raise HTTPException(
-            status_code=503,
-            detail="Knowledge graph service not initialized"
-        )
+@app.post("/api/agent/chat")
+async def agent_chat(request: AgentChatRequest):
+    """Chat with AI data science agent using existing session system."""
+    if not AGENT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Agent service not available")
     
     try:
-        insights = {}
+        session_id = request.session_id
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Session ID required")
         
-        # Get dataset statistics
-        dataset_query = """
-        MATCH (d:Dataset) 
-        RETURN count(d) as total_datasets, 
-               avg(d.quality_score) as avg_quality_score,
-               collect(DISTINCT d.domain) as domains
-        """
-        dataset_stats = kg_service.database.execute_query(dataset_query)
-        insights["datasets"] = dataset_stats[0] if dataset_stats else {}
+        # Create session in session_store if it doesn't exist
+        if session_id not in session_store:
+            session_store[session_id] = {"session_id": session_id, "created_at": datetime.now()}
         
-        # Get model performance statistics
-        model_query = """
-        MATCH (m:Model)
-        RETURN count(m) as total_models,
-               avg(m.trust_score) as avg_trust_score,
-               collect(DISTINCT m.algorithm) as algorithms
-        """
-        model_stats = kg_service.database.execute_query(model_query)
-        insights["models"] = model_stats[0] if model_stats else {}
+        # Initialize enhanced agent for this session if needed
+        if session_id not in agent_sessions:
+            if create_enhanced_agent_executor is None:
+                raise HTTPException(status_code=503, detail="Agent service not available")
+            agent_sessions[session_id] = create_enhanced_agent_executor(session_id)
         
-        # Get project statistics
-        project_query = """
-        MATCH (p:Project)
-        RETURN count(p) as total_projects,
-               count(CASE WHEN p.status = 'completed' THEN 1 END) as completed_projects,
-               collect(DISTINCT p.domain) as project_domains
-        """
-        project_stats = kg_service.database.execute_query(project_query)
-        insights["projects"] = project_stats[0] if project_stats else {}
+        agent = agent_sessions[session_id]
         
-        # Get top performing features
-        feature_query = """
-        MATCH (f:Feature)
-        WHERE f.importance_score IS NOT NULL
-        RETURN f.name, f.importance_score, f.generation_method
-        ORDER BY f.importance_score DESC
-        LIMIT 10
-        """
-        top_features = kg_service.database.execute_query(feature_query)
-        insights["top_features"] = top_features
+        # Data is already loaded in the stateful sandbox, just use the user's message
+        user_message = request.message
         
-        return {
-            "status": "success",
-            "insights": insights,
-            "timestamp": datetime.now().isoformat()
-        }
+        # Check for long-running tasks (model building, complex analysis)
+        is_long_task = any(keyword in request.message.lower() for keyword in 
+                         ['build model', 'train model', 'complex analysis', 'deep analysis', 'correlation analysis'])
         
+        if request.async_execution or is_long_task:
+            # Run asynchronously
+            task_id = str(uuid.uuid4())
+            
+            # Submit task to thread pool
+            future = task_executor.submit(run_agent_task, agent, user_message, session_id)
+            async_tasks[task_id] = {
+                "future": future,
+                "status": "running",
+                "session_id": session_id,
+                "created_at": time.time()
+            }
+            
+            if performance_monitor:
+                performance_monitor.record_metric(
+                    session_id=session_id,
+                    metric_name="async_task_created",
+                    value=1.0,
+                    context={"task_id": task_id}
+                )
+            
+            return {
+                "status": "async",
+                "task_id": task_id,
+                "message": "Task started. Use /api/agent/task-status to check progress.",
+                "session_id": session_id
+            }
+        else:
+            # Run synchronously
+            from langchain_core.messages import HumanMessage
+            print(f"DEBUG: Using agent type: {type(agent)}")
+            response = agent.invoke({
+                "messages": [HumanMessage(content=user_message)],
+                "session_id": session_id
+            })
+            
+            # Extract plots from tool execution results
+            plots = []
+            for msg in response.get('messages', []):
+                # Check for ToolMessage content containing plot filenames
+                if hasattr(msg, 'content') and 'PLOT_SAVED:' in str(msg.content):
+                    import re
+                    # Extract plot filenames from PLOT_SAVED: messages
+                    plot_files = re.findall(r'PLOT_SAVED:([^\s]+\.png)', str(msg.content))
+                    for plot_file in plot_files:
+                        plots.append(f"/static/plots/{plot_file}")
+                # Also check for existing plot URLs in content
+                elif hasattr(msg, 'content') and '/static/plots/' in str(msg.content):
+                    import re
+                    plot_urls = re.findall(r'/static/plots/[^\s"\']+\.(?:png|jpg|jpeg|svg)', str(msg.content))
+                    plots.extend(plot_urls)
+            
+            messages = response.get('messages', [])
+            final_message = messages[-1] if messages else None
+            
+            # Use the final message content directly
+            if final_message:
+                content = final_message.content
+            else:
+                content = "Task completed successfully."
+            
+            print(f"DEBUG: Final response content: {content[:100]}")
+            print(f"DEBUG: Response has {len(plots)} plots")
+            
+            return {
+                "status": "success", 
+                "response": content,
+                "session_id": session_id,
+                "plots": plots
+            }
     except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Failed to generate insights: {str(e)}"
-        }
+        return {"status": "error", "detail": f"Agent chat error: {str(e)}"}
 
-
-@app.get("/api/knowledge/recommendations/{project_domain}")
-async def get_domain_recommendations(project_domain: str, limit: int = 5):
-    """Get recommendations for a specific project domain"""
-    if not KNOWLEDGE_GRAPH_AVAILABLE:
-        raise HTTPException(
-            status_code=501,
-            detail="Knowledge graph functionality not available"
-        )
+@app.get("/api/agent/task-status/{task_id}")
+async def get_task_status(task_id: str):
+    """Check status of async agent task."""
+    if task_id not in async_tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
     
-    kg_service = get_knowledge_graph_service()
-    if not kg_service:
-        raise HTTPException(
-            status_code=503,
-            detail="Knowledge graph service not initialized"
-        )
+    task_info = async_tasks[task_id]
+    future = task_info["future"]
     
-    try:
-        # Get successful models for this domain
-        model_query = f"""
-        MATCH (m:Model)-[:APPLIES_TO]->(p:Project)
-        WHERE p.domain = '{project_domain}' AND p.status = 'completed'
-        RETURN m.algorithm, m.performance_metrics, m.trust_score, p.name
-        ORDER BY m.trust_score DESC
-        LIMIT {limit}
-        """
-        
-        successful_models = kg_service.database.execute_query(model_query)
-        
-        # Get important features for this domain
-        feature_query = f"""
-        MATCH (f:Feature)-[:TRAINED_ON]->(m:Model)-[:APPLIES_TO]->(p:Project)
-        WHERE p.domain = '{project_domain}' AND f.importance_score IS NOT NULL
-        RETURN f.name, avg(f.importance_score) as avg_importance, f.generation_method
-        ORDER BY avg_importance DESC
-        LIMIT {limit}
-        """
-        
-        important_features = kg_service.database.execute_query(feature_query)
-        
+    if future.done():
+        try:
+            result = future.result()
+            if result["success"]:
+                async_tasks[task_id]["status"] = "completed"
+                return {
+                    "status": "completed",
+                    "task_id": task_id,
+                    "result": result["response"]
+                }
+            else:
+                async_tasks[task_id]["status"] = "failed"
+                return {
+                    "status": "failed",
+                    "task_id": task_id,
+                    "error": result["error"]
+                }
+        except Exception as e:
+            async_tasks[task_id]["status"] = "failed"
+            return {
+                "status": "failed",
+                "task_id": task_id,
+                "error": str(e)
+            }
+    else:
         return {
-            "status": "success",
-            "domain": project_domain,
-            "recommendations": {
-                "successful_models": successful_models,
-                "important_features": important_features
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Failed to generate recommendations: {str(e)}"
+            "status": "running",
+            "task_id": task_id,
+            "message": "Task is still processing..."
         }
 
-
-@app.get("/api/knowledge/schema")
-async def get_knowledge_graph_schema():
-    """Get the knowledge graph schema information"""
-    if not KNOWLEDGE_GRAPH_AVAILABLE:
-        raise HTTPException(
-            status_code=501,
-            detail="Knowledge graph functionality not available"
-        )
-    
-    try:
-        from .knowledge_graph.schema import GraphSchema, NodeType, RelationshipType
-        
-        schema = GraphSchema()
-        
-        return {
-            "status": "success",
-            "schema": {
-                "node_types": [node_type.value for node_type in NodeType],
-                "relationship_types": [rel_type.value for rel_type in RelationshipType],
-                "relationship_constraints": schema.get_relationship_constraints()
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error", 
-            "error": f"Failed to get schema: {str(e)}"
-        }
-
-# Enhanced data processing endpoints with RAG integration
-
-@app.post("/api/data/{session_id}/profile")
-async def generate_intelligence_profile_with_rag(session_id: str, request: ProfilingRequest):
-    """Generate comprehensive intelligent data profile with RAG storage"""
+@app.get("/api/agent/artifacts/{session_id}/{filename}")
+async def get_agent_artifact(session_id: str, filename: str):
+    """Serve generated files (plots, reports) from agent execution."""
     if session_id not in session_store:
         raise HTTPException(status_code=404, detail="Session not found")
     
     try:
-        df = session_store[session_id]["dataframe"]
+        # Check in generated_plots directory with session-specific naming
+        artifact_path = Path(__file__).parent.parent / "data_scientist_chatbot" / "generated_plots" / filename
         
-        # Generate intelligence profile
-        if "intelligence_profile" in session_store[session_id] and not request.deep_analysis:
-            intelligence_profile = session_store[session_id]["intelligence_profile"]
+        if not artifact_path.exists():
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        
+        # Determine media type
+        if filename.endswith('.png'):
+            media_type = "image/png"
+        elif filename.endswith('.jpg') or filename.endswith('.jpeg'):
+            media_type = "image/jpeg"
+        elif filename.endswith('.html'):
+            media_type = "text/html"
+        elif filename.endswith('.csv'):
+            media_type = "text/csv"
         else:
-            intelligence_profile = data_profiler.profile_dataset(df)
-            session_store[session_id]["intelligence_profile"] = intelligence_profile
-        
-        # Add intelligence profile to RAG system
-        rag_system.add_intelligence_profile(intelligence_profile, session_id)
-        
-        # Filter response based on request parameters (original logic)
-        response_data = {}
-        
-        column_profiles = intelligence_profile.get('column_profiles', {})
-        response_data['column_profiles'] = {
-            col: {
-                'semantic_type': profile.semantic_type.value,
-                'confidence': profile.confidence,
-                'evidence': profile.evidence,
-                'recommendations': profile.recommendations
-            }
-            for col, profile in column_profiles.items()
-        }
-        
-        if request.include_domain_detection:
-            domain_analysis = intelligence_profile.get('domain_analysis', {})
-            response_data['domain_analysis'] = domain_analysis
-        
-        if request.include_relationships:
-            relationship_analysis = intelligence_profile.get('relationship_analysis', {})
-            response_data['relationship_analysis'] = relationship_analysis
-        
-        response_data['overall_recommendations'] = intelligence_profile.get('overall_recommendations', [])
-        
-        response_data['profiling_metadata'] = {
-            'deep_analysis': request.deep_analysis,
-            'total_columns': len(df.columns),
-            'total_rows': len(df),
-            'profile_timestamp': datetime.now().isoformat(),
-            'rag_stored': True
-        }
-        
-        return {
-            "status": "success",
-            "intelligence_profile": response_data,
-            "session_id": session_id
-        }
+            media_type = "application/octet-stream"
+            
+        return FileResponse(
+            artifact_path, 
+            media_type=media_type,
+            filename=filename
+        )
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Profiling error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error serving artifact: {str(e)}")
+
+@app.get("/api/agent/performance/{session_id}")
+async def get_agent_performance(session_id: str):
+    """Get performance metrics for a specific agent session."""
+    if not AGENT_AVAILABLE or not performance_monitor:
+        raise HTTPException(status_code=503, detail="Performance monitoring not available")
+    
+    try:
+        performance_summary = performance_monitor.get_performance_summary(session_id=session_id, hours=24)
+        slow_operations = performance_monitor.get_slow_operations(threshold_seconds=0.5, limit=5)
+        cache_optimization = performance_monitor.optimize_cache()
+        
+        return {
+            "session_id": session_id,
+            "performance_summary": performance_summary,
+            "slow_operations": slow_operations,
+            "cache_optimization": cache_optimization,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving performance metrics: {str(e)}")
+
+@app.get("/api/agent/system-performance")
+async def get_system_performance():
+    """Get overall system performance metrics."""
+    if not AGENT_AVAILABLE or not performance_monitor:
+        raise HTTPException(status_code=503, detail="Performance monitoring not available")
+    
+    try:
+        # Record current system metrics
+        performance_monitor.record_system_metrics()
+        
+        # Get comprehensive performance summary
+        overall_summary = performance_monitor.get_performance_summary(hours=24)
+        slow_operations = performance_monitor.get_slow_operations(threshold_seconds=1.0, limit=10)
+        cache_stats = performance_monitor.optimize_cache()
+        
+        return {
+            "system_performance": overall_summary,
+            "slow_operations": slow_operations,
+            "cache_performance": cache_stats,
+            "active_sessions": len(agent_sessions),
+            "active_tasks": len(async_tasks),
+            "thread_pool_stats": {
+                "max_workers": task_executor._max_workers if task_executor else 0,
+                "current_threads": len(task_executor._threads) if task_executor and hasattr(task_executor, '_threads') else 0
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving system performance: {str(e)}")
+
+@app.post("/api/agent/performance/cleanup")
+async def cleanup_performance_data(days_old: int = 7):
+    """Clean up old performance data to manage storage."""
+    if not AGENT_AVAILABLE or not performance_monitor:
+        raise HTTPException(status_code=503, detail="Performance monitoring not available")
+    
+    try:
+        deleted_metrics = performance_monitor.cleanup_old_metrics(days_old)
+        deleted_contexts = context_manager.cleanup_old_contexts(days_old) if context_manager else 0
+        
+        return {
+            "deleted_metrics": deleted_metrics,
+            "deleted_contexts": deleted_contexts,
+            "days_old": days_old,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error cleaning up performance data: {str(e)}")
 
 @app.get("/api/health")
 async def health_check():
-    """Application health check endpoint."""
+    """Enhanced application health check endpoint with performance monitoring."""
     health_status = {"status": "healthy", "timestamp": datetime.now().isoformat()}
     
     if DATABASE_AVAILABLE:
@@ -2951,6 +2443,21 @@ async def health_check():
             health_status["database"] = "unavailable"
     else:
         health_status["database"] = "not_configured"
+    
+    health_status["agent_service"] = "available" if AGENT_AVAILABLE else "unavailable"
+    
+    # Add performance monitoring status
+    if AGENT_AVAILABLE and performance_monitor:
+        try:
+            cache_stats = performance_monitor.cache.get_stats()
+            health_status["performance_monitoring"] = "active"
+            health_status["cache_utilization"] = f"{cache_stats['size']}/{cache_stats['max_size']}"
+            health_status["active_agent_sessions"] = len(agent_sessions)
+            health_status["thread_pool_workers"] = task_executor._max_workers if task_executor else 0
+        except:
+            health_status["performance_monitoring"] = "degraded"
+    else:
+        health_status["performance_monitoring"] = "unavailable"
     
     return health_status
 
