@@ -1,4 +1,4 @@
-"""Adaptive Learning System for Continuous Model Improvement"""
+"""Adaptive Learning System for Continuous Model Improvement with Persistent Meta-Learning"""
 
 import numpy as np
 import pandas as pd
@@ -8,6 +8,9 @@ from enum import Enum
 import time
 import pickle
 import warnings
+from datetime import datetime
+import hashlib
+import json
 warnings.filterwarnings('ignore')
 
 from sklearn.base import clone
@@ -16,6 +19,13 @@ from sklearn.model_selection import train_test_split
 
 from ..data_quality.drift_monitor import ComprehensiveDriftMonitor, DriftResult
 from ..model_selection.performance_validator import ProductionModelValidator, ModelPerformance, TaskType
+from .persistent_storage import (
+    PersistentMetaDatabase, 
+    DatasetCharacteristics, 
+    ProjectConfig, 
+    PipelineExecution,
+    create_dataset_characteristics
+)
 
 class LearningStrategy(Enum):
     REACTIVE = "reactive"
@@ -61,15 +71,25 @@ class AdaptiveConfig:
 
 class AdaptiveLearningSystem:
     
-    def __init__(self, config: Optional[AdaptiveConfig] = None):
+    def __init__(self, config: Optional[AdaptiveConfig] = None, 
+                 enable_persistence: bool = True,
+                 db_path: Optional[str] = None):
         self.config = config or AdaptiveConfig()
         self.drift_monitor = ComprehensiveDriftMonitor()
         self.validator = ProductionModelValidator()
         
+        # In-memory storage (for backward compatibility)
         self.model_history: List[Dict[str, Any]] = []
         self.performance_history: List[float] = []
         self.learning_events: List[LearningEvent] = []
         self.baseline_performance: Optional[float] = None
+        
+        # Persistent storage
+        self.enable_persistence = enable_persistence
+        if enable_persistence:
+            self.meta_db = PersistentMetaDatabase(db_path or "data_insight_meta.db")
+        else:
+            self.meta_db = None
         
     def monitor_and_adapt(self, current_model, X_new: pd.DataFrame, y_new: pd.Series,
                          task_type: TaskType, algorithm_name: str = "") -> Dict[str, Any]:
@@ -529,8 +549,7 @@ class AdaptiveLearningSystem:
         return best_model_info['model']
     
     def export_learning_state(self) -> Dict[str, Any]:
-        
-        return {
+        base_state = {
             'baseline_performance': self.baseline_performance,
             'performance_history': self.performance_history,
             'learning_events_summary': [
@@ -545,6 +564,183 @@ class AdaptiveLearningSystem:
             'config': self.config.__dict__,
             'insights': self.get_learning_insights()
         }
+        
+        # Add persistent storage summary if available
+        if self.meta_db:
+            base_state['persistent_summary'] = self.meta_db.get_system_learning_summary()
+        
+        return base_state
+    
+    def record_pipeline_execution(self, 
+                                 dataset: pd.DataFrame,
+                                 target_column: str,
+                                 project_config: Dict[str, Any],
+                                 pipeline_results: Dict[str, Any],
+                                 session_id: str = None,
+                                 domain: str = "general") -> bool:
+        """Record complete pipeline execution for meta-learning"""
+        
+        if not self.meta_db:
+            return False
+        
+        try:
+            # Create dataset characteristics
+            dataset_chars = create_dataset_characteristics(dataset, target_column, domain)
+            
+            # Create project configuration fingerprint
+            config_str = json.dumps(project_config, sort_keys=True)
+            config_hash = hashlib.md5(config_str.encode()).hexdigest()
+            
+            proj_config = ProjectConfig(
+                objective=project_config.get('objective', 'accuracy'),
+                domain=domain,
+                constraints=project_config.get('constraints', {}),
+                config_hash=config_hash,
+                strategy_applied=project_config.get('strategy_applied', 'default'),
+                feature_engineering_enabled=project_config.get('feature_engineering_enabled', True),
+                feature_selection_enabled=project_config.get('feature_selection_enabled', True),
+                security_level=project_config.get('security_level', 'standard'),
+                privacy_level=project_config.get('privacy_level', 'medium'),
+                compliance_requirements=project_config.get('compliance_requirements', [])
+            )
+            
+            # Create pipeline execution record
+            execution = PipelineExecution(
+                execution_id=f"exec_{session_id}_{int(time.time())}" if session_id else f"exec_{int(time.time())}",
+                session_id=session_id or f"session_{int(time.time())}",
+                dataset_characteristics=dataset_chars,
+                project_config=proj_config,
+                pipeline_stages=pipeline_results.get('pipeline_stages', []),
+                execution_time=pipeline_results.get('execution_time', 0.0),
+                final_performance=pipeline_results.get('performance_metrics', {}),
+                trust_score=pipeline_results.get('trust_score', 0.0),
+                validation_success=pipeline_results.get('validation_success', False),
+                budget_compliance_rate=pipeline_results.get('budget_compliance_rate', 0.0),
+                trade_off_efficiency=pipeline_results.get('trade_off_efficiency', 0.0),
+                user_satisfaction=pipeline_results.get('user_satisfaction'),
+                success_rating=pipeline_results.get('success_rating', 0.0),
+                error_count=pipeline_results.get('error_count', 0),
+                recovery_attempts=pipeline_results.get('recovery_attempts', 0),
+                timestamp=datetime.now(),
+                metadata=pipeline_results.get('metadata', {})
+            )
+            
+            return self.meta_db.store_pipeline_execution(execution)
+            
+        except Exception as e:
+            print(f"Failed to record pipeline execution: {e}")
+            return False
+    
+    def get_strategy_recommendations(self, 
+                                   dataset: pd.DataFrame,
+                                   target_column: str = None,
+                                   objective: str = "accuracy",
+                                   domain: str = "general") -> Dict[str, Any]:
+        """Get intelligent strategy recommendations based on historical learning"""
+        
+        if not self.meta_db:
+            return self._get_heuristic_recommendations(dataset, objective, domain)
+        
+        try:
+            # Create dataset characteristics for similarity matching
+            dataset_chars = create_dataset_characteristics(dataset, target_column, domain)
+            
+            # Get recommendations from persistent storage
+            recommendations = self.meta_db.get_recommended_strategies(
+                dataset_chars, objective, domain
+            )
+            
+            # Enhance with real-time adaptive insights
+            if self.learning_events:
+                recent_success_rate = len([e for e in self.learning_events[-10:] if e.success]) / min(10, len(self.learning_events))
+                recommendations['adaptive_insights'] = {
+                    'recent_adaptation_success_rate': recent_success_rate,
+                    'learning_trend': self._calculate_learning_trend(),
+                    'current_baseline_performance': self.baseline_performance
+                }
+            
+            return recommendations
+            
+        except Exception as e:
+            print(f"Failed to get strategy recommendations: {e}")
+            return self._get_heuristic_recommendations(dataset, objective, domain)
+    
+    def _get_heuristic_recommendations(self, dataset: pd.DataFrame, 
+                                     objective: str, domain: str) -> Dict[str, Any]:
+        """Fallback heuristic recommendations when persistent storage unavailable"""
+        n_samples, n_features = dataset.shape
+        
+        return {
+            'recommended_strategies': [{
+                'strategy_name': 'Heuristic_Default',
+                'config': {
+                    'feature_engineering_enabled': n_features < 100 and n_samples > 500,
+                    'feature_selection_enabled': n_features > 20,
+                    'security_level': 'standard',
+                    'privacy_level': 'medium'
+                },
+                'expected_performance': 0.75,
+                'expected_execution_time': n_samples * 0.001,
+                'confidence': 0.6,
+                'evidence': {'type': 'heuristic', 'dataset_size': n_samples}
+            }],
+            'meta_insights': {
+                'recommendation_basis': 'heuristic_fallback',
+                'dataset_complexity': 'high' if n_features > 50 else 'medium'
+            },
+            'confidence_score': 0.6
+        }
+    
+    def learn_from_pipeline_feedback(self, execution_id: str, feedback: Dict[str, Any]) -> bool:
+        """Learn from user feedback on pipeline execution quality"""
+        
+        if not self.meta_db:
+            return False
+        
+        try:
+            # Record user feedback
+            success = self.meta_db.record_user_feedback(execution_id, feedback)
+            
+            # Update internal learning based on feedback
+            if feedback.get('user_rating', 0) < 3.0:  # Poor rating
+                # Reduce confidence in similar strategies
+                self._adjust_strategy_confidence(execution_id, -0.1)
+            elif feedback.get('user_rating', 0) >= 4.0:  # Good rating  
+                # Increase confidence in similar strategies
+                self._adjust_strategy_confidence(execution_id, 0.1)
+            
+            return success
+            
+        except Exception as e:
+            print(f"Failed to process feedback: {e}")
+            return False
+    
+    def _adjust_strategy_confidence(self, execution_id: str, adjustment: float):
+        """Adjust confidence scores based on user feedback (placeholder for future enhancement)"""
+        # This would query the database to find similar executions and adjust their confidence
+        # For now, we just log the adjustment intent
+        pass
+    
+    def get_meta_learning_insights(self) -> Dict[str, Any]:
+        """Get comprehensive meta-learning insights across all recorded executions"""
+        
+        base_insights = self.get_learning_insights()
+        
+        if self.meta_db:
+            persistent_insights = self.meta_db.get_system_learning_summary()
+            return {
+                'session_insights': base_insights,
+                'global_insights': persistent_insights,
+                'learning_maturity': persistent_insights.get('meta_learning_maturity', 0.0),
+                'knowledge_base_size': persistent_insights.get('total_executions', 0),
+                'cross_domain_learning': persistent_insights.get('domains_covered', 0)
+            }
+        else:
+            return {
+                'session_insights': base_insights,
+                'global_insights': {'status': 'persistence_disabled'},
+                'learning_maturity': 0.0
+            }
 
 def create_adaptive_system(config: Optional[AdaptiveConfig] = None) -> AdaptiveLearningSystem:
     return AdaptiveLearningSystem(config)

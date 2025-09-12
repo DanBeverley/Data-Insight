@@ -127,7 +127,7 @@ class ProductionModelValidator:
                     pd.to_datetime(X[col].head(10))
                     return True
             except:
-                continue
+                return False
         
         return False
     
