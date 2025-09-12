@@ -193,7 +193,6 @@ class GraphSchema:
             return False
         
         try:
-            # Basic validation - check required fields exist
             required_fields = schema_class.__annotations__.keys()
             for field in required_fields:
                 if field not in properties and not hasattr(schema_class, field):
