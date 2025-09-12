@@ -13,6 +13,8 @@ from datetime import datetime
 
 from ..intelligence.data_profiler import IntelligentDataProfiler
 from ..intelligence.feature_intelligence import AdvancedFeatureIntelligence
+from ..intelligence.relationship_discovery import RelationshipDiscovery
+from ..intelligence.domain_detector import DomainDetector
 from ..common.data_cleaning import DataCleaner
 from ..common.data_ingestion import DataIngestion
 from ..feature_generation.auto_fe import AutomatedFeatureEngineer
@@ -24,13 +26,19 @@ from ..model_selection.hyperparameter_optimizer import IntelligentHyperparameter
 from ..model_selection.dataset_analyzer import DatasetAnalyzer
 from ..supervised.pipeline import SupervisedPipeline
 from ..unsupervised.pipeline import UnsupervisedPipeline
+from ..unsupervised.analysis import generate_cluster_report
 from ..timeseries.pipeline import TimeSeriesPipeline
 from ..nlp.pipeline import NLPPipeline
+from ..nlp.text_preprocessing import TextPreprocessor
 from ..data_quality.quality_assessor import ContextAwareQualityAssessor
 from ..data_quality.anomaly_detector import MultiLayerAnomalyDetector
 from ..data_quality.drift_monitor import ComprehensiveDriftMonitor
 from ..data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
 from ..mlops.mlops_orchestrator import MLOpsOrchestrator
+from ..mlops.version_control import VersionManager
+from ..mlops.monitoring import PerformanceMonitor
+from ..mlops.deployment_manager import DeploymentManager
+from ..mlops.auto_scaler import PredictiveScaler
 from ..explainability.explanation_engine import ExplanationEngine
 from ..explainability.bias_detector import BiasDetector
 from ..explainability.trust_metrics import TrustMetricsCalculator
@@ -61,16 +69,22 @@ try:
 except ImportError:
     DATABASE_SERVICE_AVAILABLE = False
 
+
 class PipelineStage(Enum):
     INGESTION = "data_ingestion"
     PROFILING = "data_profiling"
+    RELATIONSHIP_DISCOVERY = "relationship_discovery"
+    ANOMALY_DETECTION = "anomaly_detection"
+    DRIFT_MONITORING = "drift_monitoring"
     QUALITY_ASSESSMENT = "quality_assessment"
     MISSING_VALUE_INTELLIGENCE = "missing_value_intelligence"
     CLEANING = "data_cleaning"
+    FEATURE_INTELLIGENCE = "feature_intelligence"
     FEATURE_ENGINEERING = "feature_engineering"
     FEATURE_SELECTION = "feature_selection"
     MODEL_SELECTION = "model_selection"
     VALIDATION = "validation"
+    ADAPTIVE_LEARNING = "adaptive_learning"
     EXPLAINABILITY_ANALYSIS = "explainability_analysis"
     BIAS_ASSESSMENT = "bias_assessment"
     SECURITY_SCAN = "security_scan"
@@ -111,6 +125,7 @@ class PipelineConfig:
     enable_knowledge_graph: bool = True
     knowledge_graph_config: Optional[Dict[str, Any]] = None
 
+
 @dataclass
 class StageResult:
     stage: PipelineStage
@@ -140,7 +155,9 @@ class RobustPipelineOrchestrator:
         
         self.data_ingestion = DataIngestion()
         self.data_profiler = IntelligentDataProfiler()
+        self.domain_detector = DomainDetector()
         self.feature_intelligence = AdvancedFeatureIntelligence()
+        self.relationship_discovery = RelationshipDiscovery()
         self.quality_assessor = ContextAwareQualityAssessor()
         self.anomaly_detector = MultiLayerAnomalyDetector()
         self.drift_monitor = ComprehensiveDriftMonitor()
@@ -150,6 +167,7 @@ class RobustPipelineOrchestrator:
         self.feature_selector = IntelligentFeatureSelector()
         self.model_selector = None  
         self.validation_orchestrator = ValidationOrchestrator()
+
         
         # Database service for experience logging
         if DATABASE_SERVICE_AVAILABLE:
@@ -181,8 +199,16 @@ class RobustPipelineOrchestrator:
         # MLOps integration
         if self.config.enable_mlops:
             self.mlops = MLOpsOrchestrator()
+            self.version_manager = VersionManager()
+            self.performance_monitor = PerformanceMonitor()
+            self.deployment_manager = DeploymentManager()
+            self.auto_scaler = PredictiveScaler()
         else:
             self.mlops = None
+            self.version_manager = None
+            self.performance_monitor = None
+            self.deployment_manager = None
+            self.auto_scaler = None
         
         # Security components
         if self.config.enable_security:
@@ -293,6 +319,7 @@ class RobustPipelineOrchestrator:
                 'technical_config': technical_config,
                 'strategic_guidance': True
             }
+
             
             # Stage 1: Data Ingestion
             ingestion_result = self._execute_stage_with_recovery(
@@ -312,7 +339,25 @@ class RobustPipelineOrchestrator:
             if profiling_result.status != "success":
                 return self._handle_pipeline_failure(profiling_result)
             
-            # Stage 3: Data Quality Assessment
+            # Stage 3: Relationship Discovery
+            relationship_result = self._execute_stage_with_recovery(
+                PipelineStage.RELATIONSHIP_DISCOVERY,
+                lambda: self._execute_relationship_discovery(ingestion_result.data, profiling_result.metadata)
+            )
+            
+            # Stage 4: Anomaly Detection
+            anomaly_result = self._execute_stage_with_recovery(
+                PipelineStage.ANOMALY_DETECTION,
+                lambda: self._execute_anomaly_detection(ingestion_result.data, profiling_result.metadata)
+            )
+            
+            # Stage 5: Drift Monitoring (if historical data available)
+            drift_result = self._execute_stage_with_recovery(
+                PipelineStage.DRIFT_MONITORING,
+                lambda: self._execute_drift_monitoring(ingestion_result.data)
+            )
+            
+            # Stage 6: Data Quality Assessment
             quality_result = self._execute_stage_with_recovery(
                 PipelineStage.QUALITY_ASSESSMENT,
                 lambda: self._execute_quality_assessment(ingestion_result.data, profiling_result.metadata)
@@ -321,7 +366,7 @@ class RobustPipelineOrchestrator:
             if quality_result.status != "success":
                 self.logger.warning("Quality assessment failed, continuing with caution")
             
-            # Stage 4: Missing Value Intelligence
+            # Stage 7: Missing Value Intelligence
             missing_value_result = self._execute_stage_with_recovery(
                 PipelineStage.MISSING_VALUE_INTELLIGENCE,
                 lambda: self._execute_missing_value_intelligence(ingestion_result.data, quality_result.metadata if quality_result.status == "success" else {})
@@ -330,7 +375,7 @@ class RobustPipelineOrchestrator:
             # Use imputed data if available, otherwise use original
             current_data = missing_value_result.data if missing_value_result.status == "success" and missing_value_result.data is not None else ingestion_result.data
             
-            # Stage 5: Data Cleaning
+            # Stage 8: Data Cleaning
             cleaning_result = self._execute_stage_with_recovery(
                 PipelineStage.CLEANING,
                 lambda: self._execute_cleaning(current_data, profiling_result.metadata)
@@ -339,7 +384,13 @@ class RobustPipelineOrchestrator:
             if cleaning_result.status != "success":
                 return self._handle_pipeline_failure(cleaning_result)
             
-            # Stage 6: Intelligent Feature Engineering (conditional)
+            # Stage 9: Feature Intelligence Analysis
+            feature_intel_result = self._execute_stage_with_recovery(
+                PipelineStage.FEATURE_INTELLIGENCE,
+                lambda: self._execute_feature_intelligence(cleaning_result.data, profiling_result.metadata, relationship_result.metadata if relationship_result.status == "success" else {})
+            )
+            
+            # Stage 10: Intelligent Feature Engineering (conditional)
             if feature_generation_enabled:
                 self.logger.info("Executing feature engineering stage")
                 fe_result = self._execute_stage_with_recovery(
@@ -401,13 +452,20 @@ class RobustPipelineOrchestrator:
             if modeling_result.status != "success":
                 return self._handle_pipeline_failure(modeling_result)
             
-            # Stage 9: Validation & Quality Assurance
+            # Stage 13: Validation & Quality Assurance
             validation_result = self._execute_stage_with_recovery(
                 PipelineStage.VALIDATION,
                 lambda: self._execute_validation(modeling_result)
             )
             
-            # Stage 10: Explainability Analysis (if enabled)
+            # Stage 14: Adaptive Learning (if enabled)
+            if self.config.enable_adaptive_learning and self.adaptive_learning:
+                adaptive_result = self._execute_stage_with_recovery(
+                    PipelineStage.ADAPTIVE_LEARNING,
+                    lambda: self._execute_adaptive_learning(modeling_result, validation_result, fs_result)
+                )
+            
+            # Stage 15: Explainability Analysis (if enabled)
             if self.config.enable_explainability:
                 explainability_result = self._execute_stage_with_recovery(
                     PipelineStage.EXPLAINABILITY_ANALYSIS,
@@ -566,13 +624,31 @@ class RobustPipelineOrchestrator:
     def _execute_profiling(self, df: pd.DataFrame) -> StageResult:
         """Execute intelligent data profiling stage"""
         intelligence_profile = self.data_profiler.profile_dataset(df)
+        domain_analysis = self.domain_detector.detect_domain(df)
+        dataset_characteristics = self.dataset_analyzer.analyze_dataset(df)
+        
+        combined_metadata = {
+            'intelligence_profile': intelligence_profile,
+            'domain_analysis': domain_analysis,
+            'dataset_characteristics': dataset_characteristics,
+            'column_profiles': intelligence_profile.get('column_profiles', {}),
+            'data_insights': {
+                'complexity_score': dataset_characteristics.complexity_score,
+                'domain_type': domain_analysis.get('primary_domain', 'unknown'),
+                'data_quality_indicators': intelligence_profile.get('data_quality', {})
+            }
+        }
         
         return StageResult(
             stage=PipelineStage.PROFILING,
             status="success",
             data=df,
-            metadata={'intelligence_profile': intelligence_profile},
-            artifacts={'profile_report': intelligence_profile}
+            metadata=combined_metadata,
+            artifacts={
+                'profile_report': intelligence_profile,
+                'domain_detector': self.domain_detector,
+                'dataset_analyzer': self.dataset_analyzer
+            }
         )
     
     def _execute_cleaning(self, df: pd.DataFrame, profiling_metadata: Dict) -> StageResult:
@@ -782,8 +858,7 @@ class RobustPipelineOrchestrator:
     def _execute_validation(self, modeling_result: StageResult) -> StageResult:
         """Execute comprehensive objective-driven validation with benchmarking and trade-off analysis"""
         
-        start_time = time.time()
-        
+        start_time = time.time()     
         # Legacy validation for backward compatibility
         legacy_validation_metrics = {
             'data_quality_score': self._calculate_data_quality_score(modeling_result),
@@ -902,6 +977,7 @@ class RobustPipelineOrchestrator:
                 'validation_mode': 'legacy'
             },
             execution_time=time.time() - start_time
+
         )
     
     def _execute_export(self, modeling_result: StageResult, 
@@ -1264,7 +1340,7 @@ class RobustPipelineOrchestrator:
     def _execute_mlops_deployment(self, modeling_result: StageResult, 
                                  validation_result: StageResult, 
                                  ingestion_result: StageResult) -> StageResult:
-        """Execute MLOps deployment stage"""
+        """Execute comprehensive MLOps deployment stage with full lifecycle management"""
         try:
             if not self.mlops:
                 raise ValueError("MLOps orchestrator not initialized")
@@ -1277,57 +1353,102 @@ class RobustPipelineOrchestrator:
             if not model:
                 raise ValueError("No model found in modeling results")
             
-            # Create pipeline configuration
-            pipeline_config = {
-                'stages': [stage.value for stage in PipelineStage if stage != PipelineStage.MLOPS_DEPLOYMENT],
-                'config': {
-                    'session_id': self.session_id,
-                    'pipeline_config': self.config.__dict__
-                },
-                'dependencies': {
-                    'pandas': 'latest',
-                    'scikit-learn': 'latest',
-                    'numpy': 'latest'
-                }
-            }
-            
-            # Deploy to MLOps platform
-            deployment_id = self.mlops.deploy_model_pipeline(
-                model=model,
-                pipeline_config=pipeline_config,
-                data_df=ingestion_result.data.head(100),  # Sample for versioning
-                algorithm=algorithm,
-                performance_metrics=performance_metrics,
-                environment=self.config.mlops_environment
-            )
-            
-            # Start monitoring if enabled
-            if self.config.enable_monitoring:
-                self.mlops.monitor_deployment(
-                    deployment_id=deployment_id,
-                    prediction_latency=0.0,
-                    accuracy=performance_metrics.get('overall_score', 0.0),
-                    error_rate=0.0
+            # Version management
+            if self.version_manager:
+                model_version = self.version_manager.create_model_version(
+                    model=model,
+                    algorithm=algorithm,
+                    performance_metrics=performance_metrics,
+                    metadata={'session_id': self.session_id}
+                )
+                
+                data_version = self.version_manager.create_data_version(
+                    data=ingestion_result.data.head(100),
+                    metadata={'processing_timestamp': datetime.now().isoformat()}
                 )
             
-            # Get deployment health status
-            health_status = self.mlops.get_deployment_health(deployment_id)
+            # Deployment management
+            if self.deployment_manager:
+                deployment_config = self.deployment_manager.create_deployment_config(
+                    model_version=model_version.version_id if self.version_manager else 'latest',
+                    environment=self.config.mlops_environment,
+                    resource_requirements={'cpu': 2, 'memory': '4GB'}
+                )
+                
+                deployment = self.deployment_manager.deploy_model(
+                    model=model,
+                    config=deployment_config
+                )
+                deployment_id = deployment.deployment_id
+            else:
+                # Fallback to basic MLOps deployment
+                deployment_id = self.mlops.deploy_model_pipeline(
+                    model=model,
+                    pipeline_config={
+                        'stages': [stage.value for stage in PipelineStage],
+                        'session_id': self.session_id
+                    },
+                    data_df=ingestion_result.data.head(100),
+                    algorithm=algorithm,
+                    performance_metrics=performance_metrics,
+                    environment=self.config.mlops_environment
+                )
+            
+            # Performance monitoring setup
+            monitoring_config = None
+            if self.performance_monitor:
+                monitoring_config = self.performance_monitor.setup_monitoring(
+                    deployment_id=deployment_id,
+                    model_metrics=performance_metrics,
+                    alert_thresholds={'accuracy_drop': 0.05, 'latency_increase': 2.0}
+                )
+                
+                self.performance_monitor.start_monitoring(deployment_id)
+            
+            # Auto-scaling setup
+            scaling_policy = None
+            if self.auto_scaler:
+                scaling_policy = self.auto_scaler.create_scaling_policy(
+                    deployment_id=deployment_id,
+                    target_metrics=['cpu_utilization', 'request_rate'],
+                    thresholds={'scale_up': 70, 'scale_down': 30}
+                )
+                
+                self.auto_scaler.enable_auto_scaling(deployment_id, scaling_policy)
+            
+            # Get comprehensive deployment status
+            health_status = self.mlops.get_deployment_health(deployment_id) if hasattr(self.mlops, 'get_deployment_health') else {'status': 'deployed'}
             
             return StageResult(
                 stage=PipelineStage.MLOPS_DEPLOYMENT,
                 status="success",
-                data=modeling_result.data,  # Pass through the model data
+                data=modeling_result.data,
                 metadata={
                     'deployment_id': deployment_id,
                     'environment': self.config.mlops_environment,
-                    'health_status': health_status.get('health_status', 'unknown'),
+                    'health_status': health_status.get('status', 'unknown'),
                     'deployment_timestamp': datetime.now().isoformat(),
-                    'monitoring_enabled': self.config.enable_monitoring
+                    'version_management': {
+                        'model_version': model_version.version_id if self.version_manager else None,
+                        'data_version': data_version.version_id if self.version_manager else None
+                    },
+                    'monitoring_enabled': monitoring_config is not None,
+                    'auto_scaling_enabled': scaling_policy is not None,
+                    'mlops_components': {
+                        'version_manager': self.version_manager is not None,
+                        'deployment_manager': self.deployment_manager is not None,
+                        'performance_monitor': self.performance_monitor is not None,
+                        'auto_scaler': self.auto_scaler is not None
+                    }
                 },
                 artifacts={
-                    'deployment_config': pipeline_config,
                     'deployment_health': health_status,
-                    'mlops_environment': self.config.mlops_environment
+                    'monitoring_config': monitoring_config,
+                    'scaling_policy': scaling_policy,
+                    'version_manager': self.version_manager,
+                    'deployment_manager': self.deployment_manager,
+                    'performance_monitor': self.performance_monitor,
+                    'auto_scaler': self.auto_scaler
                 }
             )
             

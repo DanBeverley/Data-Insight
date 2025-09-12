@@ -139,6 +139,18 @@ class StrategicTaskConfig(BaseModel):
     max_training_hours: Optional[float] = None
     min_accuracy: Optional[float] = None
 
+class StrategyConfig(BaseModel):
+    objective: str
+    domain: str = "general"
+    risk_level: str = "medium"
+    max_latency_ms: Optional[int] = None
+    max_training_hours: Optional[int] = None
+    min_accuracy: Optional[float] = None
+    protected_attributes: List[str] = []
+    interpretability_required: bool = False
+    compliance_rules: List[str] = []
+    target_column: Optional[str] = None
+
 class DataIngestionRequest(BaseModel):
     url: str
     data_type: str = "csv"
@@ -716,7 +728,7 @@ async def process_data_strategic(session_id: str, config: StrategicTaskConfig):
 async def process_data(session_id: str, config: TaskConfig):
     """Process data with unified RobustPipelineOrchestrator workflow."""
     if session_id not in session_store:
-        return {"status": "error", "detail": "Session not found"}
+        raise HTTPException(status_code=404, detail="Session not found")
     
     try:
         start_time = datetime.now()
@@ -798,7 +810,18 @@ async def process_data(session_id: str, config: TaskConfig):
                 audit_trail_required=False,
                 compliance_rules=[]
             )
+
         )
+
+@app.post("/api/data/{session_id}/process")
+async def process_data(session_id: str, config: TaskConfig):
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    try:
+        start_time = datetime.now()
+        session_data = session_store[session_id]
+        df = session_data["dataframe"]
         
         result_dict = orchestrator.execute_pipeline(
             data_path=temp_file.name,
@@ -812,7 +835,6 @@ async def process_data(session_id: str, config: TaskConfig):
         # Validate pipeline execution
         if result_dict.get('status') != 'success':
             raise Exception(f"Pipeline execution failed: {result_dict.get('error', 'Unknown error')}")
-        
         processing_time = (datetime.now() - start_time).total_seconds()
         
         session_store[session_id].update({
@@ -850,9 +872,13 @@ async def process_data(session_id: str, config: TaskConfig):
                 "intelligence_report": f"/api/data/{session_id}/download/intelligence"
             }
         )
-    
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"status": "error", "detail": f"Processing error: {str(e)}"}
+        error_msg = f"Processing failed: {str(e)}"
+        logging.error(error_msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/api/data/{session_id}/download/{artifact_type}")
 async def download_artifact(session_id: str, artifact_type: str):
