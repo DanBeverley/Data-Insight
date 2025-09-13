@@ -6,47 +6,41 @@
     <title>DataInsight AI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css">
 </head>
 <body>
-    <canvas id="bgParticles"></canvas>
-
     <div id="app">
-        <main class="main">
-            <div class="logo-container">
-                <h1 class="logo">
-                    <span class="logo-icon">[</span>DataInsight AI<span class="logo-icon">]</span>
-                </h1>
-                <div class="logo-subtitle">A.I. Accelerated Intelligence</div>
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">DataInsight AI</div>
+                <div> 
+                    <button id="themeToggle" class="btn-theme" title="Toggle Theme">
+                        <i class="icon-theme"></i> 
+                    </button>
+                    <a href="/static/dashboard.html" id="manualAnalyze" class="btn-header">Manual Mode</a>
+                </div>
             </div>
+        </header>
 
-            <div class="container">
-                <section class="section">
-                    <div class="chat-container">
-                         <a href="dashboard.html" id="manualAnalyze" class="btn manual-analysis-button" title="Switch to Manual Analysis">
-                            <i class="fa-solid fa-sliders"></i>
-                            <span>Manual Mode</span>
-                        </a>
-                        <div class="chat-messages" id="heroChatMessages">
-                             <div class="chat-message bot">
-                                <div class="message-avatar">&gt;</div>
-                                <div class="message-content-wrapper">
-                                    <div class="message-content">
-                                        <p class="scanline-text">Welcome to DataInsight AI. Please upload a dataset to begin.</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="chat-input-area">
-                            <input type="file" id="heroFileInput" accept=".csv,.xlsx,.xls" hidden>
-                            <button id="heroUploadBtn" class="btn" title="Upload dataset"><i class="fa-solid fa-arrow-up-from-bracket"></i></button>
-                            <textarea id="heroChatInput" placeholder="Describe what you want to analyze..." rows="1"></textarea>
-                            <button id="heroSendMessage" class="send-btn" title="Send Message"><i class="fa-solid fa-paper-plane"></i></button>
+        <main class="main">
+            <canvas id="interactiveCube"></canvas>
+            <div class="chat-container">
+                <div class="chat-messages" id="heroChatMessages">
+                    <div class="chat-message bot">
+                        <div class="message-content">
+                            <p>Welcome to DataInsight AI. Please upload a dataset to begin.</p>
                         </div>
                     </div>
-                </section>
+                </div>
+                <div class="chat-input-area">
+                    <input type="file" id="heroFileInput" accept=".csv,.xlsx,.xls" hidden>
+                    <button id="heroUploadBtn" class="btn-input" title="Upload dataset">+</button>
+                    <textarea id="heroChatInput" placeholder="Ask about your data..." rows="1"></textarea>
+                    <button id="heroSendMessage" class="btn-input send-btn" title="Send Message"><i class="fa-solid fa-paper-plane"></i></button>
+                </div>
             </div>
         </main>
     </div>

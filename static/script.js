@@ -18,8 +18,151 @@ class DataInsightApp {
         this.initializeUI();
         this.setupAnimations();
         this.initializeTheme();
+        this.setupInteractiveCube();
+    }
+    setupInteractiveCube() {
+        const canvas = document.getElementById('interactiveCube');
+        if (!canvas || typeof THREE === 'undefined') return;
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+        camera.position.z = 200;
+
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true });
+        renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        const geometry = new THREE.BoxGeometry(150, 150, 150);
+        const edges = new THREE.EdgesGeometry(geometry);
+        this.lineMaterial = new THREE.LineBasicMaterial({ color: 0x444444 });
+        const cube = new THREE.LineSegments(edges, this.lineMaterial);
+        scene.add(cube);
+
+        // --- Particle System Upgrade ---
+        const particleCount = 100; // Reduced for clarity
+        const particlesGeometry = new THREE.BufferGeometry();
+        const posArray = new Float32Array(particleCount * 3);
+        let particleVelocities = []; // Store velocities here
+
+        for (let i = 0; i < particleCount; i++) {
+            posArray[i * 3] = (Math.random() - 0.5) * 140;
+            posArray[i * 3 + 1] = (Math.random() - 0.5) * 140;
+            posArray[i * 3 + 2] = (Math.random() - 0.5) * 140;
+            particleVelocities.push({
+                x: (Math.random() - 0.5) * 0.1,
+                y: (Math.random() - 0.5) * 0.1,
+                z: (Math.random() - 0.5) * 0.1
+            });
+        }
+        particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        this.particleMaterial = new THREE.PointsMaterial({ size: 1.5, color: 0xffffff, transparent: true, opacity: 0.7 });
+        const particles = new THREE.Points(particlesGeometry, this.particleMaterial);
+        scene.add(particles);
+
+        // Line Connection System
+        const lineGeometry = new THREE.BufferGeometry();
+        const maxLines = 10; // Limit the number of visible lines
+        const linePositions = new Float32Array(maxLines * 6);
+        lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+        this.connectingLineMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+        const lineMesh = new THREE.LineSegments(lineGeometry, this.connectingLineMaterial);
+        scene.add(lineMesh);
+        
+        let time = 0; // For floating animation
+
+        const animate = () => {
+            requestAnimationFrame(animate);
+            time += 0.002; 
+
+            // floating rotation 
+            const rotationX = Math.sin(time * 0.7) * 0.5;
+            const rotationY = Math.cos(time * 0.5) * 0.5;
+            const rotationMultiplier = 0.001;
+            cube.rotation.x += rotationX * rotationMultiplier;
+            cube.rotation.y += rotationY * rotationMultiplier;
+            particles.rotation.x += rotationX * rotationMultiplier;
+            particles.rotation.y += rotationY * rotationMultiplier;
+            lineMesh.rotation.x += rotationX * rotationMultiplier;
+            lineMesh.rotation.y += rotationY * rotationMultiplier;
+
+            // Update particle positions for slow floating
+            const positions = particles.geometry.attributes.position.array;
+            for (let i = 0; i < particleCount; i++) {
+                positions[i * 3] += particleVelocities[i].x;
+                positions[i * 3 + 1] += particleVelocities[i].y;
+                positions[i * 3 + 2] += particleVelocities[i].z;
+
+                // Boundary check to keep particles inside the cube
+                if (Math.abs(positions[i * 3]) > 75) particleVelocities[i].x *= -1;
+                if (Math.abs(positions[i * 3 + 1]) > 75) particleVelocities[i].y *= -1;
+                if (Math.abs(positions[i * 3 + 2]) > 75) particleVelocities[i].z *= -1;
+            }
+            particles.geometry.attributes.position.needsUpdate = true;
+
+            let vertexpos = 0;
+            const linePos = lineMesh.geometry.attributes.position.array;
+            const numConnected = 0;
+
+            for (let i = 0; i < particleCount && numConnected < maxLines; i++) {
+                for (let j = i + 1; j < particleCount && numConnected < maxLines; j++) {
+                    const dist = Math.sqrt(
+                        Math.pow(positions[i * 3] - positions[j * 3], 2) +
+                        Math.pow(positions[i * 3 + 1] - positions[j * 3 + 1], 2) +
+                        Math.pow(positions[i * 3 + 2] - positions[j * 3 + 2], 2)
+                    );
+                    
+                    // This creates sparse, random, temporary connections that change each frame
+                    if (dist < 35 && Math.random() > 0.99) { 
+                        linePos[vertexpos++] = positions[i * 3];
+                        linePos[vertexpos++] = positions[i * 3 + 1];
+                        linePos[vertexpos++] = positions[i * 3 + 2];
+                        linePos[vertexpos++] = positions[j * 3];
+                        linePos[vertexpos++] = positions[j * 3 + 1];
+                        linePos[vertexpos++] = positions[j * 3 + 2];
+                    }
+                }
+            }
+            lineMesh.geometry.setDrawRange(0, vertexpos / 3);
+            lineMesh.geometry.attributes.position.needsUpdate = true;
+            
+            this.connectingLineMaterial.opacity = 0.3;
+
+            renderer.render(scene, camera);
+        };
+        animate();
+    }
+    initializeTheme() {
+        const savedTheme = localStorage.getItem('datainsight-theme') || 'dark';
+        this.setTheme(savedTheme);
     }
 
+    setTheme(theme) {
+        document.body.setAttribute('data-theme', theme);
+        localStorage.setItem('datainsight-theme', theme);
+        
+        const themeIcon = document.querySelector('.icon-theme');
+        if (themeIcon) {
+            themeIcon.className = 'icon-theme fa-solid ' + (theme === 'dark' ? 'fa-moon' : 'fa-sun');
+        }
+        // Update 3D object colors based on the theme
+        if (this.particleMaterial && this.lineMaterial && this.connectingLineMaterial) { 
+            const isDark = theme === 'dark';
+            this.particleMaterial.color.set(isDark ? 0xffffff : 0x000000);
+            this.lineMaterial.color.set(isDark ? 0x444444 : 0xdddddd);
+            this.connectingLineMaterial.color.set(isDark ? 0xffffff : 0x000000); 
+        }
+    }
+
+    setupThemeToggle() {
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+            themeToggle.addEventListener('click', () => {
+                const currentTheme = document.body.getAttribute('data-theme') || 'dark';
+                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+                this.setTheme(newTheme);
+            });
+        }
+    }
     generateSessionId() {
         return 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
     }
@@ -31,43 +174,9 @@ class DataInsightApp {
         this.setupIntelligenceFeatures();
         this.setupContinueButton();
         this.setupHeroChatInterface();
-        this.setupBackgroundParticles();
+        //this.setupBackgroundParticles();
         this.setupThemeToggle();
         this.setupManualAnalysisButton();
-    }
-
-    // Theme Management
-    initializeTheme() {
-        const savedTheme = localStorage.getItem('datainsight-theme') || 'dark';
-        this.setTheme(savedTheme);
-    }
-
-    setupThemeToggle() {
-        const themeToggle = document.getElementById('themeToggle');
-        if (themeToggle) {
-            themeToggle.addEventListener('click', () => {
-                const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-                this.setTheme(newTheme);
-            });
-        }
-    }
-
-    setTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme);
-        localStorage.setItem('datainsight-theme', theme);
-        
-        const themeIcon = document.querySelector('.theme-toggle-icon');
-        if (themeIcon) {
-            if (theme === 'light') {
-                themeIcon.className = 'theme-toggle-icon fas fa-sun';
-            } else {
-                themeIcon.className = 'theme-toggle-icon fas fa-moon';
-            }
-        }
-        
-        // Trigger particle system to update colors if it exists
-        this.setupBackgroundParticles();
     }
 
     setupManualAnalysisButton() {
@@ -2185,91 +2294,79 @@ class DataInsightApp {
         }
     }
     
-    setupBackgroundParticles() {
-        const canvas = document.getElementById('bgParticles');
-        if (!canvas) return;
-        
-        canvas.style.position = 'fixed';
-        canvas.style.top = '0';
-        canvas.style.left = '0';
-        canvas.style.width = '100vw';
-        canvas.style.height = '100vh';
-        canvas.style.zIndex = '0';
-
-        const ctx = canvas.getContext('2d');
-        let particles = [];
-        
-        const getThemeColor = () => {
-            const isDark = !document.documentElement.getAttribute('data-theme') || 
-                          document.documentElement.getAttribute('data-theme') === 'dark';
-            return isDark ? '199, 199, 199' : '51, 51, 51';
-        };
-        
-        const initParticles = () => {
-            particles = Array.from({length: 120}, () => ({
-                x: Math.random() * window.innerWidth,
-                y: Math.random() * window.innerHeight,
-                r: Math.random() * 1.5 + 0.5,
-                vx: (Math.random() - 0.5) * 0.3,
-                vy: (Math.random() - 0.5) * 0.3,
-                glow: Math.random() < 0.02,
-            }));
-        };
-        
-        const resize = () => { 
-            canvas.width = window.innerWidth; 
-            canvas.height = window.innerHeight; 
-            initParticles(); // Reinitialize particles on resize
-        };
-        
-        resize();
-        window.addEventListener('resize', resize);
-        
-        function tick() {
-            if (canvas.width <= 0 || canvas.height <= 0) {
-                requestAnimationFrame(tick);
-                return;
-            }
-
-            ctx.clearRect(0,0,canvas.width,canvas.height);
-            
-            for (let i = 0; i < particles.length; i++) {
-                for (let j = i + 1; j < particles.length; j++) {
-                    const a = particles[i], b = particles[j];
-                    const dx = a.x - b.x, dy = a.y - b.y;
-                    const dist = Math.sqrt(dx*dx + dy*dy);
-                    if (dist < 100) {
-                        const alpha = 0.05 * (1 - dist / 100);
-                        ctx.strokeStyle = `rgba(${getThemeColor()}, ${alpha})`;
-                        ctx.lineWidth = 0.5;
-                        ctx.beginPath();
-                        ctx.moveTo(a.x, a.y);
-                        ctx.lineTo(b.x, b.y);
-                        ctx.stroke();
-                    }
-                }
-            }
-            
-            particles.forEach(p => {
-                p.x += p.vx; p.y += p.vy;
-                if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
-                if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
-                
-                // Keep particles in bounds
-                p.x = Math.max(0, Math.min(canvas.width, p.x));
-                p.y = Math.max(0, Math.min(canvas.height, p.y));
-                
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
-                const alpha = p.glow ? 0.4 : 0.12;
-                ctx.fillStyle = `rgba(${getThemeColor()}, ${alpha})`;
-                ctx.fill();
-                if (Math.random() < 0.005) p.glow = !p.glow;
-            });
-            requestAnimationFrame(tick);
-        }
-        tick();
-    }
+    // setupBackgroundParticles() {
+        // const canvas = document.getElementById('bgParticles');
+        // if (!canvas) return;
+        // canvas.style.position = 'fixed';
+        // canvas.style.top = '0';
+        // canvas.style.left = '0';
+        // canvas.style.width = '100vw';
+        // canvas.style.height = '100vh';
+        // canvas.style.zIndex = '0';
+        // const ctx = canvas.getContext('2d');
+        // let particles = [];
+        // const getThemeColor = () => {
+        //     const isDark = !document.documentElement.getAttribute('data-theme') || 
+        //                   document.documentElement.getAttribute('data-theme') === 'dark';
+        //     return isDark ? '199, 199, 199' : '51, 51, 51';
+        // };
+        // const initParticles = () => {
+        //     particles = Array.from({length: 120}, () => ({
+        //         x: Math.random() * window.innerWidth,
+        //         y: Math.random() * window.innerHeight,
+        //         r: Math.random() * 1.5 + 0.5,
+        //         vx: (Math.random() - 0.5) * 0.3,
+        //         vy: (Math.random() - 0.5) * 0.3,
+        //         glow: Math.random() < 0.02,
+        //     }));
+        // };
+        // const resize = () => { 
+        //     canvas.width = window.innerWidth; 
+        //     canvas.height = window.innerHeight; 
+        //     initParticles(); // Reinitialize particles on resize
+        // };
+        // resize();
+        // window.addEventListener('resize', resize);
+        // function tick() {
+        //     if (canvas.width <= 0 || canvas.height <= 0) {
+        //         requestAnimationFrame(tick);
+        //         return;
+        //     }
+        //     ctx.clearRect(0,0,canvas.width,canvas.height);
+        //     for (let i = 0; i < particles.length; i++) {
+        //         for (let j = i + 1; j < particles.length; j++) {
+        //             const a = particles[i], b = particles[j];
+        //             const dx = a.x - b.x, dy = a.y - b.y;
+        //             const dist = Math.sqrt(dx*dx + dy*dy);
+        //             if (dist < 100) {
+        //                 const alpha = 0.05 * (1 - dist / 100);
+        //                 ctx.strokeStyle = `rgba(${getThemeColor()}, ${alpha})`;
+        //                 ctx.lineWidth = 0.5;
+        //                 ctx.beginPath();
+        //                 ctx.moveTo(a.x, a.y);
+        //                 ctx.lineTo(b.x, b.y);
+        //                 ctx.stroke();
+        //             }
+        //         }
+        //     }
+        //     particles.forEach(p => {
+        //         p.x += p.vx; p.y += p.vy;
+        //         if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
+        //         if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
+        //         // Keep particles in bounds
+        //         p.x = Math.max(0, Math.min(canvas.width, p.x));
+        //         p.y = Math.max(0, Math.min(canvas.height, p.y));
+        //         ctx.beginPath();
+        //         ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+        //         const alpha = p.glow ? 0.4 : 0.12;
+        //         ctx.fillStyle = `rgba(${getThemeColor()}, ${alpha})`;
+        //         ctx.fill();
+        //         if (Math.random() < 0.005) p.glow = !p.glow;
+        //     });
+        //     requestAnimationFrame(tick);
+        // }
+        // tick();     
+    // }
 
     setupHeroChatInterface() {
         
@@ -2387,26 +2484,14 @@ class DataInsightApp {
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message ${sender}`;
 
-        const avatar = document.createElement('div');
-        avatar.className = 'message-avatar';
-        avatar.innerHTML = sender === 'user' ? '<i class="fas fa-user"></i>' : '<i class="fas fa-robot"></i>';
-        messageDiv.appendChild(avatar);
-
         const contentWrapper = document.createElement('div');
         contentWrapper.className = 'message-content-wrapper';
 
         if (typeof responseData === 'string') {
             const content = document.createElement('div');
             content.className = 'message-content';
-            const p = document.createElement('p');
-            content.appendChild(p);
+            content.innerHTML = `<p>${this.formatMessage(responseData)}</p>`; 
             contentWrapper.appendChild(content);
-
-            if (sender === 'bot') {
-                this.typewriterEffect(p, responseData, heroChatMessages);
-            } else {
-                p.innerHTML = this.formatMessage(responseData);
-            }
         }
         else if (responseData && responseData.response_items) {
             responseData.response_items.forEach(item => {
@@ -2477,22 +2562,6 @@ class DataInsightApp {
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
     }
 
-    typewriterEffect(element, text, container) {
-        let i = 0;
-        const speed = 30; 
-
-        element.textContent = ""; 
-
-        const typing = () => {
-            if (i < text.length) {
-                element.textContent += text.charAt(i);
-                i++;
-                container.scrollTop = container.scrollHeight;
-                setTimeout(typing, speed);
-            }
-        };
-        typing();
-    }
     showLoadingMessage() {
         //this.addChatMessage('bot', 'Processing...');
         //this.loadingMessageElement = document.querySelector('#heroChatMessages .chat-message:last-child');
@@ -2504,10 +2573,11 @@ class DataInsightApp {
         const messageDiv = document.createElement('div');
         messageDiv.className = 'chat-message bot loading-message';
         messageDiv.innerHTML = `
-            <div class="message-avatar">&gt;</div>
-            <div class="message-content-wrapper">
-                <div class="message-content">
-                    <p>Generating Response<span class="blinking-cursor">_</span></p>
+            <div class="message-content">
+                <div class="loading-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
                 </div>
             </div>`;
         
