@@ -3,201 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Data Insight - Manual Mode</title>
+    <title>DataInsight AI - Manual Mode</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css">
 </head>
 <body>
-    <canvas id="bgParticles"></canvas>
-
-    <div id="app">
-        <main class="main">
-            <div class="container">
-                <div class="app-layout">
-                    <aside class="sidebar">
-                        <div class="sidebar-header">
-                            <div class="logo-text">[DI-AI]</div>
-                            <div class="status-indicator">
-                                <div class="status-dot"></div>
-                                <span id="statusText">Ready</span>
-                            </div>
-                        </div>
-                        <div class="step-nav">
-                            <h3>// Progress_</h3>
-                            <div class="step-item active" data-step="1">
-                                <div class="step-circle">[1]</div>
-                                <div class="step-text">
-                                    <div class="step-title">Data Input</div>
-                                </div>
-                            </div>
-                            <div class="step-item" data-step="2">
-                                <div class="step-circle">[2]</div>
-                                <div class="step-text">
-                                    <div class="step-title">Intelligence</div>
-                                </div>
-                            </div>
-                            <div class="step-item" data-step="3">
-                                <div class="step-circle">[3]</div>
-                                <div class="step-text">
-                                    <div class="step-title">Configuration</div>
-                                </div>
-                            </div>
-                            <div class="step-item" data-step="4">
-                                <div class="step-circle">[4]</div>
-                                <div class="step-text">
-                                    <div class="step-title">Processing</div>
-                                </div>
-                            </div>
-                            <div class="step-item" data-step="5">
-                                <div class="step-circle">[5]</div>
-                                <div class="step-text">
-                                    <div class="step-title">Results</div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="quick-stats" id="quickStats" style="display: none;">
-                            <h3>// Overview_</h3>
-                            <div class="stats-grid">
-                                <div>Rows: <span id="sidebarRows">-</span></div>
-                                <div>Cols: <span id="sidebarCols">-</span></div>
-                                <div>Quality: <span id="sidebarQuality">-</span></div>
-                            </div>
-                        </div>
-                    </aside>
-
-                    <div class="main-content">
-                        <section class="section" id="dataInputSection">
-                            <div class="section-header">
-                                <h2>// 1. Data Input_</h2>
-                                <p>> Choose your data source</p>
-                            </div>
-                            <div class="upload-zone" id="uploadZone">
-                                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden>
-                                <div class="upload-icon"><i class="fas fa-cloud-upload-alt"></i></div>
-                                <h3>Upload Dataset</h3>
-                                <p>Drag & drop or click to select a file</p>
-                                <p class="subtext">Supports: CSV, XLSX, XLS</p>
-                            </div>
-                            <div class="divider"><span>OR</span></div>
-                            <div class="url-input-container">
-                                <i class="fas fa-link"></i>
-                                <input type="url" id="urlInput" placeholder="https://example.com/data.csv" class="url-input">
-                                <button id="urlSubmit" class="btn">Fetch</button>
-                            </div>
-                        </section>
-
-                        <section class="section hidden" id="dataPreviewSection">
-                            <div class="section-header">
-                                <h2>// 2. Data Intelligence_</h2>
-                                <p>> AI-powered data exploration</p>
-                            </div>
-                            <div class="overview-grid">
-                                <div class="info-card">
-                                    <div class="card-label">Dataset Shape</div>
-                                    <div class="card-value" id="dataShape">-</div>
-                                </div>
-                                <div class="info-card">
-                                    <div class="card-label">Domain Type</div>
-                                    <div class="card-value" id="domainDetected">-</div>
-                                </div>
-                                <div class="info-card" id="qualityCard">
-                                    <div class="card-label">Quality Score</div>
-                                    <div class="card-value" id="dataQuality">-</div>
-                                </div>
-                                <div class="info-card" id="missingValuesCard">
-                                    <div class="card-label">Missing Values</div>
-                                    <div class="card-value" id="missingValues">-</div>
-                                </div>
-                            </div>
-                            <div id="dataPreview"></div>
-                            <div id="validationIssues"></div>
-
-                            <div class="analysis-tools-grid">
-                                <div class="analysis-tool-simple" id="generateEDA">
-                                    <h4>Exploratory Data Analysis</h4>
-                                    <button class="btn"><i class="fas fa-play"></i>Generate</button>
-                                </div>
-                                <div id="edaResults" class="tool-results-simple"></div>
-
-                                <div class="analysis-tool-simple" id="generateGraph">
-                                    <h4>Feature Relationships</h4>
-                                    <button class="btn"><i class="fas fa-play"></i>Generate</button>
-                                </div>
-                                <div id="relationshipGraph" class="tool-results-simple"></div>
-
-                                <div class="analysis-tool-simple" id="getRecommendations">
-                                    <h4>AI Recommendations</h4>
-                                    <button class="btn"><i class="fas fa-play"></i>Generate</button>
-                                </div>
-                                <div id="featureRecommendations" class="tool-results-simple"></div>
-                            </div>
-
-                            <div class="section-footer">
-                                <button class="continue-btn" id="continueToConfig">
-                                    <span>Continue</span><i class="fas fa-arrow-right"></i>
-                                </button>
-                            </div>
-                        </section>
-
-                        <section class="section hidden" id="configSection">
-                            <div class="section-header">
-                                <h2>// 3. Task Configuration_</h2>
-                                <p>> Set machine learning parameters</p>
-                            </div>
-                            <div class="config-grid">
-                                <div class="config-item">
-                                    <label for="taskSelect">ML Task</label>
-                                    <select id="taskSelect" class="url-input">
-                                        <option value="classification">Classification</option>
-                                        <option value="regression">Regression</option>
-                                        <option value="clustering">Clustering</option>
-                                    </select>
-                                </div>
-                                <div class="config-item">
-                                    <label for="targetSelect">Target Column</label>
-                                    <select id="targetSelect" class="url-input">
-                                        <option value="">Select target...</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <button class="continue-btn" id="startProcessing">
-                                <i class="fas fa-play"></i>Start Processing
-                            </button>
-                        </section>
-
-                        <section class="section hidden" id="processingSection">
-                             <div class="section-header">
-                                <h2>// 4. Processing_</h2>
-                                <p>> Pipeline in progress</p>
-                            </div>
-                            <div class="processing-container">
-                                <div class="processing-animation">
-                                    <div class="pixel-spinner"></div>
-                                </div>
-                                <h3 id="processingStatus">Initializing...</h3>
-                            </div>
-                        </section>
-
-                        <section class="section hidden" id="resultsSection">
-                            <div class="section-header">
-                                <h2>// 5. Results_</h2>
-                                <p>> Processing complete</p>
-                            </div>
-                            <div class="overview-grid">
-                               <div class="info-card">
-                                    <div class="card-label">Original Shape</div>
-                                    <div class="card-value" id="originalShape">-</div>
-                                </div>
-                                <div class="info-card">
-                                    <div class="card-label">Processed Shape</div>
-                                    <div class="card-value" id="processedShape">-</div>
-                                </div>
-                                <div class="info-card">
-                                    <div class="card-label">Time</div>
-                                    <div class="card-value" id="processingTime">-</div>
-                                </div>
-                            </div>
-                   
+     <div id="app">
+        <header class="header">
+            <div class="header-content">
+                <div> 
+                    <button id="themeToggle" class="btn-theme" title="Toggle Theme">
+                        <i class="icon-theme"></i> 
+                    </button>
+                    <div class="logo">DataInsight AI / Manual Mode</div>
+                    <a href="/static/index.html" class="btn-header">Chat Mode</a>
+                </div>
+            </div>
+        </header>
+        <main class="main dashboard-main">
+             <aside class="sidebar">
+                <div class="sidebar-header">
+                    <h3>Progress</h3>
+                    <span id="statusText">Ready</span>
+                </div>
+                <div class="step-nav">
+                    <div class="step-item active" data-step="1">Data Input</div>
+                    <div class="step-item" data-step="2">Intelligence</div>
+                    <div class="step-item" data-step="3">Configuration</div>
+                    <div class="step-item" data-step="4">Processing</div>
+                    <div class="step-item" data-step="5">Results</div>
+                </div>
+            </aside>
+            <div class="main-content">
+                <section class="section" id="dataInputSection">
+                     <div class="upload-zone" id="uploadZone">
+                        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" hidden>
+                        <div class="upload-icon">+</div>
+                        <h3>Upload Dataset</h3>
+                        <p class="subtext">Drag & Drop or Click to Select File</p>
+                    </div>
+                    <div class="button-group">
+                        <button class="btn-main" id="urlSubmit">Fetch from URL</button>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>
