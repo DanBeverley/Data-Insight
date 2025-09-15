@@ -18,6 +18,168 @@ body {
     font-weight: 400;
 }
 
+/* PII Consent Dialog Styles */
+.pii-consent-container {
+    margin: 1rem 0;
+    padding: 1rem;
+    border: 2px solid #f39c12;
+    border-radius: 8px;
+    background-color: rgba(243, 156, 18, 0.1);
+}
+
+.pii-consent-message {
+    margin-bottom: 1rem;
+    color: var(--color-light);
+}
+
+.pii-consent-message .risk-low {
+    color: #2ecc71;
+    font-weight: bold;
+}
+
+.pii-consent-message .risk-medium {
+    color: #f39c12;
+    font-weight: bold;
+}
+
+.pii-consent-message .risk-high,
+.pii-consent-message .risk-critical {
+    color: #e74c3c;
+    font-weight: bold;
+}
+
+.pii-consent-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.pii-consent-btn {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    border: 2px solid var(--color-border);
+    border-radius: 6px;
+    background-color: var(--color-dark);
+    color: var(--color-light);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.pii-consent-btn:hover {
+    background-color: var(--color-light);
+    color: var(--color-dark);
+    border-color: var(--color-light);
+}
+
+.pii-yes {
+    border-color: #2ecc71;
+}
+
+.pii-yes:hover {
+    background-color: #2ecc71;
+    color: white;
+}
+
+.pii-no {
+    border-color: #e74c3c;
+}
+
+.pii-no:hover {
+    background-color: #e74c3c;
+    color: white;
+}
+
+/* Table Container for Horizontal Scrolling */
+.table-container {
+    width: 100%;
+    overflow-x: auto;
+    margin: 1rem 0;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Data Table Styles */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    background-color: var(--color-dark);
+    min-width: 600px;
+}
+
+.data-table th {
+    background-color: var(--color-border);
+    color: var(--color-light);
+    padding: 0.75rem 0.5rem;
+    text-align: left;
+    font-weight: 500;
+    border-bottom: 2px solid var(--color-bg);
+}
+
+.data-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-light);
+    white-space: nowrap;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.data-table tr:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.data-table tr:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Light theme table styles */
+body.light-theme .data-table {
+    background-color: white;
+    color: var(--color-dark);
+}
+
+body.light-theme .data-table th {
+    background-color: #f8f9fa;
+    color: var(--color-dark);
+    border-bottom: 2px solid #dee2e6;
+}
+
+body.light-theme .data-table td {
+    color: var(--color-dark);
+    border-bottom: 1px solid #dee2e6;
+}
+
+body.light-theme .data-table tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+
+body.light-theme .data-table tr:hover {
+    background-color: #e9ecef;
+}
+
+/* Light theme PII consent styles */
+body.light-theme .pii-consent-container {
+    background-color: rgba(243, 156, 18, 0.1);
+    border-color: #f39c12;
+}
+
+body.light-theme .pii-consent-message {
+    color: var(--color-dark);
+}
+
+body.light-theme .pii-consent-btn {
+    background-color: white;
+    color: var(--color-dark);
+    border-color: #dee2e6;
+}
+
+body.light-theme .pii-consent-btn:hover {
+    background-color: var(--color-dark);
+    color: white;
+}
+
 #bgParticles {
     position: fixed;
     top: 0;

@@ -2460,11 +2460,30 @@ class DataInsightApp {
                     if (data.status === 'success') {
                         this.currentSessionId = data.session_id;
                         this.agentSessionId = data.agent_session_id || data.session_id;
-                        
+
                         if (data.agent_analysis) {
                             this.addChatMessage('bot', data.agent_analysis);
                         } else {
-                            this.addChatMessage('bot', `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns. You can now ask me questions about your data.`);
+                            const profileSummary = data.profiling_summary || {};
+                            let message = `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`;
+
+                            if (profileSummary.quality_score) {
+                                message += ` Quality Score: ${profileSummary.quality_score}/100.`;
+                            }
+                            if (profileSummary.anomalies_detected) {
+                                message += ` Detected ${profileSummary.anomalies_detected} anomalies.`;
+                            }
+                            if (profileSummary.profiling_time) {
+                                message += ` Analysis completed in ${profileSummary.profiling_time}s.`;
+                            }
+                            message += ` You can now ask me questions about your data.`;
+
+                            this.addChatMessage('bot', message);
+                        }
+
+                        // Check for PII detection and show consent dialog
+                        if (data.pii_detection && data.pii_detection.requires_consent) {
+                            this.showPIIConsentDialog(data.pii_detection);
                         }
                     } else {
                         this.addChatMessage('bot', `Upload error: ${data.detail || 'Unknown error'}`);
@@ -2672,7 +2691,12 @@ class DataInsightApp {
             
             return otherHTML;
         }
-        
+
+        // Detect DataFrame-like output patterns (whitespace-separated columns)
+        if (this.isDataFrameOutput(message)) {
+            return this.convertDataFrameToTable(message);
+        }
+
         // Convert markdown to HTML
         let htmlContent = message
             // Bold formatting
@@ -2694,6 +2718,88 @@ class DataInsightApp {
         htmlContent = htmlContent.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>');
         
         return htmlContent;
+    }
+
+    isDataFrameOutput(message) {
+        const lines = message.split('\n').filter(line => line.trim());
+        if (lines.length < 2) return false;
+
+        // Check for pandas DataFrame patterns
+        const hasIndexPattern = lines.some(line => /^\s*\d+\s+/.test(line));
+        const hasColumnHeaders = lines[0] && /\w+\s+\w+/.test(lines[0]);
+
+        // Look for continuation lines with backslashes (pandas formatting)
+        const hasContinuation = lines.some(line => line.includes('\\'));
+
+        return (hasIndexPattern && hasColumnHeaders) || hasContinuation;
+    }
+
+    convertDataFrameToTable(message) {
+        const lines = message.split('\n').filter(line => line.trim());
+        if (lines.length < 2) return message;
+
+        let tableHTML = '<div class="table-container"><table class="data-table">';
+
+        // Find header line (may not be the first line due to pandas formatting)
+        let headerLineIndex = 0;
+        let headers = [];
+
+        // Look for the actual column headers
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line && !/^\s*\d+\s+/.test(line) && !line.includes('\\')) {
+                headers = line.split(/\s{2,}/).filter(h => h.trim());
+                if (headers.length >= 3) {
+                    headerLineIndex = i;
+                    break;
+                }
+            }
+        }
+
+        tableHTML += '<thead><tr>';
+        headers.forEach(header => {
+            tableHTML += `<th>${header.trim()}</th>`;
+        });
+        tableHTML += '</tr></thead><tbody>';
+
+        // Process data rows (lines with index numbers)
+        let currentRow = [];
+        for (let i = headerLineIndex + 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+
+            if (/^\s*\d+\s+/.test(line)) {
+                // Start of new row
+                if (currentRow.length > 0) {
+                    // Complete previous row
+                    tableHTML += '<tr>';
+                    for (let j = 0; j < headers.length; j++) {
+                        const value = currentRow[j] || '';
+                        tableHTML += `<td>${value}</td>`;
+                    }
+                    tableHTML += '</tr>';
+                }
+                // Parse new row
+                currentRow = line.split(/\s{2,}/).slice(1); // Remove index
+            } else {
+                // Continuation line
+                const parts = line.split(/\s{2,}/);
+                currentRow = currentRow.concat(parts);
+            }
+        }
+
+        // Add final row
+        if (currentRow.length > 0) {
+            tableHTML += '<tr>';
+            for (let j = 0; j < headers.length; j++) {
+                const value = currentRow[j] || '';
+                tableHTML += `<td>${value}</td>`;
+            }
+            tableHTML += '</tr>';
+        }
+
+        tableHTML += '</tbody></table></div>';
+        return tableHTML;
     }
 
     parseAndDisplayBotResponse(content, contentWrapper) {
@@ -2777,6 +2883,64 @@ class DataInsightApp {
             const plotUrl = `/static/plots/${filename}`;
             return `<img src="${plotUrl}" alt="${filename}" style="max-width: 100%; height: auto; border-radius: 8px; margin: 10px 0;" onerror="this.style.display='none';">`;
         });
+    }
+
+    showPIIConsentDialog(piiData) {
+        const heroChatMessages = document.getElementById('heroChatMessages');
+        if (!heroChatMessages) return;
+
+        const consentDiv = document.createElement('div');
+        consentDiv.className = 'pii-consent-container';
+        consentDiv.innerHTML = `
+            <div class="pii-consent-message">
+                <p><strong>Privacy Notice:</strong> ${piiData.message}</p>
+                <p>Risk Level: <span class="risk-${piiData.risk_level}">${piiData.risk_level.toUpperCase()}</span></p>
+                <p>Privacy Score: ${piiData.privacy_score}/100</p>
+            </div>
+            <div class="pii-consent-buttons">
+                <button class="pii-consent-btn pii-yes" data-consent="yes">Yes, Apply Privacy Protection</button>
+                <button class="pii-consent-btn pii-no" data-consent="no">No, Continue Without Protection</button>
+            </div>
+        `;
+
+        heroChatMessages.appendChild(consentDiv);
+        heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
+
+        // Add event listeners for consent buttons
+        const buttons = consentDiv.querySelectorAll('.pii-consent-btn');
+        buttons.forEach(button => {
+            button.addEventListener('click', async (e) => {
+                const consent = e.target.dataset.consent === 'yes';
+                await this.handlePIIConsent(consent);
+                consentDiv.remove();
+            });
+        });
+    }
+
+    async handlePIIConsent(applyProtection) {
+        try {
+            const response = await fetch('/api/privacy/consent', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: this.currentSessionId,
+                    apply_protection: applyProtection
+                })
+            });
+
+            const data = await response.json();
+            if (data.status === 'success') {
+                const message = applyProtection
+                    ? 'Privacy protection applied. Your data has been anonymized for analysis.'
+                    : 'Continuing without privacy protection. Your original data will be used.';
+                this.addChatMessage('bot', message);
+            }
+        } catch (error) {
+            console.error('Privacy consent error:', error);
+            this.addChatMessage('bot', 'Error processing privacy preference.');
+        }
     }
 }
 
