@@ -29,11 +29,9 @@ try:
     chatbot_path = project_root / "data_scientist_chatbot"
     app_path = chatbot_path / "app"
     
-    # Add both chatbot paths to sys.path for proper module resolution
     sys.path.insert(0, str(chatbot_path))
     sys.path.insert(0, str(app_path))
     
-    # Import the agent module directly
     from data_scientist_chatbot.app.agent import create_agent_executor, create_enhanced_agent_executor
     
     CHAT_AVAILABLE = True
@@ -235,7 +233,7 @@ async def chat_endpoint(chat_request: ChatMessage):
             if not CHAT_AVAILABLE:
                 return ChatResponse(
                     status="error",
-                    response="I apologize, but the chat functionality is currently unavailable. This appears to be due to missing dependencies (like dotenv, langchain, etc.). Please run 'pip install -r requirements.txt' to install all required packages, or use the Flask server on port 5000 for chat functionality.",
+                    response="I apologize, but the chat functionality is currently unavailable. This appears to be due to missing dependencies (like dotenv, langchain, etc.). Please run 'pip install -r requirements.txt' to install all required packages.",
                     plots=[]
                 )
             else:
@@ -412,6 +410,27 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
         try:
             from intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
             data_profile = generate_dataset_profile_for_agent(df, context={'filename': file.filename, 'upload_session': session_id})
+
+            # Check for PII detection in profile metadata
+            pii_findings = data_profile.profile_metadata.get('pii_detection')
+            if pii_findings and pii_findings.privacy_score < 0.7:
+                response_data["pii_detection"] = {
+                    "pii_detected": True,
+                    "risk_level": pii_findings.risk_level,
+                    "privacy_score": round(pii_findings.privacy_score, 2),
+                    "reidentification_risk": round(pii_findings.reidentification_risk, 2),
+                    "recommendations": pii_findings.recommendations,
+                    "requires_consent": True,
+                    "message": f"Privacy concerns detected (Risk Level: {pii_findings.risk_level}). Would you like to apply privacy protection before analysis?"
+                }
+
+            # Add profiling summary for enhanced upload message
+            response_data["profiling_summary"] = {
+                "quality_score": round(data_profile.quality_assessment.get('overall_score', 0), 1) if data_profile.quality_assessment.get('overall_score') else None,
+                "anomalies_detected": data_profile.anomaly_detection.get('summary', {}).get('total_anomalies', 0),
+                "profiling_time": round(data_profile.profile_metadata.get('profiling_duration', 0), 2)
+            }
+
             builtins._session_store[session_id] = {
                 'dataframe': df,
                 'data_profile': data_profile,
@@ -454,10 +473,22 @@ print(df.head())
                 load_result = execute_python_in_sandbox(load_code, session_id)
                 
                 if load_result["success"]:
-                    # Convert raw table output to HTML table
                     clean_output = load_result['stdout']
                     html_output = convert_pandas_output_to_html(clean_output)
-                    response_data["agent_analysis"] = f"✅ Data loaded successfully!\n\n{html_output}"
+
+                    # Create enhanced message with profiling data
+                    enhanced_message = f"\n\n{html_output}"
+
+                    # Add profiling summary if available
+                    profile_summary = response_data.get("profiling_summary", {})
+                    if profile_summary.get("quality_score"):
+                        enhanced_message += f"\n📊 Quality Score: {profile_summary['quality_score']}/100"
+                    if profile_summary.get("anomalies_detected"):
+                        enhanced_message += f"\n⚠️ Detected {profile_summary['anomalies_detected']} anomalies"
+                    if profile_summary.get("profiling_time"):
+                        enhanced_message += f"\n⏱️ Analysis completed in {profile_summary['profiling_time']}s"
+
+                    response_data["agent_analysis"] = enhanced_message
                     response_data["agent_session_id"] = session_id
                 else:
                     response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {load_result['stderr']}"
@@ -472,6 +503,58 @@ print(df.head())
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
+
+@app.post("/api/privacy/consent")
+async def handle_privacy_consent(request: dict):
+    """Handle user consent for privacy protection"""
+    try:
+        session_id = request.get('session_id')
+        apply_protection = request.get('apply_protection', False)
+
+        if not session_id or session_id not in session_store:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        import builtins
+        if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+            session_data = builtins._session_store[session_id]
+
+            if apply_protection:
+                # Apply privacy protection using PrivacyEngine
+                from security.privacy_engine import PrivacyEngine
+                privacy_engine = PrivacyEngine()
+
+                original_df = session_data['dataframe']
+                protected_df, transformations = privacy_engine.apply_k_anonymity(
+                    original_df,
+                    privacy_engine._auto_detect_quasi_identifiers(original_df)
+                )
+
+                # Update stored dataframe with protected version
+                session_data['dataframe'] = protected_df
+                session_data['privacy_applied'] = True
+                session_data['privacy_transformations'] = transformations
+
+                # Update session store as well
+                session_store[session_id]['dataframe'] = protected_df
+
+                return {
+                    "status": "success",
+                    "message": "Privacy protection applied successfully",
+                    "protection_applied": True
+                }
+            else:
+                # Mark that user declined protection
+                session_data['privacy_applied'] = False
+                return {
+                    "status": "success",
+                    "message": "Continuing without privacy protection",
+                    "protection_applied": False
+                }
+
+        raise HTTPException(status_code=404, detail="Session data not found")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Privacy consent error: {str(e)}")
 
 @app.post("/api/ingest-url")
 async def ingest_from_url_endpoint(request: DataIngestionRequest):
@@ -813,72 +896,35 @@ async def process_data(session_id: str, config: TaskConfig):
 
         )
 
-@app.post("/api/data/{session_id}/process")
-async def process_data(session_id: str, config: TaskConfig):
-    if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        start_time = datetime.now()
-        session_data = session_store[session_id]
-        df = session_data["dataframe"]
-        
+        # Execute pipeline with the project definition
         result_dict = orchestrator.execute_pipeline(
             data_path=temp_file.name,
             project_definition=project_definition,
-            target_column=config.target_column
+            target_column=config.target_column,
+            custom_config={'feature_generation_enabled': config.feature_generation_enabled, 'feature_selection_enabled': config.feature_selection_enabled}
         )
-        
-        # Clean up temporary file
-        Path(temp_file.name).unlink()
-        
-        # Validate pipeline execution
-        if result_dict.get('status') != 'success':
-            raise Exception(f"Pipeline execution failed: {result_dict.get('error', 'Unknown error')}")
+
         processing_time = (datetime.now() - start_time).total_seconds()
-        
+
         session_store[session_id].update({
             "pipeline_result": result_dict,
             "processing_config": config.dict(),
-            "processing_time": processing_time,
-            "recommended_strategy": recommended_strategy
+            "processing_time": processing_time
         })
-        
-        # Extract intelligence summary
-        intelligence_profile = session_data.get("intelligence_profile")
-        intelligence_summary = None
-        if intelligence_profile:
-            domain_analysis = intelligence_profile.get('domain_analysis', {})
-            detected_domains = domain_analysis.get('detected_domains', [])
-            intelligence_summary = {
-                "primary_domain": detected_domains[0].get('domain') if detected_domains else 'unknown',
-                "total_recommendations": len(intelligence_profile.get('overall_recommendations', [])),
-                "relationships_analyzed": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-                "feature_generation_applied": config.feature_generation_enabled,
-                "feature_selection_applied": config.feature_selection_enabled,
-                "original_shape": df.shape,
-                "final_shape": result_dict.get('final_data_shape', df.shape)
-            }
-        
-        return ProcessingResult(
-            status="success",
-            message="Data processed with unified pipeline",
-            data_shape=result_dict.get('final_data_shape', df.shape),
-            processing_time=processing_time,
-            intelligence_summary=intelligence_summary,
-            artifacts={
+
+        return {
+            "status": "success",
+            "message": "Data processed successfully",
+            "processing_time": processing_time,
+            "artifacts": {
                 "pipeline_metadata": f"/api/data/{session_id}/download/pipeline-metadata",
-                "processed_data": f"/api/data/{session_id}/download/data",
-                "intelligence_report": f"/api/data/{session_id}/download/intelligence"
+                "processed_data": f"/api/data/{session_id}/download/data"
             }
-        )
-        
-    except HTTPException:
-        raise
+        }
+
     except Exception as e:
-        error_msg = f"Processing failed: {str(e)}"
-        logging.error(error_msg, exc_info=True)
-        raise HTTPException(status_code=500, detail=error_msg)
+        return {"status": "error", "detail": f"Processing error: {str(e)}"}
+
 
 @app.get("/api/data/{session_id}/download/{artifact_type}")
 async def download_artifact(session_id: str, artifact_type: str):
