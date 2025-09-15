@@ -47,6 +47,8 @@ class AgentState(TypedDict):
     messages: Sequence[BaseMessage]
     session_id: str
     python_executions: int
+    plan: Optional[str]
+    scratchpad: str
 
 performance_monitor = PerformanceMonitor()
 context_manager = ContextManager()
@@ -81,6 +83,46 @@ def retrieve_historical_patterns(task_description: str) -> str:
                          (e.g., 'visualization', 'correlation_analysis', 'ml_modeling')
     """
     return "This is a placeholder. Pattern retrieval happens in the graph node."
+
+def generate_business_insights(code: str, output: str, session_id: str) -> str:
+    try:
+        import sys, os, builtins
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+        from insights.business_translator import BusinessTranslator, StakeholderType
+        from insights.narrative_generator import NarrativeGenerator, ReportTone
+
+        if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+            data_profile = builtins._session_store[session_id].get('data_profile')
+            if data_profile:
+                translator = BusinessTranslator()
+                metrics = translator.extract_business_metrics_from_analysis(code, output, data_profile)
+                stakeholder_view = translator.generate_stakeholder_view(metrics, StakeholderType.BUSINESS_ANALYST)
+                narrative = NarrativeGenerator().generate_insight_narrative(stakeholder_view, ReportTone.BUSINESS)
+                return narrative[:200] + "..." if len(narrative) > 200 else narrative
+    except:
+        pass
+    return ""
+
+def generate_explainability_insights(code: str, session_id: str) -> str:
+    try:
+        import sys, os, builtins
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+        from explainability.bias_detector import BiasDetector
+
+        if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+            df = builtins._session_store[session_id].get('dataframe')
+            if df is not None:
+                categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+                if categorical_cols:
+                    detector = BiasDetector(sensitive_attributes=categorical_cols[:1])
+                    bias_results = detector.detect_data_bias(df)
+                    if bias_results:
+                        return f"Data analysis: {bias_results[0].description}"
+    except:
+        pass
+    return ""
 
 def retrieve_historical_patterns_logic(task_description: str, session_id: str) -> str:
     try:
@@ -234,8 +276,30 @@ def execute_tools_node(state: AgentState) -> dict:
                         output.append(f"Error: {stderr_content}")
                     if plots:
                         output.append(f"\n📊 Generated {len(plots)} visualization(s)")
-                    
-                    content = "\n".join(output) or "Code executed successfully."
+
+                        # Add business insights for visualizations
+                        try:
+                            insights = generate_business_insights(code, result.get('stdout', ''), session_id)
+                            if insights:
+                                output.append(f"\n💡 {insights}")
+                        except Exception as e:
+                            print(f"Insight generation failed: {e}")
+
+                    try:
+                        explanation = generate_explainability_insights(code, session_id)
+                        if explanation:
+                            output.append(f"\n🔍 {explanation}")
+                    except:
+                        pass
+
+                    if output:
+                        content = "\n".join(output)
+                    else:
+                        stdout_content = result.get('stdout', '').strip()
+                        if stdout_content:
+                            content = f"Code executed successfully.\n\n{stdout_content}"
+                        else:
+                            content = "Code executed successfully, but no output was generated."
 
                 elif tool_name == 'retrieve_historical_patterns':
                     task_description = tool_args["task_description"]
@@ -258,7 +322,9 @@ def execute_tools_node(state: AgentState) -> dict:
     
     result_state = {
         "messages": state["messages"] + tool_responses,
-        "python_executions": python_executions
+        "python_executions": python_executions,
+        "plan": state.get("plan"),
+        "scratchpad": state.get("scratchpad", "")
     }
     print(f"DEBUG execute_tools_node: Python executions count: {python_executions}")
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
@@ -278,7 +344,13 @@ def create_agent_executor():
     llm_with_tools = llm  
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a data scientist assistant with access to a dataset `df`. 
+        ("system", """You are a senior data scientist assistant with access to a dataset `df`.
+
+            THINKING PROCESS (Internal - use for complex tasks):
+            1. **PLAN:** Outline approach for complex multi-step tasks
+            2. **EXECUTE:** Execute step-by-step using python_code_interpreter
+            3. **SYNTHESIZE:** Note findings after each execution
+            4. **RESPOND:** Provide clear explanations to user
 
             When you need to analyze data or create visualizations, use python_code_interpreter tool.
             After the tool executes successfully, provide a clear explanation of what was created.
@@ -287,11 +359,12 @@ def create_agent_executor():
             - python_code_interpreter: Execute Python code on the dataset
 
             RULES:
+            - Think step-by-step and plan your approach for complex tasks
             - For all data analysis/visualization: Use python_code_interpreter
             - Always use matplotlib.use('Agg') for plotting
             - Use actual column names from the data
-            - Never use plt.close() - always use plt.show() to let the plots be saved
-            - For bar charts: Use plt.figure(), create plot, then plt.show()"""),
+            - Never use plt.close() - always use plt.show()
+            - After tool execution, explain results clearly to the user"""),
             MessagesPlaceholder(variable_name="messages"),])
     agent_runnable = prompt | llm_with_tools
     
@@ -308,9 +381,7 @@ def create_agent_executor():
 
         content_str = str(last_message.content).strip()
         
-        # Primary: Handle JSON format for qwen2.5-coder
         try:
-            # Clean up content to extract JSON
             json_str = content_str
             
             # Remove any markdown code blocks if present
@@ -444,6 +515,12 @@ def create_agent_executor():
         
         # Inject data profile context if available
         enhanced_state = state.copy()
+
+        # Initialize plan and scratchpad if not present
+        if 'plan' not in enhanced_state:
+            enhanced_state['plan'] = None
+        if 'scratchpad' not in enhanced_state:
+            enhanced_state['scratchpad'] = ""
         
         try:
             import builtins
@@ -454,51 +531,60 @@ def create_agent_executor():
                 data_profile = builtins._session_store[session_id]['data_profile']
                 column_context = data_profile.ai_agent_context['column_details']
                 
-                # Create enhanced system message with data context
                 context_prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""You are a data scientist assistant with access to a dataset `df`. Always respond in JSON format.
+                    ("system", f"""You are a senior data scientist assistant with access to a dataset `df`.
 
-DATASET CONTEXT:
-You have access to a dataset with the following columns and their details:
-{chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values' 
-              for col, info in column_context.items())}
+                    THINKING PROCESS (Internal - use for complex tasks):
+                    1. **PLAN:** Outline approach for complex multi-step tasks
+                    2. **EXECUTE:** Execute step-by-step using python_code_interpreter
+                    3. **SYNTHESIZE:** Note findings after each execution
+                    4. **RESPOND:** Provide clear explanations to user
 
-VISUALIZATION SUGGESTIONS:
-{chr(10).join(f'• {sug["type"]}: {sug["description"]}' for sug in data_profile.ai_agent_context.get('visualization_suggestions', [])[:3])}
+                    Current plan: {state.get('plan', 'None set yet')}
+                    Current scratchpad: {state.get('scratchpad', 'Empty')}
 
-CODE GENERATION HINTS:
-• Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
-• Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
-• Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
+                    DATASET CONTEXT:
+                    You have access to a dataset with the following columns and their details:
+                    {chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
+                                for col, info in column_context.items())}
 
-MANDATORY FORMAT - Always respond with this exact JSON structure:
+                    VISUALIZATION SUGGESTIONS:
+                    {chr(10).join(f'• {sug["type"]}: {sug["description"]}' for sug in data_profile.ai_agent_context.get('visualization_suggestions', [])[:3])}
 
-{{{{
-  "name": "python_code_interpreter",
-  "arguments": {{{{
-    "code": "your_python_code_here"
-  }}}}
-}}}}
+                    CODE GENERATION HINTS:
+                    • Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
+                    • Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
+                    • Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
 
-TOOLS:
-- python_code_interpreter: Execute Python code on the dataset
+                    MANDATORY FORMAT - Always respond with this exact JSON structure:
 
-RULES:
-- For all data analysis/visualization: Use python_code_interpreter
-- Always use matplotlib.use('Agg') for plotting
-- Use actual column names from the dataset context above
-- Return ONLY valid JSON, no other text
-- Never use plt.close() - always use plt.show() to let the plots be saved
-- For bar charts: Use plt.figure(), create plot, then plt.show()
-- Put all Python code in the "code" field
+                    {{{{
+                    "name": "python_code_interpreter",
+                    "arguments": {{{{
+                        "code": "your_python_code_here"
+                    }}}}
+                    }}}}
 
-EXAMPLE:
-{{{{
-  "name": "python_code_interpreter", 
-  "arguments": {{{{
-    "code": "import matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
-  }}}}
-}}}}"""),
+                    TOOLS:
+                    - python_code_interpreter: Execute Python code on the dataset
+
+                    RULES:
+                    - IMPORTANT: After a tool executes successfully, ALWAYS respond in conversational language explaining what was created or discovered
+                    - When you need to execute code: Return ONLY valid JSON
+                    - When explaining results: Use natural, conversational language
+                    - For all data analysis/visualization: Use python_code_interpreter
+                    - Always use matplotlib.use('Agg') for plotting
+                    - Use actual column names from the dataset context above
+                    - Never use plt.close() - always use plt.show() to let the plots be saved
+                    - Put all Python code in the "code" field
+
+                    EXAMPLE:
+                    {{{{
+                    "name": "python_code_interpreter",
+                    "arguments": {{{{
+                        "code": "import matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
+                    }}}}
+                    }}}}"""),
                     MessagesPlaceholder(variable_name="messages"),
                 ])
                 
@@ -511,50 +597,77 @@ EXAMPLE:
         except Exception as e:
             agent_outcome = agent_runnable.invoke(enhanced_state)
             
-        return {"messages": enhanced_state["messages"] + [agent_outcome]}
+        return {
+            "messages": enhanced_state["messages"] + [agent_outcome],
+            "python_executions": enhanced_state.get("python_executions", 0),
+            "plan": enhanced_state.get("plan"),
+            "scratchpad": enhanced_state.get("scratchpad", "")
+        }
 
     def should_continue(state: AgentState):
-        last_message = state["messages"][-1]
         messages = state["messages"]
-        
-        # Check for recursive plot generation pattern
-        if len(messages) >= 6:  # Need at least 3 tool cycles to detect pattern
-            recent_messages = messages[-6:]  # Last 6 messages (3 cycles)
-            tool_results = [msg for msg in recent_messages if hasattr(msg, 'content') and 
-                           isinstance(msg.content, str) and 'PLOT_SAVED' in msg.content]
-            
-            # If we have multiple successful plot generations, check if it's the same code
-            if len(tool_results) >= 2:
-                recent_tool_calls = [msg for msg in recent_messages if hasattr(msg, 'tool_calls') and msg.tool_calls]
-                
-                # Check if last 2 tool calls are identical (recursive pattern)
-                if len(recent_tool_calls) >= 2:
-                    last_code = str(recent_tool_calls[-1].tool_calls[0]) if recent_tool_calls[-1].tool_calls else ""
-                    prev_code = str(recent_tool_calls[-2].tool_calls[0]) if recent_tool_calls[-2].tool_calls else ""
-                    
-                    if last_code == prev_code and last_code != "":
-                        # Recursive plot detected - terminate to prevent loop
-                        return END
-        
-        # Normal flow - continue if there are tool calls
+        last_message = messages[-1]
+        python_executions = state.get("python_executions", 0)
+
+        if python_executions >= 7:
+            print("DEBUG: Termination condition met: Maximum python executions reached.")
+            return END
+
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            return "action"    
+
+            if len(messages) >= 3:
+                last_tool_call = last_message.tool_calls[0]
+                # Find the previous AI message with tool calls
+                for i in range(len(messages) - 2, -1, -1):
+                    msg = messages[i]
+                    if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        prev_tool_call = msg.tool_calls[0]
+                        # If the tool name and arguments are the same, it's a loop
+                        if (last_tool_call.get('name') == prev_tool_call.get('name') and
+                            last_tool_call.get('args') == prev_tool_call.get('args')):
+                            print(f"DEBUG: Termination condition met: Detected recursive tool call for '{last_tool_call.get('name')}'.")
+                            return END
+                        break  # Found the last tool call, no need to look further back
+
+            return "action"
         return END 
+
+    def route_after_agent(state: AgentState):
+        """Route based on whether agent wants to use tools or just respond"""
+        last_message = state["messages"][-1]
+        content = str(last_message.content).strip()
+
+        # Check if response contains tool usage patterns (including markdown wrapped JSON)
+        if (content.startswith("{") and '"name":' in content) or \
+           ("python_code_interpreter" in content and '"code":' in content) or \
+           (content.startswith("```json") and '"name":' in content) or \
+           (content.startswith("```") and '"name":' in content):
+            return "parser"
+        return END
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", run_agent)
-    graph.add_node("parser", parse_tool_calls) 
+    graph.add_node("parser", parse_tool_calls)
     graph.add_node("action", execute_tools_node)
     graph.set_entry_point("agent")
-    graph.add_edge("agent", "parser")
+
+    graph.add_conditional_edges(
+        "agent",
+        route_after_agent,
+        {
+            "parser": "parser",
+            END: END
+        }
+    )
+
     graph.add_conditional_edges(
         "parser",
         should_continue,
         {
-            "action": "action", 
+            "action": "action",
             END: END
-        },
-    )  
+        }
+    )
     graph.add_edge("action", "agent")
     
     if CHECKPOINTER_AVAILABLE and memory:
