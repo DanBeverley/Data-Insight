@@ -34,12 +34,52 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class KnowledgeGraphService:
+    def __init__(self):
+        self.storage = SessionDataStorage()
+
+    def is_available(self) -> bool:
+        return True
+
+    def query_relationships(self, query: str, session_id: str) -> Dict[str, Any]:
+        return self.storage.get_all_data()
+
+    def store_session_data(self, session_id: str, data: Dict[str, Any]):
+        self.storage.add_session(session_id, data)
+
+class SessionDataStorage:
+    def __init__(self):
+        self.sessions: Dict[str, Dict[str, Any]] = {}
+        self.correlations: List[Dict[str, Any]] = []
+        self.datasets: List[Dict[str, Any]] = []
+        self.models: List[Dict[str, Any]] = []
+
+    def add_session(self, session_id: str, data: Dict[str, Any]):
+        self.sessions[session_id] = {
+            'timestamp': datetime.now().isoformat(),
+            'data': data
+        }
+
+        if 'dataset_info' in data:
+            self.datasets.append(data['dataset_info'])
+
+        if 'correlations' in data:
+            self.correlations.extend(data['correlations'])
+
+        if 'model_results' in data:
+            self.models.extend(data['model_results'])
+
+    def get_all_data(self) -> Dict[str, Any]:
+        return {
+            'sessions': len(self.sessions),
+            'datasets': self.datasets,
+            'correlations': self.correlations,
+            'models': self.models
+        }
+
 class GraphDatabaseInterface(ABC):
-    """Abstract interface for graph database operations"""
-    
     @abstractmethod
     def connect(self) -> bool:
-        """Establish connection to graph database"""
         pass
     
     @abstractmethod
