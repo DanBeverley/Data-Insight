@@ -47,12 +47,17 @@ class KnowledgeGraphService:
     def store_session_data(self, session_id: str, data: Dict[str, Any]):
         self.storage.add_session(session_id, data)
 
+    def add_execution_data(self, execution_data: Dict[str, Any]):
+        """Add execution data from adaptive learning"""
+        self.storage.add_execution(execution_data)
+
 class SessionDataStorage:
     def __init__(self):
         self.sessions: Dict[str, Dict[str, Any]] = {}
         self.correlations: List[Dict[str, Any]] = []
         self.datasets: List[Dict[str, Any]] = []
         self.models: List[Dict[str, Any]] = []
+        self.executions: List[Dict[str, Any]] = []
 
     def add_session(self, session_id: str, data: Dict[str, Any]):
         self.sessions[session_id] = {
@@ -69,12 +74,19 @@ class SessionDataStorage:
         if 'model_results' in data:
             self.models.extend(data['model_results'])
 
+    def add_execution(self, execution_data: Dict[str, Any]):
+        """Store execution data from adaptive learning"""
+        self.executions.append(execution_data)
+        # Keep only recent executions
+        self.executions = self.executions[-500:]
+
     def get_all_data(self) -> Dict[str, Any]:
         return {
             'sessions': len(self.sessions),
             'datasets': self.datasets,
             'correlations': self.correlations,
-            'models': self.models
+            'models': self.models,
+            'executions': self.executions[-10:]  # Recent executions
         }
 
 class GraphDatabaseInterface(ABC):
