@@ -101,10 +101,23 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
     plot_urls = []
 
     try:
+        # Import resource monitoring
+        import psutil
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+        from mlops.monitoring import PerformanceMonitor, MetricType
+
+        monitor = PerformanceMonitor()
+
+        # Record initial resource usage
+        process = psutil.Process()
+        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+        initial_cpu = process.cpu_percent()
+
         is_plotting = any(pattern in code for pattern in [
             'plt.', 'sns.', '.plot(', '.hist(', 'matplotlib', 'seaborn'])
         patterns_found = [p for p in ["plt.", "sns.", ".plot(", ".hist(", "matplotlib", "seaborn"] if p in code]
-        print(f"DEBUG: Plot detection - code contains: {patterns_found}")     
+        print(f"DEBUG: Plot detection - code contains: {patterns_found}")
         if 'df.corr()' in code:
             code = code.replace('df.corr()', 'df.select_dtypes(include=[np.number]).corr()')
         
@@ -269,7 +282,25 @@ except:
                     pass
 
         clean_stdout = "\n".join([line for line in stdout_lines if not line.startswith("PLOT_SAVED:")])
-        
+
+        # Record final resource usage
+        try:
+            final_memory = process.memory_info().rss / 1024 / 1024  # MB
+            final_cpu = process.cpu_percent()
+            memory_usage = final_memory - initial_memory
+
+            monitor.record_metric(
+                deployment_id=session_id,
+                metric_type=MetricType.MEMORY_USAGE,
+                value=memory_usage,
+                metadata={"code_length": len(code)}
+            )
+
+            if memory_usage > 500:  # MB threshold
+                print(f"HIGH MEMORY USAGE: {memory_usage:.2f} MB")
+        except Exception as monitor_error:
+            print(f"Resource monitoring failed: {monitor_error}")
+
         return {
             "success": True,
             "stdout": clean_stdout,

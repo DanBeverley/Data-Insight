@@ -87,6 +87,9 @@ def retrieve_historical_patterns(task_description: str) -> str:
     """
     return "This is a placeholder. Pattern retrieval happens in the graph node."
 
+class LearningDataInput(BaseModel):
+    query: str = Field(description="Query for execution history or patterns - e.g., 'show successful visualization code' or 'get recent analysis patterns'")
+
 @tool(args_schema=GraphQueryInput)
 def knowledge_graph_query(query: str) -> str:
     """
@@ -98,6 +101,18 @@ def knowledge_graph_query(query: str) -> str:
                (e.g., 'find datasets similar to housing data', 'what features correlate with price')
     """
     return "This is a placeholder. Graph query happens in the graph node."
+
+@tool(args_schema=LearningDataInput)
+def access_learning_data(query: str) -> str:
+    """
+    Access historical execution data and learning patterns from past sessions.
+    Use this to understand what approaches worked well before, get execution time data, or find successful code patterns.
+
+    Args:
+        query: Description of what learning data you need
+               (e.g., 'show recent successful executions', 'get visualization code examples')
+    """
+    return "This is a placeholder. Learning data access happens in the graph node."
 
 def generate_business_insights(code: str, output: str, session_id: str) -> str:
     try:
@@ -167,6 +182,30 @@ def knowledge_graph_query_logic(query: str, session_id: str) -> str:
 
     except Exception as e:
         return f"Graph query failed: {str(e)}"
+
+def access_learning_data_logic(query: str, session_id: str) -> str:
+    try:
+        import sys, os
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+        from learning.adaptive_system import AdaptiveLearningSystem
+
+        adaptive_system = AdaptiveLearningSystem()
+        execution_history = adaptive_system.get_execution_history(success_only=True)
+
+        performance_monitor.record_metric(
+            session_id=session_id,
+            metric_name="learning_data_access",
+            value=1.0,
+            context={"query": query}
+        )
+
+        if execution_history:
+            return f"Learning data found: {len(execution_history)} successful executions. Recent examples: {execution_history[-5:]}"
+        else:
+            return "No learning data available yet. Execute some code first to build learning history."
+
+    except Exception as e:
+        return f"Learning data access failed: {str(e)}"
 
 def retrieve_historical_patterns_logic(task_description: str, session_id: str) -> str:
     try:
@@ -300,7 +339,37 @@ def execute_tools_node(state: AgentState) -> dict:
                     code = tool_args["code"]
                     print(f"DEBUG: Received clean code from Pydantic schema ({len(code)} chars)")
                     start_time = time.time()
+
+                    # Start performance monitoring
+                    from mlops.monitoring import PerformanceMonitor, MetricType
+                    monitor = PerformanceMonitor()
+
                     result = execute_python_in_sandbox(code, session_id)
+
+                    # Record performance metrics
+                    execution_time = time.time() - start_time
+                    monitor.record_metric(
+                        deployment_id=session_id,
+                        metric_type=MetricType.LATENCY,
+                        value=execution_time * 1000,  # Convert to ms
+                        metadata={"code_length": len(code), "tool": "python_code_interpreter"}
+                    )
+
+                    # Adaptive learning - capture execution data
+                    try:
+                        from learning.adaptive_system import AdaptiveLearningSystem
+                        adaptive_system = AdaptiveLearningSystem()
+                        adaptive_system.capture_execution_data(
+                            session_id=session_id,
+                            code=code,
+                            execution_time=execution_time,
+                            success=result.get('success', False),
+                            output=result.get('stdout', ''),
+                            error=result.get('stderr', ''),
+                            context={'tool': 'python_code_interpreter'}
+                        )
+                    except Exception as adaptive_error:
+                        print(f"Adaptive learning capture failed: {adaptive_error}")
                     execution_time = time.time() - start_time
                     performance_monitor.record_metric(
                         session_id=session_id, 
@@ -351,6 +420,9 @@ def execute_tools_node(state: AgentState) -> dict:
                 elif tool_name == 'knowledge_graph_query':
                     query = tool_args["query"]
                     content = knowledge_graph_query_logic(query, session_id)
+                elif tool_name == 'access_learning_data':
+                    query = tool_args["query"]
+                    content = access_learning_data_logic(query, session_id)
                 else:
                     content = f"Error: Unknown tool '{tool_name}'"
             except Exception as e:
@@ -387,7 +459,7 @@ def create_agent_executor():
         base_url="http://localhost:11434",
         temperature=0.0
     )
-    tools = [python_code_interpreter, retrieve_historical_patterns, knowledge_graph_query]
+    tools = [python_code_interpreter, retrieve_historical_patterns, knowledge_graph_query, access_learning_data]
     llm_with_tools = llm  
 
     prompt = ChatPromptTemplate.from_messages([
