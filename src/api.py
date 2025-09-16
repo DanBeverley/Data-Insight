@@ -436,6 +436,22 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
                 'data_profile': data_profile,
                 'filename': file.filename
             }
+
+            # Capture to knowledge graph
+            try:
+                from knowledge_graph.service import KnowledgeGraphService
+                graph_service = KnowledgeGraphService()
+                graph_service.store_session_data(session_id, {
+                    'dataset_info': {
+                        'filename': file.filename,
+                        'shape': df.shape,
+                        'columns': df.columns.tolist(),
+                        'dtypes': df.dtypes.asdict(),
+                        'domain': data_profile.dataset_insights.detected_domains
+                    }
+                })
+            except Exception as e:
+                logging.warning(f"Failed to store in knowledge graph: {e}")
         except Exception as e:
             logging.warning(f"Failed to generate dataset profile: {e}")
             builtins._session_store[session_id] = {"dataframe": df}

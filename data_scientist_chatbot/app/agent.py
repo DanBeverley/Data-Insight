@@ -71,18 +71,33 @@ def python_code_interpreter(code: str) -> str:
     """
     return "This is a placeholder. Execution happens in the graph node."
 
+class GraphQueryInput(BaseModel):
+    query: str = Field(description="Natural language query about data relationships, feature lineage, or past analysis patterns")
+
 @tool(args_schema=PatternInput)
 def retrieve_historical_patterns(task_description: str) -> str:
     """
     Retrieve proven successful code patterns from past sessions for similar tasks.
     Call this before performing common data science tasks like EDA, visualization,
     modeling, or data cleaning to leverage learned patterns and best practices.
-    
+
     Args:
         task_description: Description of the task you're about to perform
                          (e.g., 'visualization', 'correlation_analysis', 'ml_modeling')
     """
     return "This is a placeholder. Pattern retrieval happens in the graph node."
+
+@tool(args_schema=GraphQueryInput)
+def knowledge_graph_query(query: str) -> str:
+    """
+    Query the knowledge graph to find relationships between datasets, features, models, and analysis patterns.
+    Use this to discover insights from past work, find similar datasets, or understand feature relationships.
+
+    Args:
+        query: Natural language query about data relationships
+               (e.g., 'find datasets similar to housing data', 'what features correlate with price')
+    """
+    return "This is a placeholder. Graph query happens in the graph node."
 
 def generate_business_insights(code: str, output: str, session_id: str) -> str:
     try:
@@ -123,6 +138,35 @@ def generate_explainability_insights(code: str, session_id: str) -> str:
     except:
         pass
     return ""
+
+def knowledge_graph_query_logic(query: str, session_id: str) -> str:
+    try:
+        import sys, os
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+        from knowledge_graph.service import KnowledgeGraphService
+
+        graph_service = KnowledgeGraphService()
+        if not graph_service.is_available():
+            return "Knowledge graph service not available. No historical data patterns found for this query."
+
+        # Get structured data from graph
+        graph_data = graph_service.query_relationships(query, session_id)
+
+        performance_monitor.record_metric(
+            session_id=session_id,
+            metric_name="graph_query",
+            value=1.0,
+            context={"query": query}
+        )
+
+        # Return structured data for agent to interpret
+        if graph_data:
+            return f"Knowledge graph data found: {graph_data}"
+        else:
+            return "No relevant historical patterns or relationships found in the knowledge graph."
+
+    except Exception as e:
+        return f"Graph query failed: {str(e)}"
 
 def retrieve_historical_patterns_logic(task_description: str, session_id: str) -> str:
     try:
@@ -304,6 +348,9 @@ def execute_tools_node(state: AgentState) -> dict:
                 elif tool_name == 'retrieve_historical_patterns':
                     task_description = tool_args["task_description"]
                     content = retrieve_historical_patterns_logic(task_description, session_id)
+                elif tool_name == 'knowledge_graph_query':
+                    query = tool_args["query"]
+                    content = knowledge_graph_query_logic(query, session_id)
                 else:
                     content = f"Error: Unknown tool '{tool_name}'"
             except Exception as e:
@@ -340,7 +387,7 @@ def create_agent_executor():
         base_url="http://localhost:11434",
         temperature=0.0
     )
-    tools = [python_code_interpreter, retrieve_historical_patterns]
+    tools = [python_code_interpreter, retrieve_historical_patterns, knowledge_graph_query]
     llm_with_tools = llm  
 
     prompt = ChatPromptTemplate.from_messages([
