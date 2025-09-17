@@ -117,9 +117,9 @@ class AdaptiveLearningSystem:
         try:
             import sys, os
             sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-            from knowledge_graph.service import KnowledgeGraphService
-            graph_service = KnowledgeGraphService()
-            graph_service.add_execution_data(execution_data)
+            from knowledge_graph.service import SessionDataStorage
+            storage = SessionDataStorage()
+            storage.add_execution(execution_data)
         except Exception as e:
             print(f"Failed to store execution in knowledge graph: {e}")
 
