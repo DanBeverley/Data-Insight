@@ -12,6 +12,7 @@ from langchain_core.messages import BaseMessage, ToolMessage
 from langchain_core.messages.ai import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END, MessagesState, add_messages
+from typing_extensions import Annotated
 try:
     from langgraph.checkpoint.sqlite import SqliteSaver
     CHECKPOINTER_AVAILABLE = True
@@ -21,6 +22,7 @@ except ImportError:
     SqliteSaver = None
     memory = None
     CHECKPOINTER_AVAILABLE = False
+
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -43,12 +45,46 @@ project_root = Path(__file__).parent.parent.parent
 env_file = project_root / ".env"
 load_dotenv(env_file)
 
+class ModelManager:
+    def __init__(self):
+        self.brain_model = 'llama3.1:8b' 
+        self.hands_model = 'qwen2.5-coder:14b'
+        self.current_model = None
+        self.switch_count = 0
+
+    def get_model(self, agent_type: str) -> str:
+        target_model = self.brain_model if agent_type == 'brain' else self.hands_model
+
+        if self.current_model != target_model:
+            print(f"🧠 Switching model: {self.current_model} → {target_model}")
+            self.current_model = target_model
+            self.switch_count += 1
+
+        return self.current_model
+
+    def _optimize_context_for_coder(self, state: dict) -> dict:
+        optimized_state = state.copy()
+        messages = state.get("messages", [])
+
+        if len(messages) > 5:
+            optimized_state["messages"] = messages[-5:]
+
+        return optimized_state
+
+model_manager = ModelManager()
+
 class AgentState(TypedDict):
-    messages: Sequence[BaseMessage]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     session_id: str
     python_executions: int
     plan: Optional[str]
     scratchpad: str
+    business_objective: Optional[str]
+    task_type: Optional[str]
+    target_column: Optional[str]
+    workflow_stage: Optional[str]
+    current_agent: str
+    business_context: Dict[str, Any]
 
 performance_monitor = PerformanceMonitor()
 context_manager = ContextManager()
@@ -90,6 +126,20 @@ def retrieve_historical_patterns(task_description: str) -> str:
 class LearningDataInput(BaseModel):
     query: str = Field(description="Query for execution history or patterns - e.g., 'show successful visualization code' or 'get recent analysis patterns'")
 
+class CodingTask(BaseModel):
+    task_description: str = Field(description="Clear description of the coding task for the specialized coding agent")
+
+@tool(args_schema=CodingTask)
+def delegate_coding_task(task_description: str) -> str:
+    """
+    Delegate to specialized coding agent for Python code execution. Use for any request requiring:
+    - Data analysis, visualization, plotting
+    - Data preprocessing, cleaning, feature engineering
+    - Model training, evaluation, machine learning workflows
+    - Statistical analysis, data processing
+    """
+    return "Delegation confirmed. Coding agent will execute this task."
+
 @tool(args_schema=GraphQueryInput)
 def knowledge_graph_query(query: str) -> str:
     """
@@ -116,11 +166,11 @@ def access_learning_data(query: str) -> str:
 
 def generate_business_insights(code: str, output: str, session_id: str) -> str:
     try:
-        import sys, os, builtins
+        import sys, builtins, os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-        from insights.business_translator import BusinessTranslator, StakeholderType
-        from insights.narrative_generator import NarrativeGenerator, ReportTone
+        from src.insights.business_translator import BusinessTranslator, StakeholderType
+        from src.insights.narrative_generator import NarrativeGenerator, ReportTone
 
         if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
             data_profile = builtins._session_store[session_id].get('data_profile')
@@ -136,10 +186,10 @@ def generate_business_insights(code: str, output: str, session_id: str) -> str:
 
 def generate_explainability_insights(code: str, session_id: str) -> str:
     try:
-        import sys, os, builtins
+        import sys, builtins, os
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-        from explainability.bias_detector import BiasDetector
+        from src.explainability.bias_detector import BiasDetector
 
         if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
             df = builtins._session_store[session_id].get('dataframe')
@@ -158,14 +208,13 @@ def knowledge_graph_query_logic(query: str, session_id: str) -> str:
     try:
         import sys, os
         sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
-        from knowledge_graph.service import KnowledgeGraphService
+        from src.knowledge_graph.service import KnowledgeGraphService, SessionDataStorage
 
-        graph_service = KnowledgeGraphService()
-        if not graph_service.is_available():
-            return "Knowledge graph service not available. No historical data patterns found for this query."
+        # Use session storage directly for lightweight operations
+        storage = SessionDataStorage()
 
-        # Get structured data from graph
-        graph_data = graph_service.query_relationships(query, session_id)
+        # Get structured data from storage
+        graph_data = storage.get_all_data()
 
         performance_monitor.record_metric(
             session_id=session_id,
@@ -187,7 +236,7 @@ def access_learning_data_logic(query: str, session_id: str) -> str:
     try:
         import sys, os
         sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
-        from learning.adaptive_system import AdaptiveLearningSystem
+        from src.learning.adaptive_system import AdaptiveLearningSystem
 
         adaptive_system = AdaptiveLearningSystem()
         execution_history = adaptive_system.get_execution_history(success_only=True)
@@ -248,71 +297,13 @@ def retrieve_historical_patterns_logic(task_description: str, session_id: str) -
 
 def execute_tools_node(state: AgentState) -> dict:
     last_message = state["messages"][-1]
-    content_str = str(last_message.content) if last_message.content else ""
-    print(f"DEBUG execute_tools: Parsing content: {content_str[:200]}...")
-    
-    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-        tool_calls = last_message.tool_calls
-        print(f"DEBUG execute_tools: Found {len(tool_calls)} tool calls in message")
-    else:
-        tool_calls = []
-        import json
-        import re
-        
-        try:
-            json_start = content_str.find('{')
-            if json_start != -1:
-                brace_count = 0
-                json_end = json_start
-                for i, char in enumerate(content_str[json_start:], json_start):
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            json_end = i + 1
-                            break
-                
-                json_str = content_str[json_start:json_end]
-                print(f"DEBUG execute_tools: Attempting to parse JSON: {json_str[:200]}...")
-                
-                if '"""' in json_str:
-                    print("DEBUG execute_tools: Fixing triple-quoted strings for JSON parsing")
-                    import re
-                    code_match = re.search(r'"code":\s*"""([^"]+(?:"[^"]+)*)"""', json_str, re.DOTALL)
-                    if code_match:
-                        code_content = code_match.group(1).strip()
-                        escaped_code = json.dumps(code_content)
-                        json_str = re.sub(r'"code":\s*"""[^"]+(?:"[^"]+)*"""', f'"code": {escaped_code}', json_str, flags=re.DOTALL)
-                        print(f"DEBUG execute_tools: Fixed JSON: {json_str[:200]}...")
-                
-                try:
-                    tool_data = json.loads(json_str)
-                    if 'name' in tool_data and 'arguments' in tool_data:
-                        tool_name = tool_data['name']
-                        args_data = tool_data['arguments']
-                        
-                        print(f"DEBUG execute_tools: Tool name: {tool_name}")
-                        print(f"DEBUG execute_tools: Arguments type: {type(args_data)}")
-                        
-                        tool_calls.append({
-                            "name": tool_name,
-                            "args": args_data,
-                            "id": f"call_{len(tool_calls)}"
-                        })
-                        print(f"DEBUG execute_tools: Successfully extracted tool call: {tool_name}")
-                        
-                except json.JSONDecodeError as e:
-                    print(f"DEBUG execute_tools: JSON parse error: {e}")
-                    print(f"DEBUG execute_tools: Failed JSON: {json_str}")
-                
-        except Exception as e:
-            print(f"DEBUG execute_tools: Failed to parse tool calls: {e}")
-            return {"messages": state["messages"]}
-    
-    if not tool_calls:
+
+    if not (hasattr(last_message, 'tool_calls') and last_message.tool_calls):
         print("DEBUG execute_tools: No tool calls found")
         return {"messages": state["messages"]}
+
+    tool_calls = last_message.tool_calls
+    print(f"DEBUG execute_tools: Found {len(tool_calls)} tool calls in message")
     
     tool_responses = []
     for tool_call in tool_calls:
@@ -341,7 +332,7 @@ def execute_tools_node(state: AgentState) -> dict:
                     start_time = time.time()
 
                     # Start performance monitoring
-                    from mlops.monitoring import PerformanceMonitor, MetricType
+                    from src.mlops.monitoring import PerformanceMonitor, MetricType
                     monitor = PerformanceMonitor()
 
                     result = execute_python_in_sandbox(code, session_id)
@@ -357,7 +348,7 @@ def execute_tools_node(state: AgentState) -> dict:
 
                     # Adaptive learning - capture execution data
                     try:
-                        from learning.adaptive_system import AdaptiveLearningSystem
+                        from src.learning.adaptive_system import AdaptiveLearningSystem
                         adaptive_system = AdaptiveLearningSystem()
                         adaptive_system.capture_execution_data(
                             session_id=session_id,
@@ -449,43 +440,119 @@ def execute_tools_node(state: AgentState) -> dict:
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
     return result_state
 
-def create_agent_executor():
-    """Creates the stateful agent by manually constructing the graph."""
-    
+def create_brain_agent():
+    """Create Brain agent for business reasoning and planning"""
     from langchain_ollama import ChatOllama
-    
-    llm = ChatOllama(
-        model="qwen2.5-coder:14b",
+
+    return ChatOllama(
+        model=model_manager.get_model('brain'),
+        base_url="http://localhost:11434",
+        temperature=0.1
+    )
+
+def create_hands_agent():
+    """Create Hands agent for code execution"""
+    from langchain_ollama import ChatOllama
+
+    return ChatOllama(
+        model=model_manager.get_model('hands'),
         base_url="http://localhost:11434",
         temperature=0.0
     )
-    tools = [python_code_interpreter, retrieve_historical_patterns, knowledge_graph_query, access_learning_data]
-    llm_with_tools = llm  
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a senior data scientist assistant with access to a dataset `df`.
+def get_brain_prompt(data_context: str = ""):
+    """Enhanced business consultant prompt with dataset awareness"""
+    return ChatPromptTemplate.from_messages([
+        ("system", f"""You are an expert business data consultant with autonomous workflow intelligence and dataset awareness.
 
-            THINKING PROCESS (Internal - use for complex tasks):
-            1. **PLAN:** Outline approach for complex multi-step tasks
-            2. **EXECUTE:** Execute step-by-step using python_code_interpreter
-            3. **SYNTHESIZE:** Note findings after each execution
-            4. **RESPOND:** Provide clear explanations to user
+{data_context}
 
-            When you need to analyze data or create visualizations, use python_code_interpreter tool.
-            After the tool executes successfully, provide a clear explanation of what was created.
+AUTONOMOUS WORKFLOW DETECTION:
+You intelligently detect business objectives requiring complete ML workflows:
+- "Understand drivers of X" → Comprehensive analysis workflow
+- "Predict Y outcomes" → End-to-end modeling pipeline
+- "Optimize Z performance" → Complete ML solution
+- "Find patterns" → Exploratory + advanced analytics
 
-            TOOLS:
-            - python_code_interpreter: Execute Python code on the dataset
+INTELLIGENT DELEGATION:
+For ANY technical work, use the delegate_coding_task tool with clear instructions.
 
-            RULES:
-            - Think step-by-step and plan your approach for complex tasks
-            - For all data analysis/visualization: Use python_code_interpreter
-            - Always use matplotlib.use('Agg') for plotting
-            - Use actual column names from the data
-            - Never use plt.close() - always use plt.show()
-            - After tool execution, explain results clearly to the user"""),
-            MessagesPlaceholder(variable_name="messages"),])
-    agent_runnable = prompt | llm_with_tools
+TOOLS AVAILABLE:
+- delegate_coding_task: For all coding, analysis, modeling, visualization tasks
+- knowledge_graph_query: Access historical patterns and relationships
+- access_learning_data: Get successful code patterns from past sessions
+
+BUSINESS WORKFLOW INTELLIGENCE:
+You can plan and execute complete ML workflows autonomously:
+1. Detect business intent from user requests
+2. Plan appropriate technical approach based on data characteristics
+3. Delegate comprehensive technical implementation
+4. Interpret results for business impact
+5. Generate actionable recommendations
+
+COMMUNICATION APPROACH:
+- Business consultant tone focused on outcomes
+- Detect intent and plan workflows without asking technical approval
+- Delegate technical execution with clear business context
+- Interpret results as actionable business insights"""),
+        MessagesPlaceholder(variable_name="messages")
+    ])
+
+def get_hands_prompt(data_context: str = ""):
+    """Technical execution prompt for Hands agent"""
+    return ChatPromptTemplate.from_messages([
+        ("system", f"""You are a senior data scientist assistant focused on technical execution with access to a dataset `df`.
+
+{data_context}
+
+THINKING PROCESS (Internal - use for complex tasks):
+1. **PLAN:** Outline approach for complex multi-step tasks
+2. **EXECUTE:** Execute step-by-step using python_code_interpreter
+3. **SYNTHESIZE:** Note findings after each execution
+4. **RESPOND:** Provide clear explanations to user
+
+TECHNICAL EXECUTION CAPABILITIES:
+- Generate intelligent preprocessing code based on data characteristics
+- Create comprehensive model training and evaluation workflows
+- Execute end-to-end ML pipelines autonomously
+- Provide sophisticated data analysis and visualization
+
+MANDATORY FORMAT - Always respond with this exact JSON structure:
+{{{{
+"name": "python_code_interpreter",
+"arguments": {{{{
+    "code": "your_python_code_here"
+}}}}
+}}}}
+
+TOOLS:
+- python_code_interpreter: Execute Python code on the dataset
+
+RULES:
+- When you need to execute code: Return ONLY valid JSON (no explanatory text, no code blocks)
+- After a tool executes successfully: ALWAYS respond in conversational language explaining what was created or discovered
+- When explaining results: Use natural, conversational language
+- For all data analysis/visualization: Use python_code_interpreter
+- Always use matplotlib.use('Agg') for plotting
+- CRITICAL: Use actual column names from the dataset context above - never hardcode column names
+- Never use plt.close() - always use plt.show() to let the plots be saved
+- Put all Python code in the "code" field
+
+EXAMPLE:
+{{{{
+"name": "python_code_interpreter",
+"arguments": {{{{
+    "code": "import matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
+}}}}
+}}}}"""),
+        MessagesPlaceholder(variable_name="messages")
+    ])
+
+def create_agent_executor():
+    """Creates the multi-agent system with Brain and Hands specialization."""
+
+    from langchain_ollama import ChatOllama
+    
     
     def parse_tool_calls(state: AgentState):
         """
@@ -627,101 +694,145 @@ def create_agent_executor():
             
         return state
 
-    def run_agent(state: AgentState):
-        """Invoke the agent with the current state and inject data profile context"""
-        python_executions = state.get("python_executions", 0)
+    def run_brain_agent(state: AgentState):
         session_id = state.get("session_id")
-        
-        # Inject data profile context if available
         enhanced_state = state.copy()
 
-        # Initialize plan and scratchpad if not present
         if 'plan' not in enhanced_state:
             enhanced_state['plan'] = None
         if 'scratchpad' not in enhanced_state:
             enhanced_state['scratchpad'] = ""
-        
+        if 'current_agent' not in enhanced_state:
+            enhanced_state['current_agent'] = "brain"
+        if 'business_context' not in enhanced_state:
+            enhanced_state['business_context'] = {}
+
+        data_context = ""
         try:
             import builtins
-            if (hasattr(builtins, '_session_store') and 
-                session_id in builtins._session_store and 
+            if (hasattr(builtins, '_session_store') and
+                session_id in builtins._session_store and
                 'data_profile' in builtins._session_store[session_id]):
-                
+
                 data_profile = builtins._session_store[session_id]['data_profile']
                 column_context = data_profile.ai_agent_context['column_details']
-                
-                context_prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""You are a senior data scientist assistant with access to a dataset `df`.
 
-                    THINKING PROCESS (Internal - use for complex tasks):
-                    1. **PLAN:** Outline approach for complex multi-step tasks
-                    2. **EXECUTE:** Execute step-by-step using python_code_interpreter
-                    3. **SYNTHESIZE:** Note findings after each execution
-                    4. **RESPOND:** Provide clear explanations to user
+                data_context = f"""
+DATASET CONTEXT:
+Available dataset with columns:
+{chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
+                            for col, info in column_context.items())}
 
-                    Current plan: {state.get('plan', 'None set yet')}
-                    Current scratchpad: {state.get('scratchpad', 'Empty')}
-
-                    DATASET CONTEXT:
-                    You have access to a dataset with the following columns and their details:
-                    {chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
-                                for col, info in column_context.items())}
-
-                    VISUALIZATION SUGGESTIONS:
-                    {chr(10).join(f'• {sug["type"]}: {sug["description"]}' for sug in data_profile.ai_agent_context.get('visualization_suggestions', [])[:3])}
-
-                    CODE GENERATION HINTS:
-                    • Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
-                    • Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
-                    • Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
-
-                    MANDATORY FORMAT - Always respond with this exact JSON structure:
-
-                    {{{{
-                    "name": "python_code_interpreter",
-                    "arguments": {{{{
-                        "code": "your_python_code_here"
-                    }}}}
-                    }}}}
-
-                    TOOLS:
-                    - python_code_interpreter: Execute Python code on the dataset
-
-                    RULES:
-                    - IMPORTANT: After a tool executes successfully, ALWAYS respond in conversational language explaining what was created or discovered
-                    - When you need to execute code: Return ONLY valid JSON
-                    - When explaining results: Use natural, conversational language
-                    - For all data analysis/visualization: Use python_code_interpreter
-                    - Always use matplotlib.use('Agg') for plotting
-                    - Use actual column names from the dataset context above
-                    - Never use plt.close() - always use plt.show() to let the plots be saved
-                    - Put all Python code in the "code" field
-
-                    EXAMPLE:
-                    {{{{
-                    "name": "python_code_interpreter",
-                    "arguments": {{{{
-                        "code": "import matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
-                    }}}}
-                    }}}}"""),
-                    MessagesPlaceholder(variable_name="messages"),
-                ])
-                
-                enhanced_agent = context_prompt | llm_with_tools
-                agent_outcome = enhanced_agent.invoke(enhanced_state)
-                
-            else:
-                agent_outcome = agent_runnable.invoke(enhanced_state)
-                
+BUSINESS INSIGHTS FROM DATA:
+• Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
+• Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
+• Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
+"""
         except Exception as e:
-            agent_outcome = agent_runnable.invoke(enhanced_state)
-            
-        return {
-            "messages": enhanced_state["messages"] + [agent_outcome],
-            "python_executions": enhanced_state.get("python_executions", 0),
-            "plan": enhanced_state.get("plan"),
-            "scratchpad": enhanced_state.get("scratchpad", "")
-        }
+            print(f"WARNING: Brain agent failed to get dataset context: {e}")
+            print(f"DEBUG: Brain session_id: {session_id}")
+
+        print(f"DEBUG: Brain data context length: {len(data_context)} chars")
+        if data_context:
+            print(f"DEBUG: Brain context preview: {data_context[:200]}...")
+        else:
+            print("DEBUG: Brain has NO data context")
+
+        llm = create_brain_agent()
+        brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data]
+        llm_with_tools = llm.bind_tools(brain_tools)
+        prompt = get_brain_prompt(data_context)
+        agent_runnable = prompt | llm_with_tools
+
+        try:
+            response = agent_runnable.invoke(enhanced_state)
+            print(f"DEBUG: Brain agent response type: {type(response)}")
+            print(f"DEBUG: Brain agent content preview: {str(response.content)[:200]}...")
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                print(f"DEBUG: Brain agent tool calls: {[tc.get('name') for tc in response.tool_calls]}")
+            enhanced_state['current_agent'] = "brain"
+            return {"messages": [response], "current_agent": "brain"}
+        except Exception as e:
+            return {"messages": [AIMessage(content=f"Brain agent error: {e}")]}
+
+    def run_hands_agent(state: AgentState):
+        session_id = state.get("session_id")
+
+        # Extract delegation task from Brain's tool call
+        last_message = state["messages"][-1] if state["messages"] else None
+        task_description = "Perform data analysis task"
+
+        if (last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls):
+            tool_call = last_message.tool_calls[0]
+            if tool_call.get('name') == 'delegate_coding_task':
+                task_description = tool_call.get('args', {}).get('task_description', task_description)
+
+        # Get dataset context for Hands agent
+        data_context = ""
+        try:
+            import builtins
+            if (hasattr(builtins, '_session_store') and
+                session_id in builtins._session_store and
+                'data_profile' in builtins._session_store[session_id]):
+
+                data_profile = builtins._session_store[session_id]['data_profile']
+                column_context = data_profile.ai_agent_context['column_details']
+
+                data_context = f"""
+DATASET CONTEXT:
+Available dataset with columns:
+{chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
+                            for col, info in column_context.items())}
+
+TECHNICAL INSIGHTS:
+• Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
+• Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
+• Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
+"""
+        except Exception as e:
+            print(f"WARNING: Failed to get dataset context: {e}")
+            print(f"DEBUG: Session ID: {session_id}")
+            print(f"DEBUG: Has _session_store: {hasattr(builtins, '_session_store') if 'builtins' in locals() else 'builtins not imported'}")
+            data_context = "No dataset context available"
+
+        print(f"DEBUG: Data context length: {len(data_context)} chars")
+        print(f"DEBUG: Data context preview: {data_context[:200]}...")
+        print(f"DEBUG: Hands agent starting with session_id: {session_id}")
+
+        # Create state with task context
+        hands_state = state.copy()
+        hands_state["messages"] = list(hands_state["messages"]) + [("user", f"Execute this technical task: {task_description}")]
+
+        llm = create_hands_agent()
+        prompt = get_hands_prompt(data_context)
+        agent_runnable = prompt | llm
+
+        try:
+            response = agent_runnable.invoke(hands_state)
+            print(f"DEBUG: Hands agent response type: {type(response)}")
+            print(f"DEBUG: Hands agent content preview: {str(response.content)[:300]}...")
+            print(f"DEBUG: Hands response starts with JSON? {str(response.content).strip().startswith('{')}")
+            print(f"DEBUG: Hands response contains 'python_code_interpreter'? {'python_code_interpreter' in str(response.content)}")
+            return {"messages": [response], "current_agent": "hands"}
+        except Exception as e:
+            return {"messages": [AIMessage(content=f"Hands agent error: {e}")]}
+
+    def route_to_agent(state: AgentState):
+        last_message = state["messages"][-1] if state["messages"] else None
+
+        if not last_message:
+            return "brain"
+
+        if isinstance(last_message, ToolMessage):
+            return "brain"
+
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            tool_call = last_message.tool_calls[0]
+            if tool_call.get('name') == 'delegate_coding_task':
+                return "hands"
+
+        return "brain"
+
 
     def should_continue(state: AgentState):
         messages = state["messages"]
@@ -734,19 +845,32 @@ def create_agent_executor():
 
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
 
-            if len(messages) >= 3:
+            if len(messages) >= 5:  # Need more messages to detect true recursion
                 last_tool_call = last_message.tool_calls[0]
-                # Find the previous AI message with tool calls
+
+                # Check if there was a human message between the last two tool calls
+                # True recursion only happens when AI makes consecutive identical tool calls
+                # without new human input
+                consecutive_identical_calls = 0
+
                 for i in range(len(messages) - 2, -1, -1):
                     msg = messages[i]
+
+                    # If we find a human message, reset the counter (new user input breaks recursion)
+                    if hasattr(msg, 'type') and msg.type == 'human':
+                        break
+
                     if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
                         prev_tool_call = msg.tool_calls[0]
-                        # If the tool name and arguments are the same, it's a loop
                         if (last_tool_call.get('name') == prev_tool_call.get('name') and
                             last_tool_call.get('args') == prev_tool_call.get('args')):
-                            print(f"DEBUG: Termination condition met: Detected recursive tool call for '{last_tool_call.get('name')}'.")
-                            return END
-                        break  # Found the last tool call, no need to look further back
+                            consecutive_identical_calls += 1
+                        break
+
+                # Only terminate if we have multiple consecutive identical calls (true recursion)
+                if consecutive_identical_calls >= 2:
+                    print(f"DEBUG: Termination condition met: Detected recursive tool call for '{last_tool_call.get('name')}'.")
+                    return END
 
             return "action"
         return END 
@@ -756,22 +880,55 @@ def create_agent_executor():
         last_message = state["messages"][-1]
         content = str(last_message.content).strip()
 
-        # Check if response contains tool usage patterns (including markdown wrapped JSON)
-        if (content.startswith("{") and '"name":' in content) or \
-           ("python_code_interpreter" in content and '"code":' in content) or \
-           (content.startswith("```json") and '"name":' in content) or \
-           (content.startswith("```") and '"name":' in content):
+        print(f"DEBUG: Routing after agent. Content preview: {content[:100]}...")
+        print(f"DEBUG: Has tool_calls? {hasattr(last_message, 'tool_calls') and last_message.tool_calls}")
+        print(f"DEBUG: Starts with {{? {content.startswith('{')}")
+        print(f"DEBUG: Contains 'name'? {'"name":' in content}")
+        print(f"DEBUG: Contains python_code_interpreter? {'python_code_interpreter' in content}")
+
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            print("DEBUG: Routing to parser (tool_calls)")
             return "parser"
+
+        if (content.startswith("{") and '"name":' in content) or \
+           ("python_code_interpreter" in content and '"code":' in content):
+            print("DEBUG: Routing to parser (JSON format)")
+            return "parser"
+
+        print("DEBUG: Routing to END")
         return END
 
     graph = StateGraph(AgentState)
-    graph.add_node("agent", run_agent)
+    graph.add_node("brain", run_brain_agent)
+    graph.add_node("hands", run_hands_agent)
     graph.add_node("parser", parse_tool_calls)
     graph.add_node("action", execute_tools_node)
-    graph.set_entry_point("agent")
+    graph.set_entry_point("brain")
+
+    def route_from_brain(state: AgentState):
+        last_message = state["messages"][-1] if state["messages"] else None
+
+        if (last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls):
+            tool_call = last_message.tool_calls[0]
+            if tool_call.get('name') == 'delegate_coding_task':
+                return "hands"
+            else:
+                return "parser"
+
+        return END
 
     graph.add_conditional_edges(
-        "agent",
+        "brain",
+        route_from_brain,
+        {
+            "hands": "hands",
+            "parser": "parser",
+            END: END
+        }
+    )
+
+    graph.add_conditional_edges(
+        "hands",
         route_after_agent,
         {
             "parser": "parser",
@@ -787,7 +944,8 @@ def create_agent_executor():
             END: END
         }
     )
-    graph.add_edge("action", "agent")
+
+    graph.add_edge("action", "brain")
     
     if CHECKPOINTER_AVAILABLE and memory:
         agent_executor = graph.compile(checkpointer=memory)

@@ -132,11 +132,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import uuid
 import sys
+import os
 
 {code}
 
 # Auto-save any plots created
-import os
 print("Checking for figures to save...")
 fig_nums = plt.get_fignums()
 print(f"Found {{len(fig_nums)}} figures: {{fig_nums}}")
