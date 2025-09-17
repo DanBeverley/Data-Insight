@@ -439,14 +439,14 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
 
             # Capture to knowledge graph
             try:
-                from knowledge_graph.service import KnowledgeGraphService
-                graph_service = KnowledgeGraphService()
-                graph_service.store_session_data(session_id, {
+                from knowledge_graph.service import SessionDataStorage
+                storage = SessionDataStorage()
+                storage.add_session(session_id, {
                     'dataset_info': {
                         'filename': file.filename,
                         'shape': df.shape,
                         'columns': df.columns.tolist(),
-                        'dtypes': df.dtypes.asdict(),
+                        'dtypes': df.dtypes.to_dict(),
                         'domain': data_profile.dataset_insights.detected_domains
                     }
                 })
