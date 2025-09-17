@@ -34,22 +34,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class KnowledgeGraphService:
-    def __init__(self):
-        self.storage = SessionDataStorage()
-
-    def is_available(self) -> bool:
-        return True
-
-    def query_relationships(self, query: str, session_id: str) -> Dict[str, Any]:
-        return self.storage.get_all_data()
-
-    def store_session_data(self, session_id: str, data: Dict[str, Any]):
-        self.storage.add_session(session_id, data)
-
-    def add_execution_data(self, execution_data: Dict[str, Any]):
-        """Add execution data from adaptive learning"""
-        self.storage.add_execution(execution_data)
 
 class SessionDataStorage:
     def __init__(self):
