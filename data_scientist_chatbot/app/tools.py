@@ -60,19 +60,19 @@ def _reload_dataset_if_available(sandbox: Sandbox, session_id: str):
             csv_data = df.to_csv(index=False)
             
             reload_code = f"""
-import pandas as pd
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import seaborn as sns
-from io import StringIO
+                            import pandas as pd
+                            import numpy as np
+                            import matplotlib
+                            matplotlib.use('Agg')
+                            import matplotlib.pyplot as plt
+                            import seaborn as sns
+                            from io import StringIO
 
-# Reload dataset from session
-csv_data = '''{csv_data}'''
-df = pd.read_csv(StringIO(csv_data))
-print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
-"""
+                            # Reload dataset from session
+                            csv_data = '''{csv_data}'''
+                            df = pd.read_csv(StringIO(csv_data))
+                            print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
+                            """
             
             result = sandbox.run_code(reload_code, timeout=10)
             print(f"DEBUG: Dataset reload {'successful' if result else 'failed'} for session {session_id}")
@@ -101,11 +101,14 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
     plot_urls = []
 
     try:
-        # Import resource monitoring
+        print("DEBUG: Starting sandbox execution try block")
         import psutil
         import sys
+        import os  
+        print("DEBUG: Imported os successfully")
         sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
-        from mlops.monitoring import PerformanceMonitor, MetricType
+        print("DEBUG: Added src to path")
+        from src.mlops.monitoring import PerformanceMonitor, MetricType
 
         monitor = PerformanceMonitor()
 
@@ -132,11 +135,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import uuid
 import sys
-import os
+import os as _os_module
 
 {code}
 
 # Auto-save any plots created
+import os  # Fresh import to avoid any shadowing issues
 print("Checking for figures to save...")
 fig_nums = plt.get_fignums()
 print(f"Found {{len(fig_nums)}} figures: {{fig_nums}}")
@@ -146,7 +150,7 @@ if fig_nums:
             plt.figure(fig_num)
             plot_filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
             print(f"Saving figure {{fig_num}} to {{plot_filename}}")
-            
+
             # Save with more explicit path and error handling
             try:
                 plt.savefig(plot_filename, format='png', dpi=150, bbox_inches='tight')
@@ -154,7 +158,7 @@ if fig_nums:
             except Exception as save_e:
                 print(f"plt.savefig failed: {{save_e}}")
                 raise save_e
-            
+
             # Verify file was created
             if os.path.exists(plot_filename):
                 file_size = os.path.getsize(plot_filename)
@@ -197,7 +201,9 @@ except:
         print(f"Error executing code: {{e}}")
 """
         
+        print(f"DEBUG: About to run code in sandbox. Enhanced code length: {len(enhanced_code)}")
         result = sandbox.run_code(enhanced_code, timeout=30)
+        print("DEBUG: Sandbox execution completed")
         
         performance_monitor.record_metric(
             session_id=session_id,
@@ -220,16 +226,18 @@ except:
         static_dir = project_root / "static" / "plots"
         static_dir.mkdir(parents=True, exist_ok=True)
         if stdout_content:
+            print("DEBUG: Processing stdout content for plot downloads")
             import os
             from pathlib import Path
-            
+
             current_path = Path(__file__).resolve()
             project_root = current_path
             while project_root.name != "Data-Insight" and project_root.parent != project_root:
                 project_root = project_root.parent
-            
+
             static_dir = project_root / "static" / "plots"
             static_dir.mkdir(parents=True, exist_ok=True)
+            print(f"DEBUG: Static dir set to: {static_dir}")
             
             for line in stdout_content.split('\n'):
                 if line.startswith("PLOT_SAVED:"):
@@ -309,6 +317,11 @@ except:
             "files": []
         }
     except Exception as e:
+        print(f"DEBUG: Exception in execute_python_in_sandbox: {e}")
+        print(f"DEBUG: Exception type: {type(e)}")
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}")
+
         error_str = str(e)
         if "disconnected" in error_str.lower() or "timeout" in error_str.lower():
             try:
