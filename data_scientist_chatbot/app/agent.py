@@ -2,7 +2,7 @@ import os
 import json
 import sqlite3
 from pathlib import Path
-from typing import TypedDict, Sequence, Optional, Dict, Any
+from typing import TypedDict, Sequence, Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -47,7 +47,7 @@ load_dotenv(env_file)
 
 class ModelManager:
     def __init__(self):
-        self.brain_model = 'llama3.1:8b' 
+        self.brain_model = 'llama3.1:8b-instruct-q4_K_M' 
         self.hands_model = 'qwen2.5-coder:14b'
         self.current_model = None
         self.switch_count = 0
@@ -85,6 +85,8 @@ class AgentState(TypedDict):
     workflow_stage: Optional[str]
     current_agent: str
     business_context: Dict[str, Any]
+    retry_count: int
+    last_agent_sequence: List[str]
 
 performance_monitor = PerformanceMonitor()
 context_manager = ContextManager()
@@ -434,7 +436,9 @@ def execute_tools_node(state: AgentState) -> dict:
         "messages": state["messages"] + tool_responses,
         "python_executions": python_executions,
         "plan": state.get("plan"),
-        "scratchpad": state.get("scratchpad", "")
+        "scratchpad": state.get("scratchpad", ""),
+        "retry_count": 0,  # Reset after successful tool execution
+        "last_agent_sequence": state.get("last_agent_sequence", []) + ["action"]
     }
     print(f"DEBUG execute_tools_node: Python executions count: {python_executions}")
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
@@ -460,12 +464,35 @@ def create_hands_agent():
         temperature=0.0
     )
 
-def get_brain_prompt(data_context: str = ""):
+def get_brain_prompt(data_context: str = "", has_recent_results: bool = False):
     """Enhanced business consultant prompt with dataset awareness"""
+    result_awareness = ""
+    if has_recent_results:
+        result_awareness = """
+TASK COMPLETION AWARENESS:
+Your technical specialist has completed the requested work. Focus on:
+1. Acknowledge the completed visualization/analysis
+2. Interpret the results and provide business insights
+3. Reference the specific output that was generated
+4. Avoid providing example code since the task is already complete
+Your role is to explain what was accomplished and its business value."""
+
     return ChatPromptTemplate.from_messages([
         ("system", f"""You are an expert business data consultant with autonomous workflow intelligence and dataset awareness.
 
 {data_context}
+
+{result_awareness}
+
+STATUS REPORTING PROTOCOL:
+ALWAYS begin your response with a status line in this format:
+STATUS: [Brief description of what you're currently doing]
+
+Examples:
+- STATUS: Analyzing request for sales trend visualization and determining optimal approach
+- STATUS: Interpreting correlation analysis results and generating business insights
+- STATUS: Planning comprehensive machine learning workflow for predictive modeling
+- STATUS: Reviewing completed visualization and providing strategic recommendations
 
 AUTONOMOUS WORKFLOW DETECTION:
 You intelligently detect business objectives requiring complete ML workflows:
@@ -502,51 +529,155 @@ def get_hands_prompt(data_context: str = ""):
     """Technical execution prompt for Hands agent"""
     return ChatPromptTemplate.from_messages([
         ("system", f"""You are a senior data scientist assistant focused on technical execution with access to a dataset `df`.
+                    Your primary goal is to assist the user with their data analysis tasks. You MUST respond ONLY with a valid JSON structure for the `python_code_interpreter` tool.
+                    Do not include any other text, explanations, or markdown.
+                    {data_context}
 
-{data_context}
+                    THINKING PROCESS (Internal - use for complex tasks):
+                    1. **PLAN:** Outline approach for complex multi-step tasks
+                    2. **EXECUTE:** Execute step-by-step using the available tools: python_code_interpreter
+                    3. **SYNTHESIZE:** Note findings after each execution
+                    4. **RESPOND:** Provide clear explanations to user
 
-THINKING PROCESS (Internal - use for complex tasks):
-1. **PLAN:** Outline approach for complex multi-step tasks
-2. **EXECUTE:** Execute step-by-step using python_code_interpreter
-3. **SYNTHESIZE:** Note findings after each execution
-4. **RESPOND:** Provide clear explanations to user
+                    TECHNICAL EXECUTION CAPABILITIES:
+                    - Generate intelligent preprocessing code based on data characteristics
+                    - Create comprehensive model training and evaluation workflows
+                    - Execute end-to-end ML pipelines autonomously
+                    - Provide sophisticated data analysis and visualization
 
-TECHNICAL EXECUTION CAPABILITIES:
-- Generate intelligent preprocessing code based on data characteristics
-- Create comprehensive model training and evaluation workflows
-- Execute end-to-end ML pipelines autonomously
-- Provide sophisticated data analysis and visualization
+                    STATUS REPORTING PROTOCOL:
+                    Include a status comment at the start of your Python code to describe what you're implementing.
+                    Use this format: # STATUS: [Brief description of what you're implementing]
 
-MANDATORY FORMAT - Always respond with this exact JSON structure:
-{{{{
-"name": "python_code_interpreter",
-"arguments": {{{{
-    "code": "your_python_code_here"
-}}}}
-}}}}
+                    Examples:
+                    - # STATUS: Creating interactive pie charts for all dataset features
+                    - # STATUS: Implementing correlation analysis with heatmap visualization
+                    - # STATUS: Building machine learning pipeline with feature engineering
+                    - # STATUS: Developing comprehensive data cleaning workflow
 
-TOOLS:
-- python_code_interpreter: Execute Python code on the dataset
+                    MANDATORY FORMAT - Always respond with this exact JSON structure:
+                    {{{{
+                    "name": "python_code_interpreter",
+                    "arguments": {{{{
+                        "code": "# STATUS: [Your status description]\\nyour_python_code_here"
+                    }}}}
+                    }}}}
 
-RULES:
-- When you need to execute code: Return ONLY valid JSON (no explanatory text, no code blocks)
-- After a tool executes successfully: ALWAYS respond in conversational language explaining what was created or discovered
-- When explaining results: Use natural, conversational language
-- For all data analysis/visualization: Use python_code_interpreter
-- Always use matplotlib.use('Agg') for plotting
-- CRITICAL: Use actual column names from the dataset context above - never hardcode column names
-- Never use plt.close() - always use plt.show() to let the plots be saved
-- Put all Python code in the "code" field
+                    TOOLS:
+                    - python_code_interpreter: Execute Python code on the dataset
 
-EXAMPLE:
-{{{{
-"name": "python_code_interpreter",
-"arguments": {{{{
-    "code": "import matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
-}}}}
-}}}}"""),
-        MessagesPlaceholder(variable_name="messages")
-    ])
+                    RULES:
+                    - When you need to execute code: Return ONLY valid JSON (no explanatory text, no markdown)
+                    - After a tool executes successfully: ALWAYS respond in conversational language explaining what was created or discovered
+                    - When explaining results: Use natural, conversational language
+                    - For all data analysis/visualization: Use python_code_interpreter
+                    - Always use matplotlib.use('Agg') for plotting
+                    - CRITICAL: Use actual column names from the dataset context above - never hardcode column names
+                    - Never use plt.close() - always use plt.show() to let the plots be saved
+                    - Put all Python code in the "code" field
+                    - IMPORTANT: If you use markdown, ensure JSON is properly formatted within code blocks
+                    - Follow the exact JSON structure shown in the example below
+                    - Remember: First respond with JSON, then explain after execution
+
+                    EXAMPLE:
+                    {{{{
+                    "name": "python_code_interpreter",
+                    "arguments": {{{{
+                        "code": "# STATUS: Creating correlation heatmap for numerical features\\nimport matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
+                    }}}}
+                    }}}}"""),
+                            MessagesPlaceholder(variable_name="messages")
+                        ])
+
+def extract_brain_status(content: str) -> Optional[str]:
+    """Extract status message from brain agent response."""
+    import re
+
+    match = re.search(r'STATUS:\s*(.+)', content)
+    if match:
+        status = match.group(1).strip()
+        # Clean up the status message
+        if status.endswith('.'):
+            status = status[:-1]
+        return f"🧠 {status}"
+    return None
+
+def extract_hands_status(content: str) -> Optional[str]:
+    """Extract status message from hands agent code or response."""
+    import re
+
+    # Try to extract from JSON code field first
+    json_match = re.search(r'"code":\s*"([^"]*#\s*STATUS:\s*[^"]*)"', content)
+    if json_match:
+        code_content = json_match.group(1)
+        status_match = re.search(r'#\s*STATUS:\s*(.+?)\\n', code_content)
+        if status_match:
+            status = status_match.group(1).strip()
+            return f"👨‍💻 {status}"
+
+    # Try to extract from plain text
+    status_match = re.search(r'#\s*STATUS:\s*(.+)', content)
+    if status_match:
+        status = status_match.group(1).strip()
+        if status.endswith('\\n'):
+            status = status[:-2]
+        return f"👨‍💻 {status}"
+
+    return None
+
+def extract_parser_status(tool_name: str, tool_args: Dict[str, Any]) -> str:
+    """Generate status message for parser/tool execution."""
+    if tool_name == "python_code_interpreter":
+        return "⚙️ Executing Python code in secure sandbox..."
+    elif tool_name == "delegate_coding_task":
+        task = tool_args.get("task_description", "task")
+        return f"🔄 Delegating to specialist: {task[:50]}..."
+    elif tool_name == "knowledge_graph_query":
+        return "🔍 Querying knowledge graph for insights..."
+    elif tool_name == "access_learning_data":
+        return "📚 Accessing historical learning patterns..."
+    else:
+        return f"⚙️ Processing {tool_name}..."
+
+def create_lean_hands_context(state: AgentState, task_description: str, session_id: str) -> Dict[str, Any]:
+    messages = state.get("messages", [])
+    essential_messages = []
+
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if hasattr(msg, 'type') and msg.type == 'human':
+            essential_messages.insert(0, msg)
+            break
+        elif isinstance(msg, tuple) and len(msg) == 2 and msg[0] == 'user':
+            essential_messages.insert(0, msg)
+            break
+
+    brain_context = ""
+    for i in range(len(messages) - 1, max(-1, len(messages) - 3), -1):
+        msg = messages[i]
+        if hasattr(msg, 'content') and 'STATUS:' in str(msg.content):
+            brain_context = f"Context: {str(msg.content)[:200]}..."
+            break
+
+    task_message = f"{brain_context}\n\nExecute this technical task: {task_description}" if brain_context else f"Execute this technical task: {task_description}"
+    essential_messages.append(("user", task_message))
+
+    lean_state = {
+        "messages": essential_messages,
+        "session_id": session_id,
+        "python_executions": state.get("python_executions", 0),
+        "current_agent": "hands",
+        "last_agent_sequence": state.get("last_agent_sequence", []),
+        "retry_count": state.get("retry_count", 0)
+    }
+
+    original_msg_count = len(messages)
+    lean_msg_count = len(lean_state["messages"])
+    reduction = ((original_msg_count - lean_msg_count) / original_msg_count * 100) if original_msg_count > 0 else 0
+
+    print(f"DEBUG: Context pruning - Original: {original_msg_count} messages, Pruned: {lean_msg_count} messages ({reduction:.1f}% reduction)")
+
+    return lean_state
 
 def create_agent_executor():
     """Creates the multi-agent system with Brain and Hands specialization."""
@@ -568,24 +699,38 @@ def create_agent_executor():
         content_str = str(last_message.content).strip()
         
         try:
+            import re
             json_str = content_str
-            
-            # Remove any markdown code blocks if present
-            if json_str.startswith('```json'):
-                import re
-                json_str = re.sub(r'^```json\s*', '', json_str)
-                json_str = re.sub(r'\s*```$', '', json_str)
-            elif json_str.startswith('```'):
-                import re
-                json_str = re.sub(r'^```\s*', '', json_str)
-                json_str = re.sub(r'\s*```$', '', json_str)
-            
-            # Try to find JSON object in the content
-            if not json_str.startswith('{'):
-                import re
+            print(f"DEBUG: Parser input: {content_str[:150]}...")
+
+            # Handle markdown code blocks more robustly
+            if '```json' in json_str:
+                # Extract JSON from ```json blocks
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', json_str, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                    print(f"DEBUG: Extracted JSON from markdown: {json_str[:100]}...")
+                else:
+                    # Try without closing ```
+                    json_match = re.search(r'```json\s*(\{.*)', json_str, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1).rstrip('`').strip()
+                        print(f"DEBUG: Extracted JSON (no closing): {json_str[:100]}...")
+
+            elif '```python' in json_str:
+                # Extract Python code and auto-wrap in JSON
+                code_match = re.search(r'```python\s*(.*?)\s*```', json_str, re.DOTALL)
+                if code_match:
+                    code_content = code_match.group(1).strip()
+                    json_str = f'{{"name": "python_code_interpreter", "arguments": {{"code": "{code_content.replace(chr(34), chr(92)+chr(34)).replace(chr(10), chr(92)+"n")}"}}}}'
+                    print(f"DEBUG: Auto-wrapped Python code in JSON")
+
+            # Try to find JSON object in the content if not already found
+            if not json_str.startswith('{') and '{' in json_str:
                 json_match = re.search(r'\{.*\}', json_str, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(0)
+                    print(f"DEBUG: Found JSON object: {json_str[:100]}...")
             
             tool_data = json.loads(json_str)
             
@@ -706,6 +851,35 @@ def create_agent_executor():
             enhanced_state['current_agent'] = "brain"
         if 'business_context' not in enhanced_state:
             enhanced_state['business_context'] = {}
+        if 'retry_count' not in enhanced_state:
+            enhanced_state['retry_count'] = 0
+        if 'last_agent_sequence' not in enhanced_state:
+            enhanced_state['last_agent_sequence'] = []
+
+        # Track brain agent execution
+        last_sequence = enhanced_state.get("last_agent_sequence", [])
+        enhanced_state["last_agent_sequence"] = last_sequence + ["brain"]
+
+        # Check for recent tool execution results
+        recent_tool_result = None
+        messages = enhanced_state.get("messages", [])
+        for i in range(len(messages) - 1, max(-1, len(messages) - 3), -1):
+            msg = messages[i]
+            if hasattr(msg, 'type') and msg.type == 'tool':
+                content_str = str(msg.content)
+                if 'Generated' in content_str and 'visualization' in content_str:
+                    recent_tool_result = msg.content
+                    break
+                elif 'PLOT_SAVED' in content_str and 'plot_' in content_str:
+                    import re
+                    plot_match = re.search(r'PLOT_SAVED:([^\s]+\.png)', content_str)
+                    if plot_match:
+                        recent_tool_result = f"Created visualization: {plot_match.group(1)}"
+                        break
+
+        print(f"DEBUG: Brain agent - recent tool result found: {recent_tool_result is not None}")
+        if recent_tool_result:
+            print(f"DEBUG: Tool result preview: {str(recent_tool_result)[:200]}...")
 
         data_context = ""
         try:
@@ -718,16 +892,16 @@ def create_agent_executor():
                 column_context = data_profile.ai_agent_context['column_details']
 
                 data_context = f"""
-DATASET CONTEXT:
-Available dataset with columns:
-{chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
-                            for col, info in column_context.items())}
+                                DATASET CONTEXT:
+                                Available dataset with columns:
+                                {chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
+                                                            for col, info in column_context.items())}
 
-BUSINESS INSIGHTS FROM DATA:
-• Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
-• Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
-• Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
-"""
+                                BUSINESS INSIGHTS FROM DATA:
+                                • Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
+                                • Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
+                                • Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
+                                """
         except Exception as e:
             print(f"WARNING: Brain agent failed to get dataset context: {e}")
             print(f"DEBUG: Brain session_id: {session_id}")
@@ -741,7 +915,7 @@ BUSINESS INSIGHTS FROM DATA:
         llm = create_brain_agent()
         brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data]
         llm_with_tools = llm.bind_tools(brain_tools)
-        prompt = get_brain_prompt(data_context)
+        prompt = get_brain_prompt(data_context, has_recent_results=(recent_tool_result is not None))
         agent_runnable = prompt | llm_with_tools
 
         try:
@@ -750,13 +924,32 @@ BUSINESS INSIGHTS FROM DATA:
             print(f"DEBUG: Brain agent content preview: {str(response.content)[:200]}...")
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 print(f"DEBUG: Brain agent tool calls: {[tc.get('name') for tc in response.tool_calls]}")
-            enhanced_state['current_agent'] = "brain"
-            return {"messages": [response], "current_agent": "brain"}
+
+            result_state = {
+                "messages": [response],
+                "current_agent": "brain",
+                "last_agent_sequence": enhanced_state["last_agent_sequence"],
+                "retry_count": enhanced_state["retry_count"]
+            }
+            return result_state
         except Exception as e:
             return {"messages": [AIMessage(content=f"Brain agent error: {e}")]}
 
     def run_hands_agent(state: AgentState):
         session_id = state.get("session_id")
+
+        # Track hands agent execution
+        enhanced_state = state.copy()
+        last_sequence = enhanced_state.get("last_agent_sequence", [])
+        enhanced_state["last_agent_sequence"] = last_sequence + ["hands"]
+
+        # Check for loop prevention
+        retry_count = enhanced_state.get("retry_count", 0)
+        if len(last_sequence) >= 4:
+            recent_sequence = last_sequence[-4:]
+            if recent_sequence == ["brain", "hands", "brain", "hands"]:
+                print(f"DEBUG: Hands agent - detected potential loop, incrementing retry count")
+                enhanced_state["retry_count"] = retry_count + 1
 
         # Extract delegation task from Brain's tool call
         last_message = state["messages"][-1] if state["messages"] else None
@@ -779,16 +972,16 @@ BUSINESS INSIGHTS FROM DATA:
                 column_context = data_profile.ai_agent_context['column_details']
 
                 data_context = f"""
-DATASET CONTEXT:
-Available dataset with columns:
-{chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
-                            for col, info in column_context.items())}
+                                DATASET CONTEXT:
+                                Available dataset with columns:
+                                {chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values'
+                                                            for col, info in column_context.items())}
 
-TECHNICAL INSIGHTS:
-• Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
-• Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
-• Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
-"""
+                                TECHNICAL INSIGHTS:
+                                • Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
+                                • Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
+                                • Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
+                                """
         except Exception as e:
             print(f"WARNING: Failed to get dataset context: {e}")
             print(f"DEBUG: Session ID: {session_id}")
@@ -799,9 +992,8 @@ TECHNICAL INSIGHTS:
         print(f"DEBUG: Data context preview: {data_context[:200]}...")
         print(f"DEBUG: Hands agent starting with session_id: {session_id}")
 
-        # Create state with task context
-        hands_state = state.copy()
-        hands_state["messages"] = list(hands_state["messages"]) + [("user", f"Execute this technical task: {task_description}")]
+        # Create lean context for faster inference
+        hands_state = create_lean_hands_context(state, task_description, session_id)
 
         llm = create_hands_agent()
         prompt = get_hands_prompt(data_context)
@@ -813,7 +1005,14 @@ TECHNICAL INSIGHTS:
             print(f"DEBUG: Hands agent content preview: {str(response.content)[:300]}...")
             print(f"DEBUG: Hands response starts with JSON? {str(response.content).strip().startswith('{')}")
             print(f"DEBUG: Hands response contains 'python_code_interpreter'? {'python_code_interpreter' in str(response.content)}")
-            return {"messages": [response], "current_agent": "hands"}
+
+            result_state = {
+                "messages": [response],
+                "current_agent": "hands",
+                "last_agent_sequence": enhanced_state["last_agent_sequence"],
+                "retry_count": enhanced_state["retry_count"]
+            }
+            return result_state
         except Exception as e:
             return {"messages": [AIMessage(content=f"Hands agent error: {e}")]}
 
@@ -883,7 +1082,9 @@ TECHNICAL INSIGHTS:
         print(f"DEBUG: Routing after agent. Content preview: {content[:100]}...")
         print(f"DEBUG: Has tool_calls? {hasattr(last_message, 'tool_calls') and last_message.tool_calls}")
         print(f"DEBUG: Starts with {{? {content.startswith('{')}")
-        print(f"DEBUG: Contains 'name'? {'"name":' in content}")
+
+        name_check = '"name":' in content
+        print(f"DEBUG: Contains 'name'? {name_check}")
         print(f"DEBUG: Contains python_code_interpreter? {'python_code_interpreter' in content}")
 
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
@@ -906,6 +1107,21 @@ TECHNICAL INSIGHTS:
     graph.set_entry_point("brain")
 
     def route_from_brain(state: AgentState):
+        retry_count = state.get("retry_count", 0)
+        last_sequence = state.get("last_agent_sequence", [])
+
+        print(f"DEBUG: route_from_brain - retry_count: {retry_count}, sequence: {last_sequence}")
+
+        if retry_count >= 3:
+            print(f"DEBUG: Max retries reached ({retry_count}), terminating")
+            return END
+
+        if len(last_sequence) >= 4:
+            recent_sequence = last_sequence[-4:]
+            if recent_sequence == ["brain", "hands", "brain", "hands"]:
+                print(f"DEBUG: Detected brain->hands->brain->hands loop, terminating")
+                return END
+
         last_message = state["messages"][-1] if state["messages"] else None
 
         if (last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls):
