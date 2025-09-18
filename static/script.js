@@ -2369,60 +2369,29 @@ class DataInsightApp {
     // }
 
     setupHeroChatInterface() {
-        
         const heroSendBtn = document.getElementById('heroSendMessage');
         const heroChatInput = document.getElementById('heroChatInput');
         const heroUploadBtn = document.getElementById('heroUploadBtn');
         const heroFileInput = document.getElementById('heroFileInput');
         const heroChatMessages = document.getElementById('heroChatMessages');
-        
+
         if (!heroSendBtn || !heroChatInput || !heroChatMessages) {
             console.warn('Hero chat elements not found');
             return;
         }
-        
+
         this.agentSessionId = 'persistent_app_session';
-        
-        const sendMessage = async () => {
+
+        const sendMessage = () => {
             const message = heroChatInput.value.trim();
             if (!message) return;
-            
+
             this.addChatMessage('user', message);
             heroChatInput.value = '';
-            
-            try {
-                this.showLoadingMessage();
-                
-                const response = await fetch('/api/agent/chat', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        message: message,
-                        session_id: this.agentSessionId
-                    })
-                });
-                
-                const data = await response.json();
-                this.hideLoadingMessage();
-                
-                if (data.status === 'success') {
-                    this.agentSessionId = data.session_id;
-                    this.addChatMessage('bot', data.response, data.plots);
-                } else if (data.status === 'async') {
-                    this.agentSessionId = data.session_id;
-                    this.addChatMessage('bot', data.message, data.plots);
-                    this.pollAsyncTask(data.task_id);
-                } else {
-                    this.addChatMessage('bot', `Error: ${data.detail || 'Unknown error'}`);
-                }
-            } catch (error) {
-                this.hideLoadingMessage();
-                this.addChatMessage('bot', `Error: ${error.message}`);
-            }
+
+            this.streamAgentResponse(message);
         };
-        
+
         heroSendBtn.addEventListener('click', sendMessage);
         heroChatInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -2430,58 +2399,53 @@ class DataInsightApp {
                 sendMessage();
             }
         });
-        
+
         if (heroUploadBtn && heroFileInput) {
             heroUploadBtn.addEventListener('click', () => {
                 heroFileInput.click();
             });
-            
+
             heroFileInput.addEventListener('change', async (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
-                
+
                 this.addChatMessage('user', `Uploading ${file.name}...`);
-                
+
                 try {
                     this.showLoadingMessage();
-                    
+
                     const formData = new FormData();
                     formData.append('file', file);
                     formData.append('enable_profiling', 'true');
-                    
+
                     const response = await fetch('/api/upload', {
                         method: 'POST',
                         body: formData
                     });
-                    
+
                     const data = await response.json();
                     this.hideLoadingMessage();
-                    
+
                     if (data.status === 'success') {
                         this.currentSessionId = data.session_id;
                         this.agentSessionId = data.agent_session_id || data.session_id;
-
                         if (data.agent_analysis) {
                             this.addChatMessage('bot', data.agent_analysis);
                         } else {
                             const profileSummary = data.profiling_summary || {};
                             let message = `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`;
-
                             if (profileSummary.quality_score) {
                                 message += ` Quality Score: ${profileSummary.quality_score}/100.`;
                             }
                             if (profileSummary.anomalies_detected) {
                                 message += ` Detected ${profileSummary.anomalies_detected} anomalies.`;
                             }
-                            if (profileSummary.profiling_time) {
-                                message += ` Analysis completed in ${profileSummary.profiling_time}s.`;
+                            if (data.intelligence_summary && data.intelligence_summary.profiling_completed) {
+                                message += ` Domain: ${data.intelligence_summary.primary_domain}.`;
                             }
                             message += ` You can now ask me questions about your data.`;
-
                             this.addChatMessage('bot', message);
                         }
-
-                        // Check for PII detection and show consent dialog
                         if (data.pii_detection && data.pii_detection.requires_consent) {
                             this.showPIIConsentDialog(data.pii_detection);
                         }
@@ -2495,6 +2459,96 @@ class DataInsightApp {
             });
         }
     }
+
+    streamAgentResponse(message) {
+        const statusMessageElement = this.showStreamingStatusPlaceholder();
+
+        const eventSource = new EventSource(`/api/agent/chat-stream?message=${encodeURIComponent(message)}&session_id=${this.agentSessionId}`);
+
+        eventSource.onopen = () => {
+            console.log("SSE Connection opened.");
+        };
+
+        eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            switch (data.type) {
+                case 'status':
+                    this.updateStreamingStatus(statusMessageElement, data.message);
+                    break;
+
+                case 'final_response':
+                    eventSource.close();
+                    statusMessageElement.remove();
+                    this.addChatMessage('bot', data.response, data.plots);
+                    break;
+
+                case 'error':
+                    eventSource.close();
+                    statusMessageElement.remove();
+                    this.addChatMessage('bot', `Error: ${data.message}`);
+                    break;
+            }
+        };
+
+        eventSource.onerror = (err) => {
+            console.error("EventSource failed:", err);
+            eventSource.close();
+            statusMessageElement.remove();
+            this.addChatMessage('bot', 'Sorry, a connection error occurred.');
+        };
+    }
+
+    showStreamingStatusPlaceholder() {
+        const heroChatMessages = document.getElementById('heroChatMessages');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'chat-message bot streaming-status-container';
+
+        messageDiv.innerHTML = `
+            <div class="message-content">
+                <div class="status-lines-wrapper">
+                    <!-- Status lines will be dynamically added here -->
+                </div>
+            </div>
+        `;
+
+        heroChatMessages.appendChild(messageDiv);
+        heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
+        return messageDiv;
+    }
+
+    updateStreamingStatus(containerElement, newStatusText) {
+        const wrapper = containerElement.querySelector('.status-lines-wrapper');
+
+        const existingLines = wrapper.querySelectorAll('.status-line');
+        existingLines.forEach(line => line.classList.add('past'));
+
+        const newLine = document.createElement('div');
+        newLine.className = 'status-line';
+
+        // Determine agent type from status text
+        let agentClass = '';
+        if (newStatusText.includes('🧠')) {
+            agentClass = 'brain';
+        } else if (newStatusText.includes('👨‍💻')) {
+            agentClass = 'hands';
+        } else if (newStatusText.includes('⚙️') || newStatusText.includes('🔄') || newStatusText.includes('🔍') || newStatusText.includes('📚')) {
+            agentClass = 'tool';
+        }
+
+        newLine.classList.add(agentClass);
+        newLine.innerHTML = `
+            <div class="spinner"></div>
+            <span class="status-text">${newStatusText}</span>
+        `;
+
+        wrapper.appendChild(newLine);
+        wrapper.style.height = `${newLine.offsetHeight}px`;
+
+        const heroChatMessages = document.getElementById('heroChatMessages');
+        heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
+    }
+
     
     addChatMessage(sender, responseData, plots = null) {
         const heroChatMessages = document.getElementById('heroChatMessages');
