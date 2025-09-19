@@ -2475,25 +2475,83 @@ async def agent_chat_stream(message: str, session_id: str):
                 yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots})}\n\n"
 
             else:
-                # Fallback: Use regular invoke with status extraction
-                print("DEBUG: Using invoke with dynamic status extraction")
+                # Real-time agent execution with live status monitoring
+                print("DEBUG: Using streaming execution with real agent status")
 
                 yield f"data: {json.dumps({'type': 'status', 'message': '🚀 Starting analysis...'})}\n\n"
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
 
-                # Simulate progressive status updates
-                yield f"data: {json.dumps({'type': 'status', 'message': '🧠 Analyzing request and planning approach...'})}\n\n"
-                await asyncio.sleep(0.5)
-
-                # Execute agent and capture intermediate results
                 config = {"configurable": {"thread_id": session_id}}
-                response = agent.invoke({
-                    "messages": [HumanMessage(content=message)],
-                    "session_id": session_id
-                }, config=config)
 
-                yield f"data: {json.dumps({'type': 'status', 'message': '👨‍💻 Generating and executing code...'})}\n\n"
-                await asyncio.sleep(0.5)
+                # Stream graph execution to capture real agent transitions
+                final_response = None
+                all_messages = []
+                final_brain_response = None
+
+                try:
+                    for event in agent.stream({
+                        "messages": [HumanMessage(content=message)],
+                        "session_id": session_id
+                    }, config=config):
+
+                        # Extract agent name and status from each execution step
+                        for node_name, node_data in event.items():
+                            if node_name in ['brain', 'hands', 'parser', 'action']:
+
+                                # Collect all messages for final response
+                                messages = node_data.get('messages', [])
+                                if messages:
+                                    all_messages.extend(messages)
+
+                                    # Capture brain responses specifically for final display
+                                    if node_name == 'brain':
+                                        last_brain_msg = messages[-1]
+                                        brain_content = str(last_brain_msg.content) if hasattr(last_brain_msg, 'content') else str(last_brain_msg)
+                                        # Only update if this looks like a final response (not tool calls)
+                                        if not (hasattr(last_brain_msg, 'tool_calls') and last_brain_msg.tool_calls):
+                                            final_brain_response = brain_content
+                                            print(f"DEBUG: Captured brain final response: {brain_content[:200]}...")
+
+                                # Get real status from agent responses
+                                status_message = None
+                                if messages:
+                                    last_msg = messages[-1]
+                                    content = str(last_msg.content) if hasattr(last_msg, 'content') else str(last_msg)
+
+                                    if node_name == 'brain':
+                                        from data_scientist_chatbot.app.agent import extract_brain_status
+                                        status_message = extract_brain_status(content)
+                                    elif node_name == 'hands':
+                                        from data_scientist_chatbot.app.agent import extract_hands_status
+                                        status_message = extract_hands_status(content)
+                                    elif node_name == 'action':
+                                        status_message = "⚙️ Executing code in secure sandbox..."
+
+                                # Use extracted status or fallback
+                                if not status_message:
+                                    status_mapping = {
+                                        'brain': '🧠 Analyzing and planning approach...',
+                                        'hands': '👨‍💻 Generating code solution...',
+                                        'parser': '🔍 Processing response format...',
+                                        'action': '⚙️ Executing code in sandbox...'
+                                    }
+                                    status_message = status_mapping.get(node_name, f"🔄 Processing {node_name}...")
+
+                                yield f"data: {json.dumps({'type': 'status', 'message': status_message})}\n\n"
+                                await asyncio.sleep(0.1)
+
+                        # Store the complete state from the final event
+                        final_response = {'messages': all_messages}
+
+                except Exception as stream_error:
+                    print(f"Streaming execution failed: {stream_error}")
+                    # Fallback to regular invoke
+                    final_response = agent.invoke({
+                        "messages": [HumanMessage(content=message)],
+                        "session_id": session_id
+                    }, config=config)
+
+                response = final_response
 
                 # Extract plots from current execution only
                 plots = []
@@ -2511,9 +2569,15 @@ async def agent_chat_stream(message: str, session_id: str):
                     yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization generated!'})}\n\n"
                     await asyncio.sleep(0.3)
 
-                messages = response.get('messages', [])
-                final_message = messages[-1] if messages else None
-                content = final_message.content if final_message else "Task completed successfully."
+                # Use captured brain response or fallback to last message
+                if final_brain_response:
+                    content = final_brain_response
+                    print(f"DEBUG: Using captured brain response: {content[:100]}...")
+                else:
+                    messages = response.get('messages', [])
+                    final_message = messages[-1] if messages else None
+                    content = final_message.content if final_message else "Task completed successfully."
+                    print(f"DEBUG: Fallback to last message: {content[:100]}...")
 
                 yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots})}\n\n"
 
