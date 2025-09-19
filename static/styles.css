@@ -315,6 +315,17 @@ body.light-theme .pii-consent-btn:hover {
     padding: 0.75rem 1rem;
     font-size: 0.9rem;
     line-height: 1.5;
+    overflow-x: auto;
+}
+.message-content::-webkit-scrollbar {
+    height: 6px;
+}
+.message-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+.message-content::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: 3px;
 }
 .chat-message.user .message-content { background-color: var(--color-light); color: var(--color-dark); }
 .chat-message.bot .message-content { background-color: var(--color-dark); border: 1px solid var(--color-border); }
@@ -499,112 +510,83 @@ body[data-theme='light'] .btn-theme .icon-theme {
     align-items: center;
 }
 
-/* Streaming Status Interface */
+/* --- New Streaming Status Interface --- */
 .streaming-status-container .message-content {
-    padding: 0;
-    overflow: hidden;
-    position: relative;
+    padding: 0; /* Remove padding to allow inner content to fill */
+    overflow: hidden; /* Hide the old lines that are pushed up */
 }
 
 .status-lines-wrapper {
     position: relative;
-    transition: height 0.3s ease-in-out;
     padding: 0.75rem 1rem;
-    min-height: 40px;
+    min-height: 38px; /* Set a consistent minimum height */
+    transition: height 0.3s ease-in-out;
 }
 
 .status-line {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
     font-size: 0.9rem;
     white-space: nowrap;
-    opacity: 1;
-    transform: translateY(0);
-    filter: blur(0);
     transition: all 0.4s ease-in-out;
-    height: 24px;
-    position: relative;
-    z-index: 1;
+    height: 24px; /* Explicit height for each line */
 }
 
-/* Applied to old status lines */
+/* This class is applied to old status lines via JS */
 .status-line.past {
-    opacity: 0.15;
-    transform: translateY(-30px);
-    filter: blur(1.5px);
-    position: absolute;
+    position: absolute; /* Take old lines out of the layout flow */
     top: 0.75rem;
     left: 1rem;
-    right: 1rem;
-    z-index: 0;
-    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-20px);
+    filter: blur(2px);
+    pointer-events: none; /* Prevent interaction with old lines */
 }
 
-/* Spinner for the current status line */
 .status-line .spinner {
-    width: 12px;
-    height: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border);
     border-top-color: var(--color-light);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;
 }
-
 body[data-theme='light'] .status-line .spinner {
-    border-color: rgba(0, 0, 0, 0.3);
-    border-top-color: var(--color-dark);
+    border-top-color: var(--color-light);
 }
 
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
 
-/* Status line text styling */
-.status-line .status-text {
-    color: var(--color-light);
-    font-weight: 500;
+/* Shimmer effect container */
+.status-text {
+    position: relative;
     overflow: hidden;
-    text-overflow: ellipsis;
+    color: var(--color-light);
+}
+body[data-theme='light'] .status-text {
+    color: var(--color-light);
 }
 
-body[data-theme='light'] .status-line .status-text {
-    color: var(--color-dark);
+/* shimmer/light-sweep element */
+.status-text::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 75%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    animation: shimmer 2.5s infinite;
+}
+body[data-theme='light'] .status-text::before {
+     background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.1), transparent);
 }
 
-/* Agent-specific styling */
-.status-line.brain {
-    border-left: 3px solid #4CAF50;
-    padding-left: 0.5rem;
-}
-
-.status-line.hands {
-    border-left: 3px solid #2196F3;
-    padding-left: 0.5rem;
-}
-
-.status-line.tool {
-    border-left: 3px solid #FF9800;
-    padding-left: 0.5rem;
-}
-
-/* Streaming animation for text */
-.status-line .status-text.typing {
-    animation: typewriter 0.5s steps(40, end);
-}
-
-@keyframes typewriter {
-    from { width: 0; }
-    to { width: 100%; }
-}
-
-/* Smooth height transitions */
-.status-lines-wrapper.expanding {
-    animation: expandHeight 0.3s ease-out;
-}
-
-@keyframes expandHeight {
-    from { height: 0; }
-    to { height: 40px; }
+@keyframes shimmer {
+    0% { left: -100%; }
+    100% { left: 200%; }
 }

@@ -2519,34 +2519,30 @@ class DataInsightApp {
 
     updateStreamingStatus(containerElement, newStatusText) {
         const wrapper = containerElement.querySelector('.status-lines-wrapper');
+        if (!wrapper) return;
 
+        // 1. Find all existing lines and mark them as "past"
         const existingLines = wrapper.querySelectorAll('.status-line');
         existingLines.forEach(line => line.classList.add('past'));
 
+        // 2. Create the new status line
         const newLine = document.createElement('div');
         newLine.className = 'status-line';
-
-        // Determine agent type from status text
-        let agentClass = '';
-        if (newStatusText.includes('🧠')) {
-            agentClass = 'brain';
-        } else if (newStatusText.includes('👨‍💻')) {
-            agentClass = 'hands';
-        } else if (newStatusText.includes('⚙️') || newStatusText.includes('🔄') || newStatusText.includes('🔍') || newStatusText.includes('📚')) {
-            agentClass = 'tool';
-        }
-
-        newLine.classList.add(agentClass);
         newLine.innerHTML = `
             <div class="spinner"></div>
             <span class="status-text">${newStatusText}</span>
         `;
 
+        // 3. Add the new line and scroll
         wrapper.appendChild(newLine);
-        wrapper.style.height = `${newLine.offsetHeight}px`;
-
         const heroChatMessages = document.getElementById('heroChatMessages');
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
+
+        // 4. Clean up old lines after their animation is done
+        setTimeout(() => {
+            const pastLines = wrapper.querySelectorAll('.status-line.past');
+            pastLines.forEach(line => line.remove());
+        }, 500); 
     }
 
     
