@@ -40,6 +40,7 @@ except ImportError:
         raise ImportError("Could not import required modules")
 
 import time
+import psutil
 
 project_root = Path(__file__).parent.parent.parent
 env_file = project_root / ".env"
@@ -47,13 +48,26 @@ load_dotenv(env_file)
 
 class ModelManager:
     def __init__(self):
-        self.brain_model = 'llama3.1:8b-instruct-q4_K_M' 
+        self.brain_model = 'llama3.1:8b-instruct-q4_K_M'
         self.hands_model = 'qwen2.5-coder:14b'
+        self.router_model = 'phi3:3.8b-mini-128k-instruct-q4_K_M'
         self.current_model = None
         self.switch_count = 0
 
+        # Ollama optimization parameters
+        self.num_cores = psutil.cpu_count(logical=False) or 8
+        self.num_ctx = 2048
+        self.temperature_router = 0.0
+        self.temperature_brain = 0.1
+        self.temperature_hands = 0.0
+
     def get_model(self, agent_type: str) -> str:
-        target_model = self.brain_model if agent_type == 'brain' else self.hands_model
+        model_map = {
+            'brain': self.brain_model,
+            'hands': self.hands_model,
+            'router': self.router_model
+        }
+        target_model = model_map.get(agent_type, self.brain_model)
 
         if self.current_model != target_model:
             print(f"🧠 Switching model: {self.current_model} → {target_model}")
@@ -61,6 +75,21 @@ class ModelManager:
             self.switch_count += 1
 
         return self.current_model
+
+    def get_ollama_config(self, agent_type: str) -> dict:
+        temp_map = {
+            'router': self.temperature_router,
+            'brain': self.temperature_brain,
+            'hands': self.temperature_hands
+        }
+
+        return {
+            'model': self.get_model(agent_type),
+            'base_url': "http://localhost:11434",
+            'temperature': temp_map.get(agent_type, 0.1),
+            'num_thread': self.num_cores,
+            'num_ctx': self.num_ctx
+        }
 
     def _optimize_context_for_coder(self, state: dict) -> dict:
         optimized_state = state.copy()
@@ -87,6 +116,7 @@ class AgentState(TypedDict):
     business_context: Dict[str, Any]
     retry_count: int
     last_agent_sequence: List[str]
+    router_decision: Optional[str]
 
 performance_monitor = PerformanceMonitor()
 context_manager = ContextManager()
@@ -444,38 +474,47 @@ def execute_tools_node(state: AgentState) -> dict:
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
     return result_state
 
+def create_router_agent():
+    """Create Router agent for fast binary routing decisions"""
+    from langchain_ollama import ChatOllama
+
+    config = model_manager.get_ollama_config('router')
+    return ChatOllama(**config)
+
 def create_brain_agent():
     """Create Brain agent for business reasoning and planning"""
     from langchain_ollama import ChatOllama
 
-    return ChatOllama(
-        model=model_manager.get_model('brain'),
-        base_url="http://localhost:11434",
-        temperature=0.1
-    )
+    config = model_manager.get_ollama_config('brain')
+    return ChatOllama(**config)
 
 def create_hands_agent():
     """Create Hands agent for code execution"""
     from langchain_ollama import ChatOllama
 
-    return ChatOllama(
-        model=model_manager.get_model('hands'),
-        base_url="http://localhost:11434",
-        temperature=0.0
-    )
+    config = model_manager.get_ollama_config('hands')
+    return ChatOllama(**config)
 
 def get_brain_prompt(data_context: str = "", has_recent_results: bool = False):
     """Enhanced business consultant prompt with dataset awareness"""
     result_awareness = ""
     if has_recent_results:
         result_awareness = """
-TASK COMPLETION AWARENESS:
-Your technical specialist has completed the requested work. Focus on:
-1. Acknowledge the completed visualization/analysis
-2. Interpret the results and provide business insights
-3. Reference the specific output that was generated
-4. Avoid providing example code since the task is already complete
-Your role is to explain what was accomplished and its business value."""
+CRITICAL - TASK COMPLETED:
+The hands specialist just finished creating a visualization/analysis. Your job now is to interpret what this means for business.
+
+DO NOT:
+- Provide any code examples
+- Give generic explanations
+- Suggest how to create visualizations
+
+DO:
+- Explain what the created visualization reveals about the data
+- Identify business patterns, trends, and insights
+- Provide actionable recommendations based on the results
+- Focus entirely on business value and interpretation
+
+The technical work is done. You are the business interpreter."""
 
     return ChatPromptTemplate.from_messages([
         ("system", f"""You are an expert business data consultant with autonomous workflow intelligence and dataset awareness.
@@ -566,18 +605,31 @@ def get_hands_prompt(data_context: str = ""):
                     TOOLS:
                     - python_code_interpreter: Execute Python code on the dataset
 
+                    WORKFLOW:
+                    1. FIRST RESPONSE: Return ONLY valid JSON for python_code_interpreter (no explanatory text, no markdown)
+                    2. AFTER EXECUTION: When the tool result comes back, provide a clear explanation in natural language
+
+                    EXPLANATION FORMAT (after successful execution):
+                    "Successfully created [visualization type] that shows [business insight]. The chart reveals [key finding] which indicates [business implication]."
+
+                    POST-EXECUTION COMMUNICATION:
+                    After tool execution completes, you MUST provide a natural explanation that:
+                    - Describes what analysis/visualization was completed
+                    - Highlights the key findings and patterns discovered
+                    - Explains the business value and actionable insights
+                    - Uses conversational language that enables business interpretation
+
                     RULES:
                     - When you need to execute code: Return ONLY valid JSON (no explanatory text, no markdown)
                     - After a tool executes successfully: ALWAYS respond in conversational language explaining what was created or discovered
-                    - When explaining results: Use natural, conversational language
+                    - When explaining results: Use natural, conversational language that helps business users understand the value
                     - For all data analysis/visualization: Use python_code_interpreter
                     - Always use matplotlib.use('Agg') for plotting
                     - CRITICAL: Use actual column names from the dataset context above - never hardcode column names
                     - Never use plt.close() - always use plt.show() to let the plots be saved
-                    - Put all Python code in the "code" field
+                    - Put all Python code in the "code" field including the status comment
                     - IMPORTANT: If you use markdown, ensure JSON is properly formatted within code blocks
                     - Follow the exact JSON structure shown in the example below
-                    - Remember: First respond with JSON, then explain after execution
 
                     EXAMPLE:
                     {{{{
@@ -588,6 +640,33 @@ def get_hands_prompt(data_context: str = ""):
                     }}}}"""),
                             MessagesPlaceholder(variable_name="messages")
                         ])
+
+def get_router_prompt():
+    """Hyper-focused, programmatic prompt for router agent"""
+    return ChatPromptTemplate.from_messages([
+        ("system", """You are a Task Classification AI. Your one and only job is to analyze a user's request and classify it into one of two categories: 'brain' or 'hands'.
+
+**TASK:**
+Analyze the user's latest message and determine if it is a complex, strategic request requiring planning ('brain') or a direct command for coding/visualization ('hands').
+
+**OUTPUT FORMAT:**
+You MUST respond with ONLY a single, valid JSON object and nothing else.
+
+**EXAMPLES:**
+User: "Plot a histogram of the sales column."
+AI: {{"routing_decision": "hands"}}
+
+User: "Help me understand what drives customer churn in this dataset."
+AI: {{"routing_decision": "brain"}}
+
+**RULES:**
+1. If the task is a direct command to code, plot, or visualize, respond with `{{"routing_decision": "hands"}}`.
+2. If the task is a broad, strategic, or multi-step question, respond with `{{"routing_decision": "brain"}}`.
+3. NEVER write Python code.
+4. NEVER write explanations or conversational text.
+5. Your entire output must be the JSON object."""),
+        MessagesPlaceholder(variable_name="messages")
+    ])
 
 def extract_brain_status(content: str) -> Optional[str]:
     """Extract status message from brain agent response."""
@@ -839,6 +918,58 @@ def create_agent_executor():
             
         return state
 
+    def run_router_agent(state: AgentState):
+        """Fast routing decision based ONLY on the last user message"""
+
+        # Find the last human message to isolate it
+        last_user_message = None
+        for msg in reversed(state["messages"]):
+            if hasattr(msg, 'type') and msg.type == "human":
+                last_user_message = msg
+                break
+
+        if not last_user_message:
+            print("DEBUG: No human message found, defaulting to brain")
+            return {"messages": state["messages"], "router_decision": "brain", "current_agent": "router"}
+
+        # Create a "lean state" with only the system prompt and the last user message
+        lean_router_state = {"messages": [last_user_message]}
+        print(f"DEBUG: Router analyzing isolated message: {str(last_user_message.content)[:100]}...")
+
+        llm = create_router_agent()
+        prompt = get_router_prompt()
+        agent_runnable = prompt | llm
+
+        try:
+            # Invoke the agent with the ISOLATED context
+            response = agent_runnable.invoke(lean_router_state)
+            content = str(response.content).strip()
+
+            # Robustly parse the JSON
+            import re
+            import json
+
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if not json_match:
+                print("DEBUG: Router failed to produce JSON, defaulting to brain")
+                return {"messages": state["messages"], "router_decision": "brain", "current_agent": "router"}
+
+            router_data = json.loads(json_match.group(0))
+            decision = router_data.get('routing_decision', 'brain')
+
+            print(f"DEBUG: Router decision: {decision}")
+
+            result_state = {
+                "messages": state["messages"],
+                "router_decision": decision,
+                "current_agent": "router"
+            }
+            return result_state
+
+        except Exception as e:
+            print(f"Router error: {e}, defaulting to brain")
+            return {"messages": state["messages"], "router_decision": "brain", "current_agent": "router"}
+
     def run_brain_agent(state: AgentState):
         session_id = state.get("session_id")
         enhanced_state = state.copy()
@@ -951,14 +1082,26 @@ def create_agent_executor():
                 print(f"DEBUG: Hands agent - detected potential loop, incrementing retry count")
                 enhanced_state["retry_count"] = retry_count + 1
 
-        # Extract delegation task from Brain's tool call
+        # Extract task: either from Brain's delegation or direct user command
         last_message = state["messages"][-1] if state["messages"] else None
         task_description = "Perform data analysis task"
 
-        if (last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls):
+        # Check if this is a delegation from brain or direct routing from router
+        current_agent = enhanced_state.get("current_agent", "")
+        previous_agent = enhanced_state.get("last_agent_sequence", [])[-1] if enhanced_state.get("last_agent_sequence") else ""
+
+        if previous_agent == "router":
+            # Direct routing from router - use original user message
+            user_messages = [msg for msg in state["messages"] if hasattr(msg, 'type') and msg.type == 'human']
+            if user_messages:
+                task_description = user_messages[-1].content
+                print(f"DEBUG: Direct router->hands task: {task_description}")
+        elif (last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls):
+            # Delegation from brain
             tool_call = last_message.tool_calls[0]
             if tool_call.get('name') == 'delegate_coding_task':
                 task_description = tool_call.get('args', {}).get('task_description', task_description)
+                print(f"DEBUG: Brain delegation task: {task_description}")
 
         # Get dataset context for Hands agent
         data_context = ""
@@ -992,8 +1135,22 @@ def create_agent_executor():
         print(f"DEBUG: Data context preview: {data_context[:200]}...")
         print(f"DEBUG: Hands agent starting with session_id: {session_id}")
 
-        # Create lean context for faster inference
-        hands_state = create_lean_hands_context(state, task_description, session_id)
+        # Create appropriate context based on routing source
+        if previous_agent == "router":
+            # Direct routing: preserve original user message with context
+            hands_state = {
+                "messages": state["messages"],  # Keep original message flow
+                "session_id": session_id,
+                "python_executions": state.get("python_executions", 0),
+                "current_agent": "hands",
+                "last_agent_sequence": enhanced_state.get("last_agent_sequence", []),
+                "retry_count": enhanced_state.get("retry_count", 0)
+            }
+            print(f"DEBUG: Direct routing - using full context with {len(hands_state['messages'])} messages")
+        else:
+            # Brain delegation: use lean context for efficiency
+            hands_state = create_lean_hands_context(state, task_description, session_id)
+            print(f"DEBUG: Brain delegation - using lean context")
 
         llm = create_hands_agent()
         prompt = get_hands_prompt(data_context)
@@ -1078,14 +1235,10 @@ def create_agent_executor():
         """Route based on whether agent wants to use tools or just respond"""
         last_message = state["messages"][-1]
         content = str(last_message.content).strip()
+        current_agent = state.get("current_agent", "")
 
-        print(f"DEBUG: Routing after agent. Content preview: {content[:100]}...")
+        print(f"DEBUG: Routing after {current_agent} agent. Content preview: {content[:100]}...")
         print(f"DEBUG: Has tool_calls? {hasattr(last_message, 'tool_calls') and last_message.tool_calls}")
-        print(f"DEBUG: Starts with {{? {content.startswith('{')}")
-
-        name_check = '"name":' in content
-        print(f"DEBUG: Contains 'name'? {name_check}")
-        print(f"DEBUG: Contains python_code_interpreter? {'python_code_interpreter' in content}")
 
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             print("DEBUG: Routing to parser (tool_calls)")
@@ -1096,15 +1249,35 @@ def create_agent_executor():
             print("DEBUG: Routing to parser (JSON format)")
             return "parser"
 
+        # Check if hands agent is providing post-execution explanation
+        if current_agent == "hands" and content and not content.startswith("{"):
+            # Check for recent tool execution in message history
+            messages = state.get("messages", [])
+            has_recent_tool_execution = any(
+                hasattr(msg, 'type') and msg.type == 'tool'
+                for msg in messages[-5:] if hasattr(msg, 'type')
+            )
+
+            if has_recent_tool_execution:
+                print("DEBUG: Hands providing post-execution explanation, routing to brain")
+                return "brain"
+
         print("DEBUG: Routing to END")
         return END
 
     graph = StateGraph(AgentState)
+    graph.add_node("router", run_router_agent)
     graph.add_node("brain", run_brain_agent)
     graph.add_node("hands", run_hands_agent)
     graph.add_node("parser", parse_tool_calls)
     graph.add_node("action", execute_tools_node)
-    graph.set_entry_point("brain")
+    graph.set_entry_point("router")
+
+    def route_from_router(state: AgentState):
+        """Route based on router's binary decision"""
+        decision = state.get("router_decision", "brain")
+        print(f"DEBUG: Router routing to: {decision}")
+        return decision
 
     def route_from_brain(state: AgentState):
         retry_count = state.get("retry_count", 0)
@@ -1132,6 +1305,15 @@ def create_agent_executor():
                 return "parser"
 
         return END
+
+    graph.add_conditional_edges(
+        "router",
+        route_from_router,
+        {
+            "brain": "brain",
+            "hands": "hands"
+        }
+    )
 
     graph.add_conditional_edges(
         "brain",
