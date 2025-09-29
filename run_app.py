@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-DataInsight AI Application Launcher
-
-Launch the FastAPI application with proper configuration and auto-open browser.
-"""
 import sys
 import time
 import threading
@@ -15,18 +9,14 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 def open_browser():
     """Open browser after a short delay to ensure server is ready."""
-    time.sleep(2)  # Wait for server to start
+    time.sleep(2) 
     webbrowser.open("http://localhost:8000")
     print("🚀 DataInsight AI is now running at http://localhost:8000")
 
 if __name__ == "__main__":
-    print("Starting DataInsight AI...")
-    print("Preparing to launch your browser...")
-    
     browser_thread = threading.Thread(target=open_browser)
     browser_thread.daemon = True
     browser_thread.start()
-    
     uvicorn.run(
         "src.api:app",
         host="0.0.0.0",
