@@ -78,6 +78,16 @@ session_agents = {}
 
 def get_session_agent(session_id: str):
     if CHAT_AVAILABLE and session_id not in session_agents:
+        # Ensure clean checkpointer state for new agent session
+        try:
+            from data_scientist_chatbot.app.agent import memory
+            if memory:
+                memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+                memory.conn.commit()
+                print(f"DEBUG: Cleaned checkpointer state for new agent session {session_id}")
+        except Exception as e:
+            print(f"WARNING: Failed to clean checkpointer state for agent session {session_id}: {e}")
+
         session_agents[session_id] = create_enhanced_agent_executor(session_id)
     return session_agents.get(session_id)
 
@@ -153,6 +163,7 @@ class DataIngestionRequest(BaseModel):
     url: str
     data_type: str = "csv"
     enable_profiling: bool = True
+    session_id: Optional[str] = None
 
 class ProcessingResult(BaseModel):
     status: str
@@ -226,7 +237,7 @@ async def dashboard():
 async def chat_endpoint(chat_request: ChatMessage):
     """Handle chat messages with the AI agent"""
     try:
-        session_id = GLOBAL_SESSION_ID
+        session_id = chat_request.session_id or str(uuid.uuid4())
         agent = get_session_agent(session_id)
         
         if not agent:
@@ -324,21 +335,21 @@ async def chat_endpoint(chat_request: ChatMessage):
         raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
 
 @app.post("/api/upload")
-async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True)):
+async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True), session_id: str = Form(None)):
     """Upload and validate dataset with intelligent profiling."""
     try:
         contents = await file.read()
         df = ingest_data(io.BytesIO(contents), filename=file.filename)
-        
+
         if df is None:
             raise HTTPException(status_code=400, detail="Failed to parse uploaded file")
-        
+
         # Validate data quality
         validator = DataQualityValidator(df)
         validation_report = validator.validate()
-        
-        # Generate session ID and store basic data
-        session_id = GLOBAL_SESSION_ID
+
+        # Use provided session ID or create new one
+        session_id = session_id or str(uuid.uuid4())
         session_data = {
             "dataframe": df,
             "validation_report": validation_report,
@@ -486,10 +497,16 @@ print(df.head())
 """
                 
                 # Execute load code in sandbox
+                print(f"DEBUG: Loading data into sandbox for session {session_id}")
+                print(f"DEBUG: Load code length: {len(load_code)} chars")
                 load_result = execute_python_in_sandbox(load_code, session_id)
-                
+                print(f"DEBUG: Sandbox load result success: {load_result['success']}")
+                if not load_result['success']:
+                    print(f"DEBUG: Sandbox load error: {load_result.get('stderr', 'No error details')}")
+
                 if load_result["success"]:
                     clean_output = load_result['stdout']
+                    print(f"DEBUG: Sandbox load stdout: {clean_output[:200]}...")
                     html_output = convert_pandas_output_to_html(clean_output)
 
                     # Create enhanced message with profiling data
@@ -506,8 +523,21 @@ print(df.head())
 
                     response_data["agent_analysis"] = enhanced_message
                     response_data["agent_session_id"] = session_id
+
+                    # Also save dataset to common filenames for agent code compatibility
+                    save_code = f"""
+# Save dataset to common filenames that agents might use
+df.to_csv('dataset.csv', index=False)
+df.to_csv('data.csv', index=False)
+df.to_csv('ds.csv', index=False)
+print("Dataset saved as dataset.csv, data.csv, and ds.csv")
+"""
+                    save_result = execute_python_in_sandbox(save_code, session_id)
+                    print(f"DEBUG: Dataset save result: {save_result['success']}")
                 else:
-                    response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {load_result['stderr']}"
+                    error_msg = load_result.get('stderr', 'Unknown error')
+                    print(f"ERROR: Sandbox data loading failed: {error_msg}")
+                    response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {error_msg}"
                     response_data["agent_session_id"] = session_id
                 
                 
@@ -585,8 +615,8 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
         validator = DataQualityValidator(df)
         validation_report = validator.validate()
         
-        # Generate session ID and store basic data
-        session_id = GLOBAL_SESSION_ID
+        # Use provided session ID or create new one
+        session_id = request.session_id or str(uuid.uuid4())
         session_data = {
             "dataframe": df,
             "validation_report": validation_report,
@@ -2211,19 +2241,39 @@ task_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="DataInsigh
 performance_monitor = None
 context_manager = None
 create_enhanced_agent_executor = None
+status_agent_runnable = None
+
+def create_agent_input(message: str, session_id: str) -> dict:
+    """Create standardized agent input with fresh state"""
+    from langchain_core.messages import HumanMessage
+    return {
+        "messages": [HumanMessage(content=message)],
+        "session_id": session_id,
+        "python_executions": 0,
+        "last_agent_sequence": [],
+        "retry_count": 0
+    }
 
 try:
     from data_scientist_chatbot.app.agent import create_enhanced_agent_executor
     from data_scientist_chatbot.app.performance_monitor import PerformanceMonitor
     from data_scientist_chatbot.app.context_manager import ContextManager
+    from data_scientist_chatbot.app.agent import create_status_agent, get_status_agent_prompt
+
     performance_monitor = PerformanceMonitor()
     context_manager = ContextManager()
+
+    status_agent_llm = create_status_agent()
+    status_agent_prompt = get_status_agent_prompt()
+    status_agent_runnable = status_agent_prompt | status_agent_llm
+
     AGENT_AVAILABLE = True
 except ImportError as e:
     print(f"Agent import failed: {e}")
     print("Agent service will not be available - install missing dependencies")
     AGENT_AVAILABLE = False
     create_enhanced_agent_executor = None
+    status_agent_runnable = None
 
 def run_agent_task(agent, user_message, session_id):
     start_time = time.time()
@@ -2237,9 +2287,8 @@ def run_agent_task(agent, user_message, session_id):
                 context={"message_length": len(user_message)}
             )
         
-        from langchain_core.messages import HumanMessage
         response = agent.invoke(
-            {"messages": [HumanMessage(content=user_message)], "session_id": session_id},
+            create_agent_input(user_message, session_id),
             config={"configurable": {"thread_id": session_id}}
         )
         
@@ -2289,6 +2338,17 @@ async def agent_chat(request: AgentChatRequest):
         if session_id not in agent_sessions:
             if create_enhanced_agent_executor is None:
                 raise HTTPException(status_code=503, detail="Agent service not available")
+
+            # Ensure clean checkpointer state for new agent session
+            try:
+                from data_scientist_chatbot.app.agent import memory
+                if memory:
+                    memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+                    memory.conn.commit()
+                    print(f"DEBUG: Cleaned checkpointer state for chat agent session {session_id}")
+            except Exception as e:
+                print(f"WARNING: Failed to clean checkpointer state for chat agent session {session_id}: {e}")
+
             agent_sessions[session_id] = create_enhanced_agent_executor(session_id)
         
         agent = agent_sessions[session_id]
@@ -2329,12 +2389,8 @@ async def agent_chat(request: AgentChatRequest):
             }
         else:
             # Run synchronously
-            from langchain_core.messages import HumanMessage
             print(f"DEBUG: Using agent type: {type(agent)}")
-            response = agent.invoke({
-                "messages": [HumanMessage(content=user_message)],
-                "session_id": session_id
-            })
+            response = agent.invoke(create_agent_input(user_message, session_id))
             
             # Extract plots from current execution only (last 3 messages)
             plots = []
@@ -2380,8 +2436,7 @@ async def agent_chat_stream(message: str, session_id: str):
 
     async def generate_events():
         try:
-            # Import status extraction functions
-            from data_scientist_chatbot.app.agent import extract_brain_status, extract_hands_status, extract_parser_status
+            global status_agent_runnable
 
             # Create session if it doesn't exist
             if session_id not in session_store:
@@ -2392,6 +2447,17 @@ async def agent_chat_stream(message: str, session_id: str):
                 if create_enhanced_agent_executor is None:
                     yield f"data: {json.dumps({'type': 'error', 'message': 'Agent service not available'})}\n\n"
                     return
+
+                # Ensure clean checkpointer state for new agent session
+                try:
+                    from data_scientist_chatbot.app.agent import memory
+                    if memory:
+                        memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+                        memory.conn.commit()
+                        print(f"DEBUG: Cleaned checkpointer state for streaming agent session {session_id}")
+                except Exception as e:
+                    print(f"WARNING: Failed to clean checkpointer state for streaming agent session {session_id}: {e}")
+
                 agent_sessions[session_id] = create_enhanced_agent_executor(session_id)
 
             agent = agent_sessions[session_id]
@@ -2403,55 +2469,115 @@ async def agent_chat_stream(message: str, session_id: str):
                 print("DEBUG: Using stream_events for dynamic status updates")
 
                 config = {"configurable": {"thread_id": session_id}}
-                input_data = {
-                    "messages": [HumanMessage(content=message)],
-                    "session_id": session_id
-                }
+                input_data = create_agent_input(message, session_id)
 
                 plots = []
                 final_response = None
                 current_node = None
 
+                workflow_context = {
+                    "current_agent": None,
+                    "current_action": None,
+                    "tool_calls": [],
+                    "agent_decisions": [],
+                    "user_goal": message,
+                    "execution_progress": {},
+                    "session_id": session_id
+                }
+
                 for event in agent.stream_events(input_data, config=config, version="v2"):
                     event_name = event.get("event")
                     event_data = event.get("data", {})
 
-                    # Track which node we're in
+                    # Track which node we're in and update workflow context
                     if event_name == "on_chain_start":
                         current_node = event.get("name", "")
+                        workflow_context["current_agent"] = current_node
+                        workflow_context["current_action"] = "starting"
+
+                        # Generate real-time status from actual agent context
+                        if status_agent_runnable:
+                            try:
+                                status_context = create_workflow_status_context(workflow_context, event)
+                                status_response = await asyncio.wait_for(
+                                    status_agent_runnable.ainvoke(status_context),
+                                    timeout=10.0
+                                )
+                                status_message = status_response.content.strip()
+                                print(f"DEBUG: Real status agent output for {current_node}: {status_message}")
+                                yield f"data: {json.dumps({'type': 'status', 'message': status_message})}\n\n"
+                            except Exception as e:
+                                print(f"DEBUG: Status agent failed for {current_node}: {type(e).__name__}: {str(e)}")
+                                import traceback
+                                traceback.print_exc()
 
                     # Capture agent responses for status extraction
                     elif event_name == "on_chat_model_stream":
                         if event_data.get("chunk"):
                             chunk_content = str(event_data["chunk"].content)
-
-                            # Extract status from brain agent
-                            if current_node == "brain":
-                                status = extract_brain_status(chunk_content)
-                                if status:
-                                    yield f"data: {json.dumps({'type': 'status', 'message': status, 'agent': 'brain'})}\n\n"
-                                    await asyncio.sleep(0.1)
-
-                            # Extract status from hands agent
-                            elif current_node == "hands":
-                                status = extract_hands_status(chunk_content)
-                                if status:
-                                    yield f"data: {json.dumps({'type': 'status', 'message': status, 'agent': 'hands'})}\n\n"
-                                    await asyncio.sleep(0.1)
+                            workflow_context["execution_progress"][current_node] = chunk_content[:100]
 
                     # Tool execution
                     elif event_name == "on_tool_start":
                         tool_name = event.get("name", "")
                         tool_args = event_data.get("input", {})
-                        status = extract_parser_status(tool_name, tool_args)
-                        yield f"data: {json.dumps({'type': 'status', 'message': status, 'tool': tool_name})}\n\n"
-                        await asyncio.sleep(0.1)
+
+                        tool_info = {
+                            "tool": tool_name,
+                            "args": tool_args,
+                            "status": "starting"
+                        }
+                        workflow_context["tool_calls"].append(tool_info)
+                        workflow_context["current_action"] = f"executing {tool_name}"
+
+                        # Generate status for tool execution
+                        if status_agent_runnable:
+                            try:
+                                status_context = create_workflow_status_context(workflow_context, event)
+                                status_response = await asyncio.wait_for(
+                                    status_agent_runnable.ainvoke(status_context),
+                                    timeout=10.0
+                                )
+                                status_message = status_response.content.strip()
+                                yield f"data: {json.dumps({'type': 'status', 'message': status_message})}\n\n"
+                                await asyncio.sleep(0.1)
+                            except Exception as e:
+                                print(f"DEBUG: Status generation failed for tool_start: {type(e).__name__}: {str(e)}")
+                                import traceback
+                                traceback.print_exc()
 
                     # Tool completion with plot detection
                     elif event_name == "on_tool_end":
                         tool_name = event.get("name", "")
+                        tool_output = event_data.get("output", "")
+
+                        # Update workflow context for tool completion
+                        for tool_info in workflow_context["tool_calls"]:
+                            if tool_info["tool"] == tool_name and tool_info["status"] == "starting":
+                                tool_info["status"] = "completed"
+                                tool_info["output"] = str(tool_output)[:100]
+                                break
+
+                        workflow_context["current_action"] = f"completed {tool_name}"
+
+                        # Generate status for tool completion
+                        if status_agent_runnable:
+                            try:
+                                status_context = create_workflow_status_context(workflow_context, event)
+                                status_response = await asyncio.wait_for(
+                                    status_agent_runnable.ainvoke(status_context),
+                                    timeout=10.0
+                                )
+                                status_message = status_response.content.strip()
+                                yield f"data: {json.dumps({'type': 'status', 'message': status_message})}\n\n"
+                                await asyncio.sleep(0.1)
+                            except Exception as e:
+                                print(f"DEBUG: Status generation failed for tool_end: {type(e).__name__}: {str(e)}")
+                                import traceback
+                                traceback.print_exc()
+
+                        # Special handling for python_code_interpreter
                         if tool_name == "python_code_interpreter":
-                            tool_output = event_data.get("output", "")
                             if 'PLOT_SAVED:' in str(tool_output):
                                 import re
                                 plot_files = re.findall(r'PLOT_SAVED:([^\s]+\.png)', str(tool_output))
@@ -2478,30 +2604,35 @@ async def agent_chat_stream(message: str, session_id: str):
                 # Real-time agent execution with live status monitoring
                 print("DEBUG: Using streaming execution with real agent status")
 
-                yield f"data: {json.dumps({'type': 'status', 'message': '🚀 Starting analysis...'})}\n\n"
-                await asyncio.sleep(0.1)
 
                 config = {"configurable": {"thread_id": session_id}}
+
+                # Use persistent status agent for real-time updates
+                from data_scientist_chatbot.app.agent import create_workflow_status_context
+
 
                 # Stream graph execution to capture real agent transitions
                 final_response = None
                 all_messages = []
                 final_brain_response = None
+                action_outputs = []
+
+                # Initialize state with original user message
+                original_user_message = HumanMessage(content=message)
+                current_state = {"messages": [original_user_message], "session_id": session_id}
 
                 try:
-                    for event in agent.stream({
-                        "messages": [HumanMessage(content=message)],
-                        "session_id": session_id
-                    }, config=config):
+                    for event in agent.stream(create_agent_input(message, session_id), config=config):
 
                         # Extract agent name and status from each execution step
                         for node_name, node_data in event.items():
                             if node_name in ['brain', 'hands', 'parser', 'action']:
 
-                                # Collect all messages for final response
+                                # Update current state for status context
                                 messages = node_data.get('messages', [])
                                 if messages:
                                     all_messages.extend(messages)
+                                    current_state["messages"] = all_messages
 
                                     # Capture brain responses specifically for final display
                                     if node_name == 'brain':
@@ -2512,32 +2643,45 @@ async def agent_chat_stream(message: str, session_id: str):
                                             final_brain_response = brain_content
                                             print(f"DEBUG: Captured brain final response: {brain_content[:200]}...")
 
-                                # Get real status from agent responses
-                                status_message = None
-                                if messages:
-                                    last_msg = messages[-1]
-                                    content = str(last_msg.content) if hasattr(last_msg, 'content') else str(last_msg)
-
-                                    if node_name == 'brain':
-                                        from data_scientist_chatbot.app.agent import extract_brain_status
-                                        status_message = extract_brain_status(content)
-                                    elif node_name == 'hands':
-                                        from data_scientist_chatbot.app.agent import extract_hands_status
-                                        status_message = extract_hands_status(content)
+                                    # Capture action outputs for display
                                     elif node_name == 'action':
-                                        status_message = "⚙️ Executing code in secure sandbox..."
+                                        last_action_msg = messages[-1]
+                                        if hasattr(last_action_msg, 'type') and last_action_msg.type == 'tool':
+                                            action_content = str(last_action_msg.content)
+                                            if action_content and action_content.strip():
+                                                action_outputs.append(action_content)
+                                                print(f"DEBUG: Captured action output: {action_content[:200]}...")
 
-                                # Use extracted status or fallback
-                                if not status_message:
-                                    status_mapping = {
-                                        'brain': '🧠 Analyzing and planning approach...',
-                                        'hands': '👨‍💻 Generating code solution...',
-                                        'parser': '🔍 Processing response format...',
-                                        'action': '⚙️ Executing code in sandbox...'
-                                    }
-                                    status_message = status_mapping.get(node_name, f"🔄 Processing {node_name}...")
+                                # Generate real status using status agent in fallback path
+                                if status_agent_runnable:
+                                    try:
+                                        workflow_context = {
+                                            "current_agent": node_name,
+                                            "current_action": "processing",
+                                            "user_goal": message,
+                                            "session_id": session_id,
+                                            "execution_progress": {},
+                                            "tool_calls": []
+                                        }
 
-                                yield f"data: {json.dumps({'type': 'status', 'message': status_message})}\n\n"
+                                        fake_event = {"event": "on_chain_start", "name": node_name}
+                                        status_context = create_workflow_status_context(workflow_context, fake_event)
+                                        print(f"DEBUG: Status context for {node_name}: {status_context}")
+                                        print(f"DEBUG: Status agent runnable exists: {status_agent_runnable is not None}")
+                                        print(f"DEBUG: Status agent type: {type(status_agent_runnable)}")
+                                        status_response = await asyncio.wait_for(
+                                            status_agent_runnable.ainvoke(status_context),
+                                            timeout=10.0
+                                        )
+                                        status_message = status_response.content.strip() if hasattr(status_response, 'content') else str(status_response).strip()
+                                        print(f"DEBUG: Raw status response for {node_name}: {repr(status_response)}")
+                                        print(f"DEBUG: Fallback path status agent output for {node_name}: {repr(status_message)}")
+                                        yield f"data: {json.dumps({'type': 'status', 'message': status_message})}\n\n"
+                                    except Exception as e:
+                                        print(f"DEBUG: Fallback status agent failed for {node_name}: {type(e).__name__}: {str(e)}")
+                                        import traceback
+                                        traceback.print_exc()
+
                                 await asyncio.sleep(0.1)
 
                         # Store the complete state from the final event
@@ -2546,10 +2690,7 @@ async def agent_chat_stream(message: str, session_id: str):
                 except Exception as stream_error:
                     print(f"Streaming execution failed: {stream_error}")
                     # Fallback to regular invoke
-                    final_response = agent.invoke({
-                        "messages": [HumanMessage(content=message)],
-                        "session_id": session_id
-                    }, config=config)
+                    final_response = agent.invoke(create_agent_input(message, session_id), config=config)
 
                 response = final_response
 
@@ -2569,17 +2710,39 @@ async def agent_chat_stream(message: str, session_id: str):
                     yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization generated!'})}\n\n"
                     await asyncio.sleep(0.3)
 
-                # Use captured brain response or fallback to last message
+                # Combine action outputs with brain interpretation
+                content_parts = []
+
+                # Add action outputs first (technical results)
+                for action_output in action_outputs:
+                    content_parts.append(action_output)
+
+                # Add brain interpretation (business insights)
                 if final_brain_response:
-                    content = final_brain_response
-                    print(f"DEBUG: Using captured brain response: {content[:100]}...")
-                else:
+                    content_parts.append(final_brain_response)
+                    print(f"DEBUG: Using captured brain response: {final_brain_response[:100]}...")
+
+                # Fallback if no specific outputs captured
+                if not content_parts:
                     messages = response.get('messages', [])
                     final_message = messages[-1] if messages else None
-                    content = final_message.content if final_message else "Task completed successfully."
-                    print(f"DEBUG: Fallback to last message: {content[:100]}...")
+                    fallback_content = final_message.content if final_message else "Task completed successfully."
+                    content_parts.append(fallback_content)
+                    print(f"DEBUG: Fallback to last message: {fallback_content[:100]}...")
 
-                yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots})}\n\n"
+                # Combine all parts
+                content = "\n\n".join(content_parts)
+                print(f"DEBUG: Final combined response parts: {len(content_parts)}")
+                for i, part in enumerate(content_parts):
+                    print(f"DEBUG: Part {i+1}: {part[:100]}...")
+                print(f"DEBUG: Combined content length: {len(content)}")
+                print(f"DEBUG: Combined content preview: {content[:200]}...")
+
+                final_json = {'type': 'final_response', 'response': content, 'plots': plots}
+                print(f"DEBUG: Final JSON keys: {list(final_json.keys())}")
+                print(f"DEBUG: Final JSON response length: {len(final_json['response'])}")
+
+                yield f"data: {json.dumps(final_json)}\n\n"
 
         except Exception as e:
             print(f"DEBUG: Streaming error: {e}")
@@ -2771,6 +2934,126 @@ async def health_check():
         health_status["performance_monitoring"] = "unavailable"
     
     return health_status
+
+# Session Management APIs
+@app.get("/api/sessions")
+async def get_sessions():
+    """Get list of all chat sessions"""
+    sessions = []
+    for session_id, session_data in session_store.items():
+        if session_id == GLOBAL_SESSION_ID:
+            continue
+
+        session_title = "New Chat"
+
+        # Check if there's a custom title stored
+        session_titles = getattr(rename_session, 'session_titles', {})
+        if session_id in session_titles:
+            session_title = session_titles[session_id]
+        elif session_id in agent_sessions:
+            try:
+                agent = agent_sessions[session_id]
+                if hasattr(agent, 'state') and agent.state and 'messages' in agent.state:
+                    messages = agent.state['messages']
+                    if messages:
+                        first_user_msg = next((msg for msg in messages if hasattr(msg, 'type') and msg.type == 'human'), None)
+                        if first_user_msg:
+                            session_title = str(first_user_msg.content)[:50]
+            except:
+                pass
+
+        sessions.append({
+            "id": session_id,
+            "title": session_title,
+            "created_at": session_data.get("created_at", datetime.now()).isoformat()
+        })
+
+    return sorted(sessions, key=lambda x: x["created_at"], reverse=True)
+
+@app.post("/api/sessions/new")
+async def create_new_session():
+    """Create a new chat session"""
+    new_session_id = str(uuid.uuid4())
+    session_store[new_session_id] = {
+        "session_id": new_session_id,
+        "created_at": datetime.now()
+    }
+
+    # Ensure clean checkpointer state for new session
+    try:
+        from data_scientist_chatbot.app.agent import memory
+        if memory:
+            # Clear any existing checkpoints for this new thread_id (just in case)
+            memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (new_session_id,))
+            memory.conn.commit()
+            print(f"DEBUG: Ensured clean checkpointer state for new session {new_session_id}")
+    except Exception as e:
+        print(f"WARNING: Failed to clean checkpointer state for new session {new_session_id}: {e}")
+
+    return {"session_id": new_session_id}
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a chat session"""
+    if session_id in session_store:
+        del session_store[session_id]
+    if session_id in agent_sessions:
+        del agent_sessions[session_id]
+
+    # Clear checkpointer state for this session
+    try:
+        from data_scientist_chatbot.app.agent import memory
+        if memory:
+            # Clear all checkpoints for this thread_id
+            memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+            memory.conn.commit()
+            print(f"DEBUG: Cleared checkpointer state for session {session_id}")
+    except Exception as e:
+        print(f"WARNING: Failed to clear checkpointer state for session {session_id}: {e}")
+
+    return {"success": True}
+
+@app.put("/api/sessions/{session_id}/rename")
+async def rename_session(session_id: str, request: dict):
+    """Rename a chat session"""
+    try:
+        new_title = request.get("title", "").strip()
+        if not new_title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+        # For now, we'll store session titles in memory
+        # In a real application, this would be stored in a database
+        if not hasattr(rename_session, 'session_titles'):
+            rename_session.session_titles = {}
+
+        rename_session.session_titles[session_id] = new_title
+
+        return {"success": True, "title": new_title}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to rename session: {str(e)}")
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """Get conversation history for a session"""
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    messages = []
+    if session_id in agent_sessions:
+        try:
+            agent = agent_sessions[session_id]
+            if hasattr(agent, 'state') and agent.state and 'messages' in agent.state:
+                for msg in agent.state['messages']:
+                    if hasattr(msg, 'type'):
+                        messages.append({
+                            "type": msg.type,
+                            "content": str(msg.content),
+                            "timestamp": datetime.now().isoformat()
+                        })
+        except:
+            pass
+
+    return messages
 
 if __name__ == "__main__":
     import uvicorn
