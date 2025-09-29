@@ -183,22 +183,13 @@ else:
     sys.stdout.flush()
 """
         else:
-            # For non-plotting code, ensure DataFrame output is captured
+            # For non-plotting code, execute directly
             enhanced_code = f"""
 import pandas as pd
 import numpy as np
 
-# Execute the user code
-result = None
-try:
-    result = eval('''{code}''')
-    if result is not None:
-        print(result)
-except:
-    try:
-        exec('''{code}''')
-    except Exception as e:
-        print(f"Error executing code: {{e}}")
+# Execute the user code directly
+{code}
 """
         
         print(f"DEBUG: About to run code in sandbox. Enhanced code length: {len(enhanced_code)}")
