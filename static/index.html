@@ -12,15 +12,35 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css">
 </head>
 <body>
+    <canvas id="bgParticles"></canvas> 
+
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button id="newChatBtn" class="btn-new-chat">
+                <i class="fa-solid fa-plus"></i>
+                <span>New Chat</span>
+            </button>
+        </div>
+        <div class="sidebar-content">
+            <div class="session-list" id="sessionList">
+            </div>
+        </div>
+    </div>
+
     <div id="app">
         <header class="header">
             <div class="header-content">
-                <div class="logo">DataInsight AI</div>
-                <div> 
+                <div class="header-left">
+                    <button id="sidebarToggle" class="btn-sidebar-toggle" title="Toggle Sidebar">
+                        <i class="fa-solid fa-bars"></i>
+                    </button>
+                    <div class="logo">DataInsight AI</div>
+                </div>
+                <div class="header-right"> 
                     <button id="themeToggle" class="btn-theme" title="Toggle Theme">
                         <i class="icon-theme"></i> 
                     </button>
-                    <a href="/static/dashboard.html" id="manualAnalyze" class="btn-header">Manual Mode</a>
+                    <a href="dashboard.html" id="manualAnalyze" class="btn-header">Manual Mode</a>
                 </div>
             </div>
         </header>
@@ -44,6 +64,14 @@
             </div>
         </main>
     </div>
-    <script src="/static/script.js"></script>
+    <!-- Modular JavaScript imports -->
+    <script src="static/js/animation-manager.js"></script>
+    <script src="static/js/three-renderer.js"></script>
+    <script src="static/js/api-client.js"></script>
+    <script src="static/js/ui-manager.js"></script>
+    <script src="static/js/chat-interface.js"></script>
+    <script src="static/js/session-manager.js"></script>
+    <script src="static/js/theme-manager.js"></script>
+    <script src="static/js/app.js"></script>
 </body>
 </html>
