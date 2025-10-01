@@ -1,13 +1,10 @@
 import io
 import json
 import logging
-import tempfile
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-import numpy as np
-
 import pandas as pd
 import joblib
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -18,22 +15,16 @@ from pydantic import BaseModel
 from langchain_core.messages import ToolMessage
 import uuid
 import re
-
 try:
     import sys
-    import os
     from pathlib import Path
-    import importlib.util
-    
     project_root = Path(__file__).parent.parent
     chatbot_path = project_root / "data_scientist_chatbot"
     app_path = chatbot_path / "app"
-    
     sys.path.insert(0, str(chatbot_path))
     sys.path.insert(0, str(app_path))
-    
-    from data_scientist_chatbot.app.agent import create_agent_executor, create_enhanced_agent_executor
-    
+    from data_scientist_chatbot.app.core.graph_builder import create_enhanced_agent_executor
+    create_agent_executor = create_enhanced_agent_executor
     CHAT_AVAILABLE = True
     print("✅ Chat functionality loaded successfully")
 except Exception as e:
@@ -42,29 +33,22 @@ except Exception as e:
     print(f"⚠️  Chat functionality not available: {e}")
     import traceback
     traceback.print_exc()
-
 from .common.data_ingestion import ingest_data, ingest_from_url
 from .data_quality.validator import DataQualityValidator
 from .intelligence.data_profiler import IntelligentDataProfiler
-from .core.pipeline_orchestrator import RobustPipelineOrchestrator, PipelineConfig
-from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
 from .visualization.data_explorer import IntelligentDataExplorer, VisualizationRequest
 
 def convert_pandas_output_to_html(output_text):
     if not output_text or not isinstance(output_text, str):
         return output_text
-    
     lines = output_text.strip().split('\n')
-    
     shape_line = next((line for line in lines if 'Shape:' in line), '')
     columns_line = next((line for line in lines if 'Columns:' in line), '')
     
     if shape_line and columns_line:
         columns_text = columns_line.split(': ')[1] if ': ' in columns_line else 'N/A'
         return f"📊 Dataset loaded successfully!\n{shape_line}\nColumns: {columns_text}"
-    
     return "📊 Dataset loaded successfully!"
-
 try:
     from .database.service import get_database_service
     from .database.connection import get_database_manager
@@ -75,12 +59,18 @@ except ImportError:
 
 GLOBAL_SESSION_ID = "persistent_app_session"
 session_agents = {}
+agent_sessions = session_agents
+AGENT_AVAILABLE = CHAT_AVAILABLE
+async_tasks = {}
+task_executor = None
+performance_monitor = None
+status_agent_runnable = None
 
 def get_session_agent(session_id: str):
     if CHAT_AVAILABLE and session_id not in session_agents:
         # Ensure clean checkpointer state for new agent session
         try:
-            from data_scientist_chatbot.app.agent import memory
+            from data_scientist_chatbot.app.core.graph_builder import memory
             if memory:
                 memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
                 memory.conn.commit()
@@ -92,8 +82,8 @@ def get_session_agent(session_id: str):
     return session_agents.get(session_id)
 
 app = FastAPI(
-    title="DataInsight AI",
-    description="Intelligent automated data preprocessing and feature engineering platform",
+    title="DnA",
+    description="",
     version="2.0.0"
 )
 
@@ -107,6 +97,27 @@ app.add_middleware(
 
 logger = logging.getLogger(__name__)
 data_explorer = IntelligentDataExplorer()
+
+def create_intelligence_summary(intelligence_profile: dict) -> dict:
+    """Extract intelligence summary from profiling results"""
+    column_profiles = intelligence_profile.get('column_profiles', {})
+    domain_analysis = intelligence_profile.get('domain_analysis', {})
+
+    semantic_types = {col: profile.semantic_type.value
+                    for col, profile in column_profiles.items()}
+
+    detected_domains = domain_analysis.get('detected_domains', [])
+    primary_domain = detected_domains[0] if detected_domains else None
+
+    return {
+        "semantic_types": semantic_types,
+        "primary_domain": primary_domain.get('domain') if primary_domain else 'unknown',
+        "domain_confidence": primary_domain.get('confidence', 0) if primary_domain else 0,
+        "domain_analysis": domain_analysis,
+        "key_insights": intelligence_profile.get('overall_recommendations', [])[:3] if intelligence_profile.get('overall_recommendations') else [],
+        "relationships_found": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
+        "profiling_completed": True
+    }
 static_dir = Path(__file__).parent.parent / "static"
 
 @app.get("/static/script.js")
@@ -123,66 +134,13 @@ async def get_styles():
 
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-class TaskConfig(BaseModel):
-    task: str
-    target_column: Optional[str] = None
-    feature_generation_enabled: bool = False
-    feature_selection_enabled: bool = False
-    enable_intelligence: bool = True
-
-class StrategicTaskConfig(BaseModel):
-    project_id: str
-    objective: str
-    domain: str
-    priority: str = "medium"
-    risk_level: str = "medium"
-    target_column: Optional[str] = None
-    business_goal: str
-    success_criteria: List[str] = []
-    stakeholders: List[str] = []
-    timeline_months: int = 3
-    interpretability_required: bool = False
-    compliance_rules: List[str] = []
-    max_latency_ms: Optional[int] = None
-    max_training_hours: Optional[float] = None
-    min_accuracy: Optional[float] = None
-
-class StrategyConfig(BaseModel):
-    objective: str
-    domain: str = "general"
-    risk_level: str = "medium"
-    max_latency_ms: Optional[int] = None
-    max_training_hours: Optional[int] = None
-    min_accuracy: Optional[float] = None
-    protected_attributes: List[str] = []
-    interpretability_required: bool = False
-    compliance_rules: List[str] = []
-    target_column: Optional[str] = None
-
 class DataIngestionRequest(BaseModel):
     url: str
     data_type: str = "csv"
     enable_profiling: bool = True
     session_id: Optional[str] = None
-
-class ProcessingResult(BaseModel):
-    status: str
-    message: str
-    data_shape: Optional[tuple] = None
-    column_roles: Optional[Dict[str, List[str]]] = None
-    processing_time: Optional[float] = None
-    artifacts: Optional[Dict[str, str]] = None
-    intelligence_summary: Optional[Dict[str, Any]] = None
-
-class IntelligenceProfile(BaseModel):
-    semantic_types: Dict[str, str]
-    domain_analysis: Dict[str, Any]
-    relationship_summary: Dict[str, Any]
-    overall_recommendations: List[str]
-
 session_store = {}
 
-# Make session_store globally accessible for tools
 import builtins
 builtins._session_store = session_store
 
@@ -193,24 +151,10 @@ class ProfilingRequest(BaseModel):
     include_relationships: bool = True
     include_domain_detection: bool = True
 
-class StrategicAnalysisRequest(BaseModel):
-    """Request model for comprehensive strategic analysis"""
-    project_definition: StrategicTaskConfig
-    include_historical_insights: bool = True
-    translation_strategy: str = "balanced"  # conservative, balanced, aggressive, compliance_first
-
 class FeatureRecommendationRequest(BaseModel):
     target_column: Optional[str] = None
     max_recommendations: int = 10
     priority_filter: Optional[str] = None  # 'high', 'medium', 'low'
-
-class LearningFeedback(BaseModel):
-    session_id: str
-    success_rating: float  # 0.0 to 1.0
-    execution_time: float
-    user_satisfaction: float  # 0.0 to 1.0
-    issues_encountered: List[str] = []
-    suggestions: Optional[str] = None
 
 class ChatMessage(BaseModel):
     message: str
@@ -221,16 +165,53 @@ class ChatResponse(BaseModel):
     response: str
     plots: List[str] = []
 
+class AgentChatRequest(BaseModel):
+    message: str
+    session_id: str
+    async_execution: bool = False
+
+def create_agent_input(message: str, session_id: str) -> Dict[str, Any]:
+    """Create input state for agent execution"""
+    from langchain_core.messages import HumanMessage
+    return {
+        "messages": [HumanMessage(content=message)],
+        "session_id": session_id
+    }
+
+def run_agent_task(agent, message: str, session_id: str) -> Dict[str, Any]:
+    """Run agent task in background thread"""
+    try:
+        response = agent.invoke(create_agent_input(message, session_id))
+        messages = response.get('messages', [])
+        final_message = messages[-1] if messages else None
+        content = final_message.content if final_message else "Task completed"
+
+        return {
+            "success": True,
+            "response": content,
+            "session_id": session_id
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "session_id": session_id
+        }
+
+def create_workflow_status_context(workflow_context: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
+    """Create context for status agent"""
+    return {
+        "user_goal": workflow_context.get("user_goal", ""),
+        "current_agent": workflow_context.get("current_agent", ""),
+        "current_action": workflow_context.get("current_action", ""),
+        "event_type": event.get("event", ""),
+        "node_name": event.get("name", "")
+    }
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the chat-first landing interface."""
     html_path = Path(__file__).parent.parent / "static" / "index.html"
-    return HTMLResponse(html_path.read_text())
-
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    """Serve the classic dashboard interface."""
-    html_path = Path(__file__).parent.parent / "static" / "dashboard.html"
     return HTMLResponse(html_path.read_text())
 
 @app.post("/api/agent/chat", response_model=ChatResponse)
@@ -385,31 +366,20 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
                 intelligence_profile = data_profiler.profile_dataset(df)
                 
                 # Extract key insights for response
-                column_profiles = intelligence_profile.get('column_profiles', {})
-                domain_analysis = intelligence_profile.get('domain_analysis', {})
-                
-                semantic_types = {col: profile.semantic_type.value 
-                                for col, profile in column_profiles.items()}
-                
-                detected_domains = domain_analysis.get('detected_domains', [])
-                primary_domain = detected_domains[0] if detected_domains else None
-                
-                intelligence_summary = {
-                    "semantic_types": semantic_types,
-                    "primary_domain": primary_domain.get('domain') if primary_domain else 'unknown',
-                    "domain_confidence": primary_domain.get('confidence', 0) if primary_domain else 0,
-                    "key_insights": intelligence_profile.get('overall_recommendations', [])[:3],
-                    "relationships_found": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-                    "profiling_completed": True
-                }
-                
+                intelligence_summary = create_intelligence_summary(intelligence_profile)
                 response_data["intelligence_summary"] = intelligence_summary
                 session_data["intelligence_profile"] = intelligence_profile
                 
             except Exception as prof_e:
                 response_data["intelligence_summary"] = {
                     "profiling_completed": False,
-                    "profiling_error": str(prof_e)
+                    "profiling_error": str(prof_e),
+                    "key_insights": [],
+                    "semantic_types": {},
+                    "primary_domain": "unknown",
+                    "domain_confidence": 0,
+                    "domain_analysis": {"detected_domains": []},
+                    "relationships_found": 0
                 }
         
         session_store[session_id] = session_data
@@ -480,36 +450,32 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
                 
                 # Load data directly into the stateful sandbox
                 load_code = f"""
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from io import StringIO
+                            import pandas as pd
+                            import numpy as np
+                            import matplotlib.pyplot as plt
+                            import seaborn as sns
+                            from io import StringIO
 
-# Create dataframe from CSV data
-csv_data = '''{csv_data}'''
-df = pd.read_csv(StringIO(csv_data))
-print(f"Dataset loaded successfully!")
-print(f"Shape: {{df.shape[0]}} rows x {{df.shape[1]}} columns")
-print(f"Columns: {{list(df.columns)}}")
-print("First 5 rows:")
-print(df.head())
-"""
+                            # Create dataframe from CSV data
+                            csv_data = '''{csv_data}'''
+                            df = pd.read_csv(StringIO(csv_data))
+                            print(f"Dataset loaded successfully!")
+                            print(f"Shape: {{df.shape[0]}} rows x {{df.shape[1]}} columns")
+                            print(f"Columns: {{list(df.columns)}}")
+                            print("First 5 rows:")
+                            print(df.head())
+                            """
                 
-                # Execute load code in sandbox
                 print(f"DEBUG: Loading data into sandbox for session {session_id}")
                 print(f"DEBUG: Load code length: {len(load_code)} chars")
                 load_result = execute_python_in_sandbox(load_code, session_id)
                 print(f"DEBUG: Sandbox load result success: {load_result['success']}")
                 if not load_result['success']:
                     print(f"DEBUG: Sandbox load error: {load_result.get('stderr', 'No error details')}")
-
                 if load_result["success"]:
                     clean_output = load_result['stdout']
                     print(f"DEBUG: Sandbox load stdout: {clean_output[:200]}...")
                     html_output = convert_pandas_output_to_html(clean_output)
-
-                    # Create enhanced message with profiling data
                     enhanced_message = f"\n\n{html_output}"
 
                     # Add profiling summary if available
@@ -524,23 +490,20 @@ print(df.head())
                     response_data["agent_analysis"] = enhanced_message
                     response_data["agent_session_id"] = session_id
 
-                    # Also save dataset to common filenames for agent code compatibility
                     save_code = f"""
-# Save dataset to common filenames that agents might use
-df.to_csv('dataset.csv', index=False)
-df.to_csv('data.csv', index=False)
-df.to_csv('ds.csv', index=False)
-print("Dataset saved as dataset.csv, data.csv, and ds.csv")
-"""
+                                # Save dataset to common filenames that agents might use
+                                df.to_csv('dataset.csv', index=False)
+                                df.to_csv('data.csv', index=False)
+                                df.to_csv('ds.csv', index=False)
+                                print("Dataset saved as dataset.csv, data.csv, and ds.csv")
+                                """
                     save_result = execute_python_in_sandbox(save_code, session_id)
                     print(f"DEBUG: Dataset save result: {save_result['success']}")
                 else:
                     error_msg = load_result.get('stderr', 'Unknown error')
                     print(f"ERROR: Sandbox data loading failed: {error_msg}")
                     response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {error_msg}"
-                    response_data["agent_session_id"] = session_id
-                
-                
+                    response_data["agent_session_id"] = session_id 
             except Exception as agent_e:
                 logging.warning(f"Agent data loading failed: {agent_e}")
                 response_data["agent_analysis"] = None
@@ -652,36 +615,23 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
                 intelligence_profile = data_profiler.profile_dataset(df)
                 
                 # Extract key insights for response
-                column_profiles = intelligence_profile.get('column_profiles', {})
-                domain_analysis = intelligence_profile.get('domain_analysis', {})
-                
-                semantic_types = {col: profile.semantic_type.value 
-                                for col, profile in column_profiles.items()}
-                
-                detected_domains = domain_analysis.get('detected_domains', [])
-                primary_domain = detected_domains[0] if detected_domains else None
-                
-                intelligence_summary = {
-                    "semantic_types": semantic_types,
-                    "primary_domain": primary_domain.get('domain') if primary_domain else 'unknown',
-                    "domain_confidence": primary_domain.get('confidence', 0) if primary_domain else 0,
-                    "key_insights": intelligence_profile.get('overall_recommendations', [])[:3],
-                    "relationships_found": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-                    "profiling_completed": True
-                }
-                
+                intelligence_summary = create_intelligence_summary(intelligence_profile)
                 response_data["intelligence_summary"] = intelligence_summary
                 session_data["intelligence_profile"] = intelligence_profile
                 
             except Exception as prof_e:
                 response_data["intelligence_summary"] = {
                     "profiling_completed": False,
-                    "profiling_error": str(prof_e)
+                    "profiling_error": str(prof_e),
+                    "key_insights": [],
+                    "semantic_types": {},
+                    "primary_domain": "unknown",
+                    "domain_confidence": 0,
+                    "domain_analysis": {"detected_domains": []},
+                    "relationships_found": 0
                 }
         
         session_store[session_id] = session_data
-
-        # Store data in builtins for agent access
         import builtins
         if not hasattr(builtins, '_session_store'):
             builtins._session_store = {}
@@ -767,209 +717,6 @@ async def generate_eda(session_id: str):
     except Exception as e:
         return {"status": "error", "detail": f"Error generating EDA: {str(e)}"}
 
-@app.post("/api/data/{session_id}/process/strategic")
-async def process_data_strategic(session_id: str, config: StrategicTaskConfig):
-    """Process data with strategic business-driven pipeline"""
-    if session_id not in session_store:
-        return {"status": "error", "detail": "Session not found"}
-    
-    try:
-        start_time = datetime.now()
-        session_data = session_store[session_id]
-        df = session_data["dataframe"]
-        
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-        df.to_csv(temp_file.name, index=False)
-        
-        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
-        
-        project_definition = ProjectDefinition(
-            project_id=config.project_id,
-            name=getattr(config, 'project_name', f"Project {config.project_id}"),
-            description=getattr(config, 'description', "Automated ML project"),
-            objective=Objective(config.objective.lower()),
-            domain=Domain(config.domain.lower()),
-            priority=Priority(config.priority.lower()),
-            risk_level=RiskLevel(config.risk_level.lower()),
-            business_context=BusinessContext(
-                business_unit=getattr(config, 'business_unit', "Data Science"),
-                success_criteria=getattr(config, 'success_criteria', ["Model accuracy > 80%"]),
-                stakeholders=getattr(config, 'stakeholders', ["Data Analyst"]),
-                timeline_months=getattr(config, 'timeline_months', 3)
-            ),
-            technical_constraints=TechnicalConstraints(
-                max_training_hours=getattr(config, 'max_training_hours', 2.0),
-                max_memory_gb=8.0,
-                min_accuracy=getattr(config, 'min_accuracy', 0.8)
-            ),
-            regulatory_constraints=RegulatoryConstraints(
-                privacy_level="standard",
-                audit_trail_required=False,
-                compliance_rules=getattr(config, 'compliance_rules', [])
-            )
-        )
-        
-        pipeline_config = PipelineConfig(
-            enable_adaptive_learning=True,
-            enable_security=True,
-            enable_explainability=True,
-            enable_compliance=True
-        )
-        
-        orchestrator = RobustPipelineOrchestrator(pipeline_config)
-        
-        strategic_result = orchestrator.execute_pipeline(
-            data_path=temp_file.name,
-            project_definition=project_definition,
-            target_column=config.target_column
-        )
-        
-        Path(temp_file.name).unlink()
-        
-        processing_time = (datetime.now() - start_time).total_seconds()
-        
-        session_store[session_id].update({
-            "strategic_result": strategic_result,
-            "project_definition": project_definition.__dict__,
-            "processing_config": config.dict(),
-            "processing_time": processing_time
-        })
-        
-        return {
-            "status": "success",
-            "message": "Strategic pipeline execution completed",
-            "project_id": config.project_id,
-            "objective_achieved": strategic_result.get("strategic_summary", {}).get("objective_achieved", False),
-            "business_impact": strategic_result.get("strategic_summary", {}).get("business_impact", {}),
-            "executive_summary": strategic_result.get("strategic_summary", {}).get("executive_summary", {}),
-            "processing_time": processing_time,
-            "artifacts": {
-                "strategic_report": f"/api/data/{session_id}/download/strategic-report",
-                "executive_dashboard": f"/api/data/{session_id}/download/executive-dashboard",
-                "technical_artifacts": f"/api/data/{session_id}/download/technical-artifacts"
-            }
-        }
-    
-    except Exception as e:
-        return {"status": "error", "detail": f"Strategic processing error: {str(e)}"}
-
-@app.post("/api/data/{session_id}/process")
-async def process_data(session_id: str, config: TaskConfig):
-    """Process data with unified RobustPipelineOrchestrator workflow."""
-    if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        start_time = datetime.now()
-        session_data = session_store[session_id]
-        df = session_data["dataframe"]
-        
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-        temp_file.close()  
-        df.to_csv(temp_file.name, index=False)
-        
-        # Phase 1: RECALL - Get experience from database
-        recommended_strategy = None
-        if DATABASE_AVAILABLE:
-            try:
-                meta_db = PersistentMetaDatabase()
-                from .learning.persistent_storage import create_dataset_characteristics
-                
-                # Create dataset characteristics for experience lookup
-                dataset_characteristics = create_dataset_characteristics(
-                    df, config.target_column, domain='general'
-                )
-                
-                # Recall similar successful strategies
-                recommendations = meta_db.get_recommended_strategies(
-                    dataset_characteristics,
-                    objective='accuracy',
-                    domain='general'
-                )
-                
-                if recommendations.get('recommended_strategies'):
-                    recommended_strategy = recommendations['recommended_strategies'][0]
-                
-            except Exception as e:
-                logging.warning(f"Experience recall failed: {e}")
-        
-        if recommended_strategy and recommended_strategy.get('confidence', 0) > 0.6:
-            strategy_config = recommended_strategy.get('config', {})
-            pipeline_config = PipelineConfig(
-                enable_feature_engineering=strategy_config.get('feature_engineering_enabled', config.feature_generation_enabled),
-                enable_feature_selection=strategy_config.get('feature_selection_enabled', config.feature_selection_enabled),
-                enable_intelligence=config.enable_intelligence,
-                security_level=strategy_config.get('security_level', 'standard'),
-                privacy_level=strategy_config.get('privacy_level', 'medium')
-            )
-        else:
-            pipeline_config = PipelineConfig(
-                enable_feature_engineering=config.feature_generation_enabled,
-                enable_feature_selection=config.feature_selection_enabled,
-                enable_intelligence=config.enable_intelligence
-            )
-        
-        # Initialize RobustPipelineOrchestrator
-        orchestrator = RobustPipelineOrchestrator(pipeline_config)
-        
-        # Create default project definition for legacy compatibility
-        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
-        
-        project_definition = ProjectDefinition(
-            project_id=f"api_{session_id}",
-            name=f"Data Analysis Session {session_id}",
-            description="Automated data analysis and model building session",
-            objective=Objective.ACCURACY,
-            domain=Domain.GENERAL,
-            priority=Priority.MEDIUM,
-            risk_level=RiskLevel.MEDIUM,
-            business_context=BusinessContext(
-                business_unit="Data Science",
-                success_criteria=["Model accuracy > 80%", "Processing time < 30 minutes"],
-                stakeholders=["Data Analyst", "Business User"],
-                timeline_months=1
-            ),
-            technical_constraints=TechnicalConstraints(
-                max_training_hours=2.0,
-                max_memory_gb=8.0,
-                min_accuracy=0.8
-            ),
-            regulatory_constraints=RegulatoryConstraints(
-                privacy_level="standard",
-                audit_trail_required=False,
-                compliance_rules=[]
-            )
-
-        )
-
-        # Execute pipeline with the project definition
-        result_dict = orchestrator.execute_pipeline(
-            data_path=temp_file.name,
-            project_definition=project_definition,
-            target_column=config.target_column,
-            custom_config={'feature_generation_enabled': config.feature_generation_enabled, 'feature_selection_enabled': config.feature_selection_enabled}
-        )
-
-        processing_time = (datetime.now() - start_time).total_seconds()
-
-        session_store[session_id].update({
-            "pipeline_result": result_dict,
-            "processing_config": config.dict(),
-            "processing_time": processing_time
-        })
-
-        return {
-            "status": "success",
-            "message": "Data processed successfully",
-            "processing_time": processing_time,
-            "artifacts": {
-                "pipeline_metadata": f"/api/data/{session_id}/download/pipeline-metadata",
-                "processed_data": f"/api/data/{session_id}/download/data"
-            }
-        }
-
-    except Exception as e:
-        return {"status": "error", "detail": f"Processing error: {str(e)}"}
 
 
 @app.get("/api/data/{session_id}/download/{artifact_type}")
@@ -1426,495 +1173,6 @@ async def apply_feature_recommendations(session_id: str, request: FeatureRecomme
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Feature application error: {str(e)}")
 
-@app.post("/api/learning/feedback")
-async def record_learning_feedback(feedback: LearningFeedback):
-    """Record user feedback for adaptive learning system."""
-    try:
-        if DATABASE_AVAILABLE:
-            db_service = get_database_service()
-            meta_db = PersistentMetaDatabase()
-            
-            # Get session data for context
-            if feedback.session_id in session_store:
-                session_data = session_store[feedback.session_id]
-                pipeline_result = session_data.get("pipeline_result", {})
-                execution_id = pipeline_result.get("execution_id") if isinstance(pipeline_result, dict) else None
-                
-                if not execution_id:
-                    execution_id = f"exec_{feedback.session_id}"
-                
-                # Store feedback directly to database
-                feedback_data = {
-                    "user_rating": feedback.success_rating,
-                    "issues_encountered": feedback.issues_encountered,
-                    "suggestions": feedback.suggestions,
-                    "performance_expectation_met": feedback.success_rating >= 0.7,
-                    "would_recommend": feedback.user_satisfaction >= 0.7
-                }
-                
-                success = meta_db.record_user_feedback(execution_id, feedback_data)
-                
-                if success:
-                    # Update the original pipeline execution with user feedback
-                    update_success = meta_db.update_execution_with_feedback(
-                        execution_id, 
-                        user_satisfaction=feedback.user_satisfaction,
-                        success_rating=feedback.success_rating
-                    )
-                    
-                    if update_success:
-                        return {
-                            "status": "success",
-                            "message": "Feedback integrated into execution record",
-                            "feedback_id": f"feedback_{execution_id}_{int(datetime.now().timestamp())}",
-                            "learning_impact": "System will prioritize similar strategies based on your feedback"
-                        }
-                    else:
-                        return {
-                            "status": "partial_success", 
-                            "message": "Feedback stored but execution update failed",
-                            "feedback_id": f"feedback_{execution_id}_{int(datetime.now().timestamp())}"
-                        }
-                else:
-                    raise Exception("Database feedback storage failed")
-            else:
-                return {
-                    "status": "error",
-                    "message": "Session not found - cannot link feedback to execution"
-                }
-        
-        # Fallback to legacy adaptive learning system
-        from .learning.adaptive_system import AdaptiveLearningSystem
-        learning_system = AdaptiveLearningSystem()
-        
-        if feedback.session_id in session_store:
-            session_data = session_store[feedback.session_id]
-            intelligence_profile = session_data.get("intelligence_profile", {})
-            processing_config = session_data.get("processing_config", {})
-            
-            pipeline_results = {
-                "performance_metrics": {"user_satisfaction": feedback.user_satisfaction},
-                "execution_time": feedback.execution_time,
-                "successful_stages": 7 if feedback.success_rating > 0.7 else int(feedback.success_rating * 7),
-                "total_stages": 7
-            }
-            
-            execution_metadata = {
-                "total_time": feedback.execution_time,
-                "config": processing_config,
-                "user_feedback": {
-                    "success_rating": feedback.success_rating,
-                    "satisfaction": feedback.user_satisfaction,
-                    "issues": feedback.issues_encountered,
-                    "suggestions": feedback.suggestions
-                }
-            }
-            
-            learning_system.record_pipeline_execution(
-                pipeline_results, intelligence_profile, execution_metadata
-            )
-            
-            return {
-                "status": "success",
-                "message": "Feedback recorded successfully",
-                "feedback_id": f"feedback_{feedback.session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "learning_impact": "Feedback will improve future recommendations"
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Session not found"
-            }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Feedback recording error: {str(e)}")
-
-@app.get("/api/learning/insights")
-async def get_learning_insights():
-    """Get insights about the adaptive learning system state."""
-    try:
-        from .learning.adaptive_system import AdaptiveLearningSystem
-        learning_system = AdaptiveLearningSystem()
-        
-        insights = learning_system.get_learning_summary()
-        
-        return {
-            "status": "success",
-            "learning_insights": insights,
-            "system_health": "operational",
-            "insights_generated_at": datetime.now().isoformat()
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Learning insights error: {str(e)}")
-
-@app.get("/api/data/{session_id}/adaptive-recommendations")
-async def get_adaptive_recommendations(session_id: str):
-    """Get context-aware recommendations based on learned patterns."""
-    if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session_data = session_store[session_id]
-        intelligence_profile = session_data.get("intelligence_profile")
-        
-        if not intelligence_profile:
-            raise HTTPException(status_code=400, detail="Intelligence profile required. Run profiling first.")
-        
-        from .learning.adaptive_system import AdaptiveLearningSystem
-        learning_system = AdaptiveLearningSystem()
-        
-        current_config = session_data.get("processing_config", {})
-        adaptive_recs = learning_system.get_adaptive_recommendations(
-            intelligence_profile, current_config
-        )
-        
-        return {
-            "status": "success",
-            "adaptive_recommendations": adaptive_recs.get('adaptive_recommendations', {}),
-            "confidence_scores": adaptive_recs.get('confidence_scores', {}),
-            "learning_insights": adaptive_recs.get('learning_insights', {}),
-            "recommendations_generated_at": datetime.now().isoformat()
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Adaptive recommendations error: {str(e)}")
-
-@app.get("/api/data/{session_id}/pipeline-status")
-async def get_pipeline_status(session_id: str):
-    """Get real-time pipeline execution status."""
-    if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session_data = session_store[session_id]
-        
-        # Check for unified pipeline results
-        pipeline_result = session_data.get("pipeline_result")
-        
-        if pipeline_result:
-            # Extract status from unified pipeline
-            execution_summary = pipeline_result.get('execution_summary', {})
-            
-            status_info = {
-                "pipeline_type": "unified",
-                "overall_status": pipeline_result.get('status', 'unknown'),
-                "session_id": pipeline_result.get('session_id'),
-                "total_stages": execution_summary.get('total_stages', 0),
-                "successful_stages": execution_summary.get('successful_stages', 0),
-                "total_execution_time": execution_summary.get('total_time', 0),
-                "stage_details": pipeline_result.get('results', {}),
-                "last_updated": datetime.now().isoformat()
-            }
-        else:
-            # No pipeline execution found
-            status_info = {
-                "pipeline_type": "none",
-                "overall_status": "not_started",
-                "message": "No pipeline execution found for this session",
-                "last_updated": datetime.now().isoformat()
-            }
-        
-        # Add session metadata
-        status_info.update({
-            "session_metadata": {
-                "data_uploaded": "dataframe" in session_data,
-                "intelligence_profiled": "intelligence_profile" in session_data,
-                "features_analyzed": "feature_analysis" in session_data,
-                "data_enhanced": "enhanced_data" in session_data
-            }
-        })
-        
-        return {
-            "status": "success",
-            "pipeline_status": status_info
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline status error: {str(e)}")
-
-@app.post("/api/data/{session_id}/pipeline-recovery")
-async def trigger_pipeline_recovery(session_id: str):
-    """Manually trigger pipeline recovery for failed executions."""
-    if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    try:
-        session_data = session_store[session_id]
-        
-        # Check if there's a failed pipeline to recover
-        pipeline_result = session_data.get("pipeline_result")
-        
-        if not pipeline_result:
-            raise HTTPException(status_code=400, detail="No pipeline execution found to recover")
-        
-        if pipeline_result.get('status') != 'pipeline_failure':
-            return {
-                "status": "success",
-                "message": "Pipeline is not in failed state, no recovery needed",
-                "current_status": pipeline_result.get('status')
-            }
-        
-        # Attempt recovery by re-running with more conservative settings
-        df = session_data["dataframe"]
-        
-        # Create temporary file for recovery attempt
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
-        df.to_csv(temp_file.name, index=False)
-        
-        # Initialize robust orchestrator with recovery configuration
-        recovery_config = PipelineConfig(
-            max_memory_usage=0.6,  # More conservative
-            enable_caching=False,   # Disable caching for recovery
-            auto_recovery=False,    # Manual recovery mode
-            parallel_processing=False  # Single-threaded for stability
-        )
-        
-        robust_orchestrator = RobustPipelineOrchestrator(recovery_config)
-        
-        # Get original processing config
-        processing_config = session_data.get("processing_config", {})
-        task_type = processing_config.get("task", "supervised")
-        target_column = processing_config.get("target_column")
-        
-        # Execute recovery pipeline
-        recovery_result = robust_orchestrator.execute_pipeline(
-            data_path=temp_file.name,
-            task_type=task_type,
-            target_column=target_column
-        )
-        
-        # Clean up temp file
-        Path(temp_file.name).unlink()
-        
-        # Update session with recovery results
-        session_data["pipeline_result"] = recovery_result
-        session_data["recovery_attempted"] = datetime.now().isoformat()
-        
-        return {
-            "status": "success",
-            "message": "Pipeline recovery completed",
-            "recovery_result": {
-                "new_status": recovery_result.get('status'),
-                "recovery_time": datetime.now().isoformat(),
-                "recovery_successful": recovery_result.get('status') == 'success'
-            }
-        }
-    
-    except Exception as e:
-        return {
-            "status": "error", 
-            "message": f"Pipeline recovery failed: {str(e)}",
-            "recovery_time": datetime.now().isoformat(),
-            "suggestions": [
-                "Try with a smaller dataset",
-                "Disable feature generation",
-                "Use legacy pipeline mode"
-            ]
-        }
-
-@app.post("/api/strategic/analyze")
-async def strategic_analysis(request: StrategicAnalysisRequest):
-    """Pillar 0: Strategic Control Layer - Comprehensive strategic analysis and recommendation"""
-    try:
-        from .core.project_definition import ProjectDefinition, Objective, Domain, Priority, RiskLevel
-        from .core.project_definition import BusinessContext, TechnicalConstraints, RegulatoryConstraints
-        
-        config = request.project_definition
-        project_definition = ProjectDefinition(
-            project_id=config.project_id,
-            name=getattr(config, 'project_name', f"Project {config.project_id}"),
-            description=getattr(config, 'description', "Automated ML project"),
-            objective=Objective(config.objective.lower()),
-            domain=Domain(config.domain.lower()),
-            priority=Priority(config.priority.lower()),
-            risk_level=RiskLevel(config.risk_level.lower()),
-            business_context=BusinessContext(
-                business_unit=getattr(config, 'business_unit', "Data Science"),
-                success_criteria=getattr(config, 'success_criteria', ["Model accuracy > 80%"]),
-                stakeholders=getattr(config, 'stakeholders', ["Data Analyst"]),
-                timeline_months=getattr(config, 'timeline_months', 3)
-            ),
-            technical_constraints=TechnicalConstraints(
-                max_training_hours=getattr(config, 'max_training_hours', 2.0),
-                max_memory_gb=8.0,
-                min_accuracy=getattr(config, 'min_accuracy', 0.8)
-            ),
-            regulatory_constraints=RegulatoryConstraints(
-                privacy_level="standard",
-                audit_trail_required=False,
-                compliance_rules=getattr(config, 'compliance_rules', [])
-            )
-        )    
-        
-        validation_results = project_definition.validate_project_definition()
-        
-        return {
-            "status": "success",
-            "strategic_analysis": {
-                "project_overview": {
-                    "project_id": project_definition.project_id,
-                    "objective": project_definition.objective.value,
-                    "domain": project_definition.domain.value,
-                    "priority": project_definition.priority.value,
-                    "risk_level": project_definition.risk_level.value
-                },
-                
-            },
-            "analysis_metadata": {
-                "translation_strategy": request.translation_strategy,
-                "analysis_timestamp": datetime.now().isoformat(),
-                "strategic_control_version": "2.0"
-            }
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Strategic analysis failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-def _calculate_feasibility_score(project_def: ProjectDefinition, tech_config) -> float:
-    """Calculate project feasibility score (0.0 to 1.0)"""
-    score = 0.8  # Base feasibility
-    
-    # Adjust for complexity vs timeline
-    if tech_config.model_complexity.value == "experimental" and project_def.business_context.get('timeline_months', 6) < 6:
-        score -= 0.2
-    
-    # Adjust for resource constraints
-    if tech_config.max_training_time_hours and tech_config.max_training_time_hours > 48:
-        score -= 0.1
-    
-    # Adjust for compliance requirements
-    if len(tech_config.audit_requirements) > 3:
-        score -= 0.1
-    
-    return max(0.0, min(1.0, score))
-
-def _calculate_risk_mitigation_score(project_def: ProjectDefinition, tech_config) -> float:
-    """Calculate risk mitigation score (0.0 to 1.0)"""
-    score = 0.6  # Base score
-    
-    # Higher validation rigor increases score
-    if tech_config.validation_rigor == "regulatory":
-        score += 0.2
-    elif tech_config.validation_rigor == "extensive":
-        score += 0.1
-    
-    # Interpretability increases score for critical projects
-    if project_def.risk_level.value == "critical" and tech_config.interpretability_level != "none":
-        score += 0.2
-    
-    # Ensemble methods increase robustness
-    if tech_config.ensemble_strategy:
-        score += 0.1
-    
-    return max(0.0, min(1.0, score))
-
-def _calculate_resource_optimization_score(tech_config) -> float:
-    """Calculate resource optimization score (0.0 to 1.0)"""
-    score = 0.7  # Base optimization
-    
-    # Budget priority alignment
-    if tech_config.compute_budget_priority == "cost_optimized":
-        score += 0.2
-    elif tech_config.compute_budget_priority == "balanced":
-        score += 0.1
-    
-    # Reasonable resource limits
-    if tech_config.max_training_time_hours and tech_config.max_training_time_hours <= 24:
-        score += 0.1
-    
-    return max(0.0, min(1.0, score))
-
-def _calculate_compliance_readiness_score(project_def: ProjectDefinition, tech_config) -> float:
-    """Calculate compliance readiness score (0.0 to 1.0)"""
-    score = 0.5  # Base compliance
-    
-    # Interpretability for regulated domains
-    if project_def.domain.value in ["finance", "healthcare"] and tech_config.interpretability_level != "none":
-        score += 0.3
-    
-    # Audit trail capabilities
-    if len(tech_config.audit_requirements) > 0:
-        score += 0.2
-    
-    # Data governance measures
-    if tech_config.data_governance.get("encryption_required", False):
-        score += 0.1
-    
-    return max(0.0, min(1.0, score))
-
-def _generate_executive_recommendations(project_def: ProjectDefinition, tech_config, assessment: Dict[str, Any]) -> List[str]:
-    """Generate executive-level strategic recommendations"""
-    recommendations = []
-    
-    # Feasibility recommendations
-    if assessment["feasibility_score"] < 0.6:
-        recommendations.append("Consider extending project timeline or reducing scope complexity to improve feasibility")
-    
-    # Risk mitigation recommendations
-    if assessment["risk_mitigation_score"] < 0.7:
-        recommendations.append("Implement additional validation measures and consider ensemble methods for risk mitigation")
-    
-    # Resource optimization recommendations
-    if assessment["resource_optimization_score"] < 0.7:
-        recommendations.append("Review resource allocation to optimize cost-performance balance")
-    
-    # Compliance recommendations
-    if project_def.domain.value in ["finance", "healthcare"] and assessment["compliance_readiness_score"] < 0.8:
-        recommendations.append("Strengthen compliance measures including interpretability and audit trail capabilities")
-    
-    # Performance optimization recommendations
-    if tech_config.model_complexity.value == "experimental":
-        recommendations.append("Consider proven algorithms first, then explore experimental approaches if needed")
-    
-    # Timeline recommendations
-    if project_def.business_context.get('timeline_months', 6) < 3:
-        recommendations.append("Aggressive timeline detected - prioritize simple, proven approaches for rapid deployment")
-    
-    return recommendations
-
-def _estimate_strategic_timeline(project_def: ProjectDefinition, tech_config) -> Dict[str, Any]:
-    """Estimate strategic project timeline"""
-    
-    base_weeks = 8  # Base project duration
-    
-    # Adjust for complexity
-    complexity_multiplier = {
-        "simple": 0.7,
-        "moderate": 1.0,
-        "complex": 1.3,
-        "experimental": 1.6
-    }
-    
-    total_weeks = base_weeks * complexity_multiplier.get(tech_config.model_complexity.value, 1.0)
-    
-    if tech_config.validation_rigor == "regulatory":
-        total_weeks *= 1.3
-    elif tech_config.validation_rigor == "extensive":
-        total_weeks *= 1.2
-    
-    if tech_config.interpretability_level == "full":
-        total_weeks *= 1.2
-    
-    phases = {
-        "data_preparation": max(1, int(total_weeks * 0.2)),
-        "model_development": max(2, int(total_weeks * 0.4)),
-        "validation_testing": max(1, int(total_weeks * 0.2)),
-        "deployment_preparation": max(1, int(total_weeks * 0.15)),
-        "monitoring_setup": max(1, int(total_weeks * 0.05))
-    }
-    
-    return {
-        "total_estimated_weeks": int(total_weeks),
-        "confidence_level": 0.8 if tech_config.model_complexity.value in ["simple", "moderate"] else 0.6,
-        "phase_breakdown": phases,
-        "critical_path": ["data_preparation", "model_development", "validation_testing"]
-    }
-
 @app.get("/api/data/{session_id}/relationship-graph")
 async def get_relationship_graph(session_id: str):
     """Get interactive relationship graph data for visualization."""
@@ -1998,327 +1256,6 @@ async def favicon():
     """Simple favicon to prevent 404 errors."""
     return {"status": "no favicon"}
 
-@app.get("/api/database/health")
-async def database_health():
-    """Database health check endpoint"""
-    if not DATABASE_AVAILABLE:
-        return {"status": "unavailable", "message": "Database components not installed"}
-    
-    try:
-        db_manager = get_database_manager()
-        health_status = db_manager.test_connection()
-        pool_status = db_manager.get_connection_pool_status()
-        
-        return {
-            "status": "healthy" if health_status["status"] == "healthy" else "unhealthy",
-            "database": health_status,
-            "connection_pool": pool_status,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.get("/api/database/analytics")
-async def database_analytics():
-    """Database analytics and performance metrics"""
-    if not DATABASE_AVAILABLE:
-        return {"status": "unavailable"}
-    
-    try:
-        db_service = get_database_service()
-        
-        system_summary = db_service.get_system_summary()
-        domain_analytics = db_service.get_domain_analytics()
-        strategy_effectiveness = db_service.get_strategy_effectiveness()
-        
-        return {
-            "status": "success",
-            "system_summary": system_summary,
-            "domain_analytics": domain_analytics,
-            "strategy_effectiveness": strategy_effectiveness,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "error", 
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/api/database/cleanup")
-async def database_cleanup(retention_days: int = 365):
-    """Clean up old database records"""
-    if not DATABASE_AVAILABLE:
-        return {"status": "unavailable"}
-    
-    try:
-        db_service = get_database_service()
-        deleted_count = db_service.cleanup_old_data(retention_days)
-        
-        return {
-            "status": "success",
-            "deleted_records": deleted_count,
-            "retention_days": retention_days,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-# Chat/Conversational AI Endpoints
-
-class ChatIntent(BaseModel):
-    session_id: str
-    user_message: str
-
-class KnowledgeQueryRequest(BaseModel):
-    query: str
-    limit: Optional[int] = 10
-    include_explanation: bool = True
-
-class DataExplorationRequest(BaseModel):
-    session_id: str
-    request_type: str
-    parameters: Optional[Dict[str, Any]] = None
-
-@app.post("/api/explore")
-async def explore_data(request: DataExplorationRequest):
-    """Handle data exploration and visualization requests"""
-    try:
-        session_id = request.session_id
-        
-        if session_id not in session_store or "dataframe" not in session_store[session_id]:
-            raise HTTPException(status_code=400, detail="No data found for this session. Please upload data first.")
-        
-        df = session_store[session_id]["dataframe"]
-        request_type = request.request_type.lower()
-        params = request.parameters or {}
-        
-        if request_type in ["head", "first", "top", "beginning"]:
-            n = params.get("n", 10)
-            result = data_explorer.get_data_head(df, n)
-            return {
-                "status": "success",
-                "type": "data_table",
-                "data": result,
-                "description": f"First {n} rows of the dataset"
-            }
-        
-        elif request_type in ["tail", "last", "bottom", "end"]:
-            n = params.get("n", 10)
-            result = data_explorer.get_data_tail(df, n)
-            return {
-                "status": "success",
-                "type": "data_table", 
-                "data": result,
-                "description": f"Last {n} rows of the dataset"
-            }
-        
-        elif request_type in ["sample", "random"]:
-            n = params.get("n", 10)
-            result = data_explorer.get_data_sample(df, n)
-            return {
-                "status": "success",
-                "type": "data_table",
-                "data": result,
-                "description": f"Random sample of {n} rows from the dataset"
-            }
-        
-        elif request_type in ["info", "summary", "describe"]:
-            result = data_explorer.get_data_info(df)
-            return {
-                "status": "success",
-                "type": "data_info",
-                "data": result,
-                "description": "Dataset information and statistics"
-            }
-        
-        elif request_type in ["correlation", "heatmap", "corr"]:
-            viz_result = data_explorer.create_correlation_heatmap(df)
-            return {
-                "status": "success",
-                "type": "visualization",
-                "chart_base64": viz_result.chart_base64,
-                "description": viz_result.description,
-                "insights": viz_result.insights
-            }
-        
-        elif request_type in ["distribution", "histogram", "dist"]:
-            columns = params.get("columns")
-            viz_result = data_explorer.create_distribution_plots(df, columns)
-            return {
-                "status": "success",
-                "type": "visualization",
-                "chart_base64": viz_result.chart_base64,
-                "description": viz_result.description,
-                "insights": viz_result.insights
-            }
-        
-        elif request_type in ["scatter", "scatterplot"]:
-            x_col = params.get("x_column")
-            y_col = params.get("y_column")
-            color_col = params.get("color_column")
-            
-            if not x_col or not y_col:
-                numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-                if len(numeric_cols) >= 2:
-                    x_col = x_col or numeric_cols[0]
-                    y_col = y_col or numeric_cols[1]
-                else:
-                    raise HTTPException(status_code=400, detail="Need at least 2 numeric columns for scatter plot")
-            
-            viz_result = data_explorer.create_scatter_plot(df, x_col, y_col, color_col)
-            return {
-                "status": "success",
-                "type": "visualization",
-                "chart_base64": viz_result.chart_base64,
-                "description": viz_result.description,
-                "insights": viz_result.insights
-            }
-        
-        elif request_type in ["boxplot", "box", "outliers"]:
-            columns = params.get("columns")
-            viz_result = data_explorer.create_box_plots(df, columns)
-            return {
-                "status": "success",
-                "type": "visualization",
-                "chart_base64": viz_result.chart_base64,
-                "description": viz_result.description,
-                "insights": viz_result.insights
-            }
-        
-        elif request_type in ["missing", "null", "na"]:
-            viz_result = data_explorer.create_missing_data_heatmap(df)
-            return {
-                "status": "success",
-                "type": "visualization",
-                "chart_base64": viz_result.chart_base64,
-                "description": viz_result.description,
-                "insights": viz_result.insights
-            }
-        
-        elif request_type == "suggestions":
-            characteristics = data_explorer.analyze_data_characteristics(df)
-            return {
-                "status": "success",
-                "type": "suggestions",
-                "data": characteristics,
-                "description": "Data characteristics and visualization suggestions"
-            }
-        
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown request type: {request_type}")
-    
-    except Exception as e:
-        logger.error(f"Data exploration error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Exploration failed: {str(e)}")
-
-class AgentChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    async_execution: bool = False
-
-class AgentTaskStatus(BaseModel):
-    task_id: str
-    status: str
-    result: Optional[str] = None
-    error: Optional[str] = None
-
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-import uuid
-
-agent_sessions = {}
-async_tasks = {}
-task_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="DataInsight-Agent-")
-performance_monitor = None
-context_manager = None
-create_enhanced_agent_executor = None
-status_agent_runnable = None
-
-def create_agent_input(message: str, session_id: str) -> dict:
-    """Create standardized agent input with fresh state"""
-    from langchain_core.messages import HumanMessage
-    return {
-        "messages": [HumanMessage(content=message)],
-        "session_id": session_id,
-        "python_executions": 0,
-        "last_agent_sequence": [],
-        "retry_count": 0
-    }
-
-try:
-    from data_scientist_chatbot.app.agent import create_enhanced_agent_executor
-    from data_scientist_chatbot.app.performance_monitor import PerformanceMonitor
-    from data_scientist_chatbot.app.context_manager import ContextManager
-    from data_scientist_chatbot.app.agent import create_status_agent, get_status_agent_prompt
-
-    performance_monitor = PerformanceMonitor()
-    context_manager = ContextManager()
-
-    status_agent_llm = create_status_agent()
-    status_agent_prompt = get_status_agent_prompt()
-    status_agent_runnable = status_agent_prompt | status_agent_llm
-
-    AGENT_AVAILABLE = True
-except ImportError as e:
-    print(f"Agent import failed: {e}")
-    print("Agent service will not be available - install missing dependencies")
-    AGENT_AVAILABLE = False
-    create_enhanced_agent_executor = None
-    status_agent_runnable = None
-
-def run_agent_task(agent, user_message, session_id):
-    start_time = time.time()
-    
-    try:
-        if performance_monitor:
-            performance_monitor.record_metric(
-                session_id=session_id,
-                metric_name="agent_task_started",
-                value=1.0,
-                context={"message_length": len(user_message)}
-            )
-        
-        response = agent.invoke(
-            create_agent_input(user_message, session_id),
-            config={"configurable": {"thread_id": session_id}}
-        )
-        
-        execution_time = time.time() - start_time
-        if performance_monitor:
-            performance_monitor.record_metric(
-                session_id=session_id,
-                metric_name="agent_task_completed",
-                value=execution_time,
-                context={
-                    "success": True,
-                    "response_length": len(response['messages'][-1].content) if response.get('messages') else 0
-                }
-            )
-        
-        return {"success": True, "response": response['messages'][-1].content, "execution_time": execution_time}
-        
-    except Exception as e:
-        execution_time = time.time() - start_time
-        
-        if performance_monitor:
-            performance_monitor.record_metric(
-                session_id=session_id,
-                metric_name="agent_task_failed",
-                value=execution_time,
-                context={"error": str(e), "success": False}
-            )
-        
-        return {"success": False, "error": str(e), "execution_time": execution_time}
-
 @app.post("/api/agent/chat")
 async def agent_chat(request: AgentChatRequest):
     """Chat with AI data science agent using existing session system."""
@@ -2341,7 +1278,7 @@ async def agent_chat(request: AgentChatRequest):
 
             # Ensure clean checkpointer state for new agent session
             try:
-                from data_scientist_chatbot.app.agent import memory
+                from data_scientist_chatbot.app.core.graph_builder import memory
                 if memory:
                     memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
                     memory.conn.commit()
@@ -2450,7 +1387,7 @@ async def agent_chat_stream(message: str, session_id: str):
 
                 # Ensure clean checkpointer state for new agent session
                 try:
-                    from data_scientist_chatbot.app.agent import memory
+                    from data_scientist_chatbot.app.core.graph_builder import memory
                     if memory:
                         memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
                         memory.conn.commit()
@@ -2461,6 +1398,15 @@ async def agent_chat_stream(message: str, session_id: str):
                 agent_sessions[session_id] = create_enhanced_agent_executor(session_id)
 
             agent = agent_sessions[session_id]
+
+            # Initialize status agent if not already created
+            if status_agent_runnable is None:
+                try:
+                    from data_scientist_chatbot.app.core.agent_factory import create_status_agent
+                    status_agent_runnable = create_status_agent()
+                    print("DEBUG: Status agent initialized successfully")
+                except Exception as e:
+                    print(f"WARNING: Failed to initialize status agent: {e}")
 
             from langchain_core.messages import HumanMessage
 
@@ -2499,8 +1445,14 @@ async def agent_chat_stream(message: str, session_id: str):
                         if status_agent_runnable:
                             try:
                                 status_context = create_workflow_status_context(workflow_context, event)
+                                from data_scientist_chatbot.app.agent import get_status_agent_prompt
+                                status_prompt_template = get_status_agent_prompt()
+                                status_formatted = status_prompt_template.format(
+                                    current_agent=status_context.get('current_agent', 'unknown'),
+                                    user_goal=status_context.get('user_goal', 'processing')
+                                )
                                 status_response = await asyncio.wait_for(
-                                    status_agent_runnable.ainvoke(status_context),
+                                    status_agent_runnable.ainvoke(status_formatted),
                                     timeout=10.0
                                 )
                                 status_message = status_response.content.strip()
@@ -2534,8 +1486,14 @@ async def agent_chat_stream(message: str, session_id: str):
                         if status_agent_runnable:
                             try:
                                 status_context = create_workflow_status_context(workflow_context, event)
+                                from data_scientist_chatbot.app.agent import get_status_agent_prompt
+                                status_prompt_template = get_status_agent_prompt()
+                                status_formatted = status_prompt_template.format(
+                                    current_agent=status_context.get('current_agent', 'unknown'),
+                                    user_goal=status_context.get('user_goal', 'processing')
+                                )
                                 status_response = await asyncio.wait_for(
-                                    status_agent_runnable.ainvoke(status_context),
+                                    status_agent_runnable.ainvoke(status_formatted),
                                     timeout=10.0
                                 )
                                 status_message = status_response.content.strip()
@@ -2564,8 +1522,14 @@ async def agent_chat_stream(message: str, session_id: str):
                         if status_agent_runnable:
                             try:
                                 status_context = create_workflow_status_context(workflow_context, event)
+                                from data_scientist_chatbot.app.agent import get_status_agent_prompt
+                                status_prompt_template = get_status_agent_prompt()
+                                status_formatted = status_prompt_template.format(
+                                    current_agent=status_context.get('current_agent', 'unknown'),
+                                    user_goal=status_context.get('user_goal', 'processing')
+                                )
                                 status_response = await asyncio.wait_for(
-                                    status_agent_runnable.ainvoke(status_context),
+                                    status_agent_runnable.ainvoke(status_formatted),
                                     timeout=10.0
                                 )
                                 status_message = status_response.content.strip()
@@ -2608,7 +1572,7 @@ async def agent_chat_stream(message: str, session_id: str):
                 config = {"configurable": {"thread_id": session_id}}
 
                 # Use persistent status agent for real-time updates
-                from data_scientist_chatbot.app.agent import create_workflow_status_context
+                from data_scientist_chatbot.app.core.state_manager import create_workflow_status_context
 
 
                 # Stream graph execution to capture real agent transitions
@@ -2629,8 +1593,8 @@ async def agent_chat_stream(message: str, session_id: str):
                             if node_name in ['brain', 'hands', 'parser', 'action']:
 
                                 # Update current state for status context
-                                messages = node_data.get('messages', [])
-                                if messages:
+                                messages = node_data.get('messages', []) if node_data else []
+                                if messages and isinstance(messages, list):
                                     all_messages.extend(messages)
                                     current_state["messages"] = all_messages
 
@@ -2669,8 +1633,14 @@ async def agent_chat_stream(message: str, session_id: str):
                                         print(f"DEBUG: Status context for {node_name}: {status_context}")
                                         print(f"DEBUG: Status agent runnable exists: {status_agent_runnable is not None}")
                                         print(f"DEBUG: Status agent type: {type(status_agent_runnable)}")
+                                        from data_scientist_chatbot.app.agent import get_status_agent_prompt
+                                        status_prompt_template = get_status_agent_prompt()
+                                        status_formatted = status_prompt_template.format(
+                                            current_agent=status_context.get('current_agent', 'unknown'),
+                                            user_goal=status_context.get('user_goal', 'processing')
+                                        )
                                         status_response = await asyncio.wait_for(
-                                            status_agent_runnable.ainvoke(status_context),
+                                            status_agent_runnable.ainvoke(status_formatted),
                                             timeout=10.0
                                         )
                                         status_message = status_response.content.strip() if hasattr(status_response, 'content') else str(status_response).strip()
@@ -2692,12 +1662,12 @@ async def agent_chat_stream(message: str, session_id: str):
                     # Fallback to regular invoke
                     final_response = agent.invoke(create_agent_input(message, session_id), config=config)
 
-                response = final_response
+                response = final_response if final_response else {}
 
                 # Extract plots from current execution only
                 plots = []
-                messages = response.get('messages', [])
-                recent_messages = messages[-3:] if len(messages) >= 3 else messages
+                messages = response.get('messages', []) if response else []
+                recent_messages = messages[-3:] if messages and len(messages) >= 3 else messages
 
                 for msg in recent_messages:
                     if hasattr(msg, 'content') and 'PLOT_SAVED:' in str(msg.content):
@@ -2714,8 +1684,10 @@ async def agent_chat_stream(message: str, session_id: str):
                 content_parts = []
 
                 # Add action outputs first (technical results)
-                for action_output in action_outputs:
-                    content_parts.append(action_output)
+                if action_outputs and isinstance(action_outputs, list):
+                    for action_output in action_outputs:
+                        if action_output:
+                            content_parts.append(action_output)
 
                 # Add brain interpretation (business insights)
                 if final_brain_response:
@@ -2724,19 +1696,20 @@ async def agent_chat_stream(message: str, session_id: str):
 
                 # Fallback if no specific outputs captured
                 if not content_parts:
-                    messages = response.get('messages', [])
-                    final_message = messages[-1] if messages else None
-                    fallback_content = final_message.content if final_message else "Task completed successfully."
+                    messages = response.get('messages', []) if response else []
+                    final_message = messages[-1] if messages and len(messages) > 0 else None
+                    fallback_content = final_message.content if final_message and hasattr(final_message, 'content') else "Task completed successfully."
                     content_parts.append(fallback_content)
-                    print(f"DEBUG: Fallback to last message: {fallback_content[:100]}...")
+                    print(f"DEBUG: Fallback to last message: {fallback_content[:100] if fallback_content else 'None'}...")
 
                 # Combine all parts
-                content = "\n\n".join(content_parts)
-                print(f"DEBUG: Final combined response parts: {len(content_parts)}")
-                for i, part in enumerate(content_parts):
-                    print(f"DEBUG: Part {i+1}: {part[:100]}...")
-                print(f"DEBUG: Combined content length: {len(content)}")
-                print(f"DEBUG: Combined content preview: {content[:200]}...")
+                content = "\n\n".join(content_parts) if content_parts else "Task completed successfully."
+                print(f"DEBUG: Final combined response parts: {len(content_parts) if content_parts else 0}")
+                if content_parts:
+                    for i, part in enumerate(content_parts):
+                        print(f"DEBUG: Part {i+1}: {part[:100] if part else 'None'}...")
+                print(f"DEBUG: Combined content length: {len(content) if content else 0}")
+                print(f"DEBUG: Combined content preview: {content[:200] if content else 'None'}...")
 
                 final_json = {'type': 'final_response', 'response': content, 'plots': plots}
                 print(f"DEBUG: Final JSON keys: {list(final_json.keys())}")
@@ -2833,76 +1806,6 @@ async def get_agent_artifact(session_id: str, filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error serving artifact: {str(e)}")
 
-@app.get("/api/agent/performance/{session_id}")
-async def get_agent_performance(session_id: str):
-    """Get performance metrics for a specific agent session."""
-    if not AGENT_AVAILABLE or not performance_monitor:
-        raise HTTPException(status_code=503, detail="Performance monitoring not available")
-    
-    try:
-        performance_summary = performance_monitor.get_performance_summary(session_id=session_id, hours=24)
-        slow_operations = performance_monitor.get_slow_operations(threshold_seconds=0.5, limit=5)
-        cache_optimization = performance_monitor.optimize_cache()
-        
-        return {
-            "session_id": session_id,
-            "performance_summary": performance_summary,
-            "slow_operations": slow_operations,
-            "cache_optimization": cache_optimization,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving performance metrics: {str(e)}")
-
-@app.get("/api/agent/system-performance")
-async def get_system_performance():
-    """Get overall system performance metrics."""
-    if not AGENT_AVAILABLE or not performance_monitor:
-        raise HTTPException(status_code=503, detail="Performance monitoring not available")
-    
-    try:
-        # Record current system metrics
-        performance_monitor.record_system_metrics()
-        
-        # Get comprehensive performance summary
-        overall_summary = performance_monitor.get_performance_summary(hours=24)
-        slow_operations = performance_monitor.get_slow_operations(threshold_seconds=1.0, limit=10)
-        cache_stats = performance_monitor.optimize_cache()
-        
-        return {
-            "system_performance": overall_summary,
-            "slow_operations": slow_operations,
-            "cache_performance": cache_stats,
-            "active_sessions": len(agent_sessions),
-            "active_tasks": len(async_tasks),
-            "thread_pool_stats": {
-                "max_workers": task_executor._max_workers if task_executor else 0,
-                "current_threads": len(task_executor._threads) if task_executor and hasattr(task_executor, '_threads') else 0
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving system performance: {str(e)}")
-
-@app.post("/api/agent/performance/cleanup")
-async def cleanup_performance_data(days_old: int = 7):
-    """Clean up old performance data to manage storage."""
-    if not AGENT_AVAILABLE or not performance_monitor:
-        raise HTTPException(status_code=503, detail="Performance monitoring not available")
-    
-    try:
-        deleted_metrics = performance_monitor.cleanup_old_metrics(days_old)
-        deleted_contexts = context_manager.cleanup_old_contexts(days_old) if context_manager else 0
-        
-        return {
-            "deleted_metrics": deleted_metrics,
-            "deleted_contexts": deleted_contexts,
-            "days_old": days_old,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error cleaning up performance data: {str(e)}")
-
 @app.get("/api/health")
 async def health_check():
     """Enhanced application health check endpoint with performance monitoring."""
@@ -2981,7 +1884,7 @@ async def create_new_session():
 
     # Ensure clean checkpointer state for new session
     try:
-        from data_scientist_chatbot.app.agent import memory
+        from data_scientist_chatbot.app.core.graph_builder import memory
         if memory:
             # Clear any existing checkpoints for this new thread_id (just in case)
             memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (new_session_id,))
@@ -3002,7 +1905,7 @@ async def delete_session(session_id: str):
 
     # Clear checkpointer state for this session
     try:
-        from data_scientist_chatbot.app.agent import memory
+        from data_scientist_chatbot.app.core.graph_builder import memory
         if memory:
             # Clear all checkpoints for this thread_id
             memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
