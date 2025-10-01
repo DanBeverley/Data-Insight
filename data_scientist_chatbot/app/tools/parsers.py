@@ -24,6 +24,8 @@ def parse_message_to_tool_call(message, tool_id_prefix="call"):
             tool_name = tool_data['name']
             tool_args = tool_data['arguments']
 
+            print(f"Parser: Extracted tool_name={tool_name}, args keys={list(tool_args.keys()) if isinstance(tool_args, dict) else 'not dict'}")
+
             message.tool_calls = [{
                 "name": tool_name,
                 "args": tool_args,
