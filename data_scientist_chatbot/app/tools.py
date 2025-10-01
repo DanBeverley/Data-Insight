@@ -127,60 +127,79 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
         if is_plotting:
             import re
             code = re.sub(r'plt\.show\(\)', '', code)
-            
+            code = re.sub(r'plt\.savefig\([^)]+\)', '', code)
+            code = re.sub(r'matplotlib\.use\([^)]+\)', '', code)
             enhanced_code = f"""
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
+import seaborn as sns
 import uuid
 import sys
-import os as _os_module
+import os
+import glob
 
-{code}
+print("DEBUG_WRAPPER: Starting enhanced code execution")
+sys.stdout.flush()
 
-# Auto-save any plots created
-import os  # Fresh import to avoid any shadowing issues
-print("Checking for figures to save...")
+try:
+{chr(10).join('    ' + line for line in code.split(chr(10)))}
+except Exception as e:
+    print(f"DEBUG_WRAPPER: User code error: {{type(e).__name__}}: {{e}}")
+    import traceback
+    print("DEBUG_WRAPPER: Traceback:")
+    traceback.print_exc()
+    sys.stdout.flush()
+
+print("DEBUG_WRAPPER: User code completed, checking for figures...")
+sys.stdout.flush()
 fig_nums = plt.get_fignums()
-print(f"Found {{len(fig_nums)}} figures: {{fig_nums}}")
+print(f"DEBUG_WRAPPER: Found {{len(fig_nums)}} matplotlib figures: {{fig_nums}}")
+sys.stdout.flush()
+
 if fig_nums:
+    print(f"DEBUG_WRAPPER: Processing {{len(fig_nums)}} figures")
+    sys.stdout.flush()
     for fig_num in fig_nums:
         try:
             plt.figure(fig_num)
             plot_filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
-            print(f"Saving figure {{fig_num}} to {{plot_filename}}")
+            print(f"DEBUG_WRAPPER: Saving figure {{fig_num}} to {{plot_filename}}")
+            sys.stdout.flush()
 
-            # Save with more explicit path and error handling
-            try:
-                plt.savefig(plot_filename, format='png', dpi=150, bbox_inches='tight')
-                print(f"plt.savefig completed")
-            except Exception as save_e:
-                print(f"plt.savefig failed: {{save_e}}")
-                raise save_e
+            plt.savefig(plot_filename, format='png', dpi=150, bbox_inches='tight')
 
-            # Verify file was created
             if os.path.exists(plot_filename):
                 file_size = os.path.getsize(plot_filename)
-                print(f"File created: {{plot_filename}} ({{file_size}} bytes)")
+                print(f"DEBUG_WRAPPER: File created, size {{file_size}} bytes")
                 print(f"PLOT_SAVED:{{plot_filename}}")
+                sys.stdout.flush()
             else:
-                print(f"ERROR: Plot file {{plot_filename}} was not created after savefig")
-                # List current directory contents
-                import glob
-                files = glob.glob("*.png")
-                print(f"PNG files in directory: {{files}}")
-            
-            sys.stdout.flush()
-            plt.close()
+                print(f"DEBUG_WRAPPER: ERROR - File not created after savefig")
+                sys.stdout.flush()
+
+            plt.close(fig_num)
         except Exception as e:
-            print(f"ERROR: Failed to save plot {{fig_num}}: {{e}}")
+            print(f"DEBUG_WRAPPER: Exception saving figure {{fig_num}}: {{e}}")
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
 else:
-    print("No figures to save")
+    print("DEBUG_WRAPPER: No matplotlib figures, checking for orphaned PNGs")
     sys.stdout.flush()
+    all_pngs = glob.glob('*.png') + glob.glob('/tmp/*.png')
+    if all_pngs:
+        print(f"DEBUG_WRAPPER: Found PNG files: {{all_pngs}}")
+        sys.stdout.flush()
+        for png_path in all_pngs:
+            if os.path.getsize(png_path) > 100:
+                print(f"PLOT_SAVED:{{os.path.basename(png_path)}}")
+                sys.stdout.flush()
+    else:
+        print("DEBUG_WRAPPER: No figures or PNG files found")
+        sys.stdout.flush()
 """
         else:
             # For non-plotting code, execute directly
@@ -193,8 +212,11 @@ import numpy as np
 """
         
         print(f"DEBUG: About to run code in sandbox. Enhanced code length: {len(enhanced_code)}")
+        print(f"DEBUG: First 500 chars of enhanced code: {enhanced_code[:500]}")
         result = sandbox.run_code(enhanced_code, timeout=30)
         print("DEBUG: Sandbox execution completed")
+        print(f"DEBUG: Result type: {type(result)}")
+        print(f"DEBUG: Result has logs: {hasattr(result, 'logs')}")
         
         performance_monitor.record_metric(
             session_id=session_id,
@@ -209,6 +231,10 @@ import numpy as np
         stdout_content = '\n'.join(stdout_lines)
         stderr_content = '\n'.join(stderr_lines)
 
+        print(f"DEBUG: stdout_lines count: {len(stdout_lines)}")
+        print(f"DEBUG: Full stdout_content: {stdout_content}")
+        print(f"DEBUG: Full stderr_content: {stderr_content if stderr_content else 'EMPTY'}")
+
         from pathlib import Path
         current_path = Path(__file__).resolve()
         project_root = current_path
@@ -216,6 +242,8 @@ import numpy as np
             project_root = project_root.parent
         static_dir = project_root / "static" / "plots"
         static_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"DEBUG: Checking if stdout_content exists: {bool(stdout_content)}")
         if stdout_content:
             print("DEBUG: Processing stdout content for plot downloads")
             import os
