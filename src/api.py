@@ -1670,11 +1670,15 @@ async def agent_chat_stream(message: str, session_id: str):
                 recent_messages = messages[-3:] if messages and len(messages) >= 3 else messages
 
                 for msg in recent_messages:
-                    if hasattr(msg, 'content') and 'PLOT_SAVED:' in str(msg.content):
-                        import re
-                        plot_files = re.findall(r'PLOT_SAVED:([^\s]+\.png)', str(msg.content))
-                        for plot_file in plot_files:
-                            plots.append(f"/static/plots/{plot_file}")
+                    if hasattr(msg, 'content'):
+                        content = str(msg.content)
+                        if '📊 Generated' in content and 'visualization' in content:
+                            import re
+                            urls = re.findall(r"'/static/plots/([^']+\.png)'", content)
+                            plots.extend([f"/static/plots/{url}" for url in urls])
+                        elif 'PLOT_SAVED:' in content:
+                            plot_files = re.findall(r'PLOT_SAVED:([^\s]+\.png)', content)
+                            plots.extend([f"/static/plots/{pf}" for pf in plot_files])
 
                 if plots:
                     yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization generated!'})}\n\n"
@@ -1937,24 +1941,33 @@ async def rename_session(session_id: str, request: dict):
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
-    """Get conversation history for a session"""
+    """Get conversation history for a session from checkpointer"""
     if session_id not in session_store:
         raise HTTPException(status_code=404, detail="Session not found")
 
     messages = []
-    if session_id in agent_sessions:
-        try:
-            agent = agent_sessions[session_id]
-            if hasattr(agent, 'state') and agent.state and 'messages' in agent.state:
-                for msg in agent.state['messages']:
-                    if hasattr(msg, 'type'):
-                        messages.append({
-                            "type": msg.type,
-                            "content": str(msg.content),
-                            "timestamp": datetime.now().isoformat()
-                        })
-        except:
-            pass
+
+    try:
+        from data_scientist_chatbot.app.core.graph_builder import memory
+        if memory:
+            cursor = memory.conn.execute(
+                "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
+                (session_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                import pickle
+                checkpoint_data = pickle.loads(row[0])
+                if 'channel_values' in checkpoint_data and 'messages' in checkpoint_data['channel_values']:
+                    for msg in checkpoint_data['channel_values']['messages']:
+                        if hasattr(msg, 'type') and msg.type in ['human', 'ai']:
+                            messages.append({
+                                "type": msg.type,
+                                "content": str(msg.content)[:500],
+                                "timestamp": datetime.now().isoformat()
+                            })
+    except Exception as e:
+        print(f"Error loading messages from checkpointer: {e}")
 
     return messages
 
