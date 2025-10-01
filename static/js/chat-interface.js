@@ -65,13 +65,18 @@ class ChatInterface {
                             this.addChatMessage('bot', data.agent_analysis);
                         } else {
                             const profileSummary = data.profiling_summary || {};
-                            let message = `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`;
+                            let message = data.shape && data.shape.length >= 2
+                                ? `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`
+                                : `Dataset uploaded successfully!`;
 
                             if (profileSummary.quality_score) {
                                 message += ` Quality Score: ${profileSummary.quality_score}/100.`;
                             }
                             if (profileSummary.anomalies_detected) {
                                 message += ` Detected ${profileSummary.anomalies_detected} anomalies.`;
+                            }
+                            if (profileSummary.profiling_time) {
+                                message += ` Analysis completed in ${profileSummary.profiling_time}s.`;
                             }
                             if (data.intelligence_summary && data.intelligence_summary.profiling_completed) {
                                 message += ` Domain: ${data.intelligence_summary.primary_domain}.`;
@@ -413,6 +418,11 @@ class ChatInterface {
         // Apply animation
         this.app.animationManager.animateMessageFadeIn(messageDiv);
 
+        // Typeset LaTeX math formulas
+        if (window.MathJax && window.MathJax.typesetPromise) {
+            window.MathJax.typesetPromise([messageDiv]).catch(err => console.warn('MathJax error:', err));
+        }
+
         // Smooth scroll to bottom
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
     }
@@ -657,12 +667,16 @@ class ChatInterface {
     showPIIConsentDialog(piiData) {
         const dialog = document.createElement('div');
         dialog.className = 'pii-consent-dialog';
+        const detectedTypes = piiData.detected_types && Array.isArray(piiData.detected_types)
+            ? piiData.detected_types.map(type => `<li>${type}</li>`).join('')
+            : '<li>Sensitive data detected</li>';
+
         dialog.innerHTML = `
             <div class="dialog-content">
                 <h3>🔒 Privacy Notice</h3>
                 <p>We detected potentially sensitive information in your dataset:</p>
                 <ul>
-                    ${piiData.detected_types.map(type => `<li>${type}</li>`).join('')}
+                    ${detectedTypes}
                 </ul>
                 <p>Would you like us to apply privacy protection before analysis?</p>
                 <div class="dialog-buttons">
