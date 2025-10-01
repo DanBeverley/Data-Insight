@@ -28,8 +28,13 @@ from data_quality.anomaly_detector import MultiLayerAnomalyDetector
 from data_quality.quality_assessor import ContextAwareQualityAssessor
 from data_quality.drift_monitor import ComprehensiveDriftMonitor
 from data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
-from security.privacy_engine import PrivacyEngine
-from security.compliance_manager import ComplianceManager
+
+try:
+    from security.privacy_engine import PrivacyEngine
+    from security.compliance_manager import ComplianceManager
+except ImportError:
+    PrivacyEngine = None
+    ComplianceManager = None
 
 class ProfilerStatus(Enum):
     SUCCESS = "success"
@@ -80,7 +85,7 @@ class HybridDataProfiler:
         self.quality_assessor = ContextAwareQualityAssessor()
         self.drift_monitor = ComprehensiveDriftMonitor()
         self.missing_value_intelligence = AdvancedMissingValueIntelligence()
-        
+
         # Profile history for comparison
         self.profile_history: List[DataProfileSummary] = []
         
