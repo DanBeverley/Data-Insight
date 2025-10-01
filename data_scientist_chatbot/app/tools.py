@@ -117,98 +117,71 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
         initial_cpu = process.cpu_percent()
 
+        import builtins
+        session_store = getattr(builtins, '_session_store', None)
+        dataset_load_code = ""
+
+        if session_store and session_id in session_store and "dataframe" in session_store[session_id]:
+            df = session_store[session_id]["dataframe"]
+            csv_data = df.to_csv(index=False)
+            dataset_load_code = f"""
+from io import StringIO
+csv_data = '''{csv_data}'''
+df = pd.read_csv(StringIO(csv_data))
+"""
+
         is_plotting = any(pattern in code for pattern in [
             'plt.', 'sns.', '.plot(', '.hist(', 'matplotlib', 'seaborn'])
         patterns_found = [p for p in ["plt.", "sns.", ".plot(", ".hist(", "matplotlib", "seaborn"] if p in code]
         print(f"DEBUG: Plot detection - code contains: {patterns_found}")
         if 'df.corr()' in code:
             code = code.replace('df.corr()', 'df.select_dtypes(include=[np.number]).corr()')
-        
-        if is_plotting:
-            import re
-            code = re.sub(r'plt\.show\(\)', '', code)
-            code = re.sub(r'plt\.savefig\([^)]+\)', '', code)
-            code = re.sub(r'matplotlib\.use\([^)]+\)', '', code)
-            enhanced_code = f"""
+
+        enhanced_code = f"""
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import seaborn as sns
-import uuid
 import sys
 import os
 import glob
 
-print("DEBUG_WRAPPER: Starting enhanced code execution")
-sys.stdout.flush()
+def use_noop(*args, **kwargs):
+    pass
+
+matplotlib.use = use_noop
+plt.use = use_noop
+
+{dataset_load_code}
+
+before_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
 
 try:
 {chr(10).join('    ' + line for line in code.split(chr(10)))}
 except Exception as e:
-    print(f"DEBUG_WRAPPER: User code error: {{type(e).__name__}}: {{e}}")
+    print(f"Execution error: {{type(e).__name__}}: {{e}}")
     import traceback
-    print("DEBUG_WRAPPER: Traceback:")
     traceback.print_exc()
-    sys.stdout.flush()
 
-print("DEBUG_WRAPPER: User code completed, checking for figures...")
-sys.stdout.flush()
-fig_nums = plt.get_fignums()
-print(f"DEBUG_WRAPPER: Found {{len(fig_nums)}} matplotlib figures: {{fig_nums}}")
-sys.stdout.flush()
+after_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
+new_pngs = after_pngs - before_pngs
+processed = set()
 
-if fig_nums:
-    print(f"DEBUG_WRAPPER: Processing {{len(fig_nums)}} figures")
-    sys.stdout.flush()
-    for fig_num in fig_nums:
-        try:
-            plt.figure(fig_num)
-            plot_filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
-            print(f"DEBUG_WRAPPER: Saving figure {{fig_num}} to {{plot_filename}}")
-            sys.stdout.flush()
+for fig_num in plt.get_fignums():
+    import uuid
+    filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
+    plt.figure(fig_num)
+    plt.savefig(filename, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig_num)
+    if os.path.exists(filename):
+        print(f"PLOT_SAVED:{{filename}}")
+        processed.add(filename)
 
-            plt.savefig(plot_filename, format='png', dpi=150, bbox_inches='tight')
-
-            if os.path.exists(plot_filename):
-                file_size = os.path.getsize(plot_filename)
-                print(f"DEBUG_WRAPPER: File created, size {{file_size}} bytes")
-                print(f"PLOT_SAVED:{{plot_filename}}")
-                sys.stdout.flush()
-            else:
-                print(f"DEBUG_WRAPPER: ERROR - File not created after savefig")
-                sys.stdout.flush()
-
-            plt.close(fig_num)
-        except Exception as e:
-            print(f"DEBUG_WRAPPER: Exception saving figure {{fig_num}}: {{e}}")
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
-else:
-    print("DEBUG_WRAPPER: No matplotlib figures, checking for orphaned PNGs")
-    sys.stdout.flush()
-    all_pngs = glob.glob('*.png') + glob.glob('/tmp/*.png')
-    if all_pngs:
-        print(f"DEBUG_WRAPPER: Found PNG files: {{all_pngs}}")
-        sys.stdout.flush()
-        for png_path in all_pngs:
-            if os.path.getsize(png_path) > 100:
-                print(f"PLOT_SAVED:{{os.path.basename(png_path)}}")
-                sys.stdout.flush()
-    else:
-        print("DEBUG_WRAPPER: No figures or PNG files found")
-        sys.stdout.flush()
-"""
-        else:
-            # For non-plotting code, execute directly
-            enhanced_code = f"""
-import pandas as pd
-import numpy as np
-
-# Execute the user code directly
-{code}
+for png in new_pngs:
+    if png not in processed and os.path.exists(png) and os.path.getsize(png) > 100:
+        print(f"PLOT_SAVED:{{os.path.basename(png)}}")
 """
         
         print(f"DEBUG: About to run code in sandbox. Enhanced code length: {len(enhanced_code)}")
