@@ -23,6 +23,10 @@ context_manager = ContextManager()
 performance_monitor = PerformanceMonitor()
 
 
+import json
+import re
+import builtins
+
 def execute_tool(tool_name: str, tool_args: dict, session_id: str) -> str:
     """Shared tool executor for both main graph and subgraph"""
     if tool_name == 'python_code_interpreter':
@@ -68,37 +72,33 @@ def execute_tool(tool_name: str, tool_args: dict, session_id: str) -> str:
         stderr_content = result.get('stderr', '')
         plots = result.get('plots', [])
 
-        output = []
+        analysis_results = {}
+        for line in stdout_content.split('\n'):
+            if line.startswith('ANALYSIS_RESULTS:'):
+                try:
+                    analysis_results = json.loads(line.replace('ANALYSIS_RESULTS:', ''))
+                except:
+                    pass
+
+        execution_result = {
+            "status": "ERROR" if stderr_content else "SUCCESS",
+            "analysis_data": analysis_results,
+            "plots": plots,
+            "raw_output": stdout_content
+        }
+
+        if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+            builtins._session_store[session_id]['last_execution'] = execution_result
+
+        output_parts = []
         if stdout_content:
-            output.append(stdout_content)
+            output_parts.append(stdout_content)
         if stderr_content:
-            output.append(f"Error: {stderr_content}")
+            output_parts.append(f"Error: {stderr_content}")
         if plots:
-            output.append(f"\n📊 Generated {len(plots)} visualization(s)")
+            output_parts.append(f"\n📊 Generated {len(plots)} visualization(s): {plots}")
 
-            try:
-                insights = generate_business_insights(code, result.get('stdout', ''), session_id)
-                if insights:
-                    output.append(f"\n💡 {insights}")
-            except Exception as e:
-                logger.warning(f"Insight generation failed: {e}")
-
-        try:
-            explanation = generate_explainability_insights(code, session_id)
-            if explanation:
-                output.append(f"\n🔍 {explanation}")
-        except:
-            pass
-
-        if output:
-            content = "\n".join(output)
-        else:
-            stdout_content = result.get('stdout', '').strip()
-            if stdout_content:
-                content = f"Code executed successfully.\n\n{stdout_content}"
-            else:
-                content = "Code executed successfully, but no output was generated."
-
+        content = "\n".join(output_parts) if output_parts else "Code executed successfully, but no output was generated."
         return content
 
     elif tool_name == 'retrieve_historical_patterns':
