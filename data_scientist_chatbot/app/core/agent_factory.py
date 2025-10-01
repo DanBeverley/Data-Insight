@@ -1,5 +1,5 @@
 """Agent creation and subgraph factory functions"""
-
+import json
 import logging
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
@@ -87,6 +87,7 @@ def create_hands_subgraph():
         last_message = state["messages"][-1]
 
         if not (hasattr(last_message, 'tool_calls') and last_message.tool_calls):
+            logger.warning("Subgraph action: No tool_calls found")
             return {"messages": state["messages"]}
 
         tool_call = last_message.tool_calls[0]
@@ -96,10 +97,12 @@ def create_hands_subgraph():
             tool_name = tool_call['name']
             tool_args = tool_call.get('args', {})
             tool_id = tool_call.get('id', f"call_{tool_name}")
+            logger.info(f"Subgraph action: Extracted args from dict: {list(tool_args.keys())}")
         else:
             tool_name = tool_call.name
             tool_args = tool_call.args
             tool_id = tool_call.id
+            logger.info(f"Subgraph action: Extracted args from object: {list(tool_args.keys()) if isinstance(tool_args, dict) else type(tool_args)}")
 
         try:
             content = execute_tool(tool_name, tool_args, session_id)
