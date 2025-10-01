@@ -51,11 +51,19 @@ class ChatInterface {
                 const file = e.target.files[0];
                 if (!file) return;
 
+                const sessionId = this.app.agentSessionId || this.app.currentSessionId;
+                if (!sessionId) {
+                    console.error('No session ID available for upload');
+                    this.addChatMessage('bot', 'Error: Please refresh the page and try again.');
+                    return;
+                }
+
+                console.log(`Uploading ${file.name} to session ${sessionId}`);
                 this.addChatMessage('user', `Uploading ${file.name}...`);
 
                 try {
                     this.showLoadingMessage();
-                    const data = await this.app.apiClient.uploadFile(file, this.app.currentSessionId || this.app.agentSessionId);
+                    const data = await this.app.apiClient.uploadFile(file, sessionId);
 
                     if (data.status === 'success') {
                         this.app.currentSessionId = data.session_id;
