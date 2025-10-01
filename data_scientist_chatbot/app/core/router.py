@@ -3,6 +3,14 @@
 from langgraph.graph import END
 from langchain_core.messages import AIMessage
 
+TOOL_ROUTING_MAP = {
+    'delegate_coding_task': 'hands',
+    'python_code_interpreter': 'action',
+    'knowledge_graph_query': 'action',
+    'access_learning_data': 'action',
+    'retrieve_historical_patterns': 'action',
+}
+
 
 def get_last_message(state):
     """Extract last message from state safely"""
@@ -68,7 +76,10 @@ def should_continue(state):
                 print(f"DEBUG: Termination condition met: Detected recursive tool call for '{last_tool_call.get('name')}'.")
                 return END
 
-        return "action"
+        tool_name = last_message.tool_calls[0].get('name', '')
+        destination = TOOL_ROUTING_MAP.get(tool_name, 'action')
+        print(f"DEBUG: Tool '{tool_name}' routing to: {destination}")
+        return destination
     return END
 
 
