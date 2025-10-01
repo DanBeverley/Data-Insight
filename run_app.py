@@ -25,3 +25,4 @@ if __name__ == "__main__":
         reload_dirs=["src", "static"],
         log_level="info"
     )
+    
