@@ -1,5 +1,6 @@
 """Graph construction and workflow orchestration"""
 
+import sqlite3
 from langgraph.graph import StateGraph, END
 
 try:
@@ -14,8 +15,13 @@ except ImportError:
     )
 
 try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
     CHECKPOINTER_AVAILABLE = True
+    db_path = "context.db"
+    memory = SqliteSaver(conn=sqlite3.connect(db_path, check_same_thread=False))
 except ImportError:
+    SqliteSaver = None
+    memory = None
     CHECKPOINTER_AVAILABLE = False
 
 
@@ -69,6 +75,7 @@ def create_agent_executor(memory=None):
         should_continue,
         {
             "action": "action",
+            "hands": "hands",
             END: END
         }
     )
@@ -91,4 +98,4 @@ def create_agent_executor(memory=None):
 
 
 def create_enhanced_agent_executor(session_id: str = None):
-    return create_agent_executor()
+    return create_agent_executor(memory=memory)
