@@ -123,6 +123,9 @@ def retrieve_historical_patterns(task_description: str) -> str:
 class LearningDataInput(BaseModel):
     query: str = Field(description="Query for execution history or patterns - e.g., 'show successful visualization code' or 'get recent analysis patterns'")
 
+class WebSearchInput(BaseModel):
+    query: str = Field(description="Search query for external domain knowledge or current information")
+
 class CodingTask(BaseModel):
     task_description: str = Field(description="Clear description of the coding task for the specialized coding agent")
 
@@ -172,6 +175,22 @@ def access_learning_data(query: str) -> str:
         query: Description of specific learning patterns needed for current technical task
     """
     return "This is a placeholder. Learning data access happens in the graph node."
+
+@tool(args_schema=WebSearchInput)
+def web_search(query: str) -> str:
+    """
+    Search the web for external domain knowledge or current information.
+    Use SPARINGLY only when lacking specific domain expertise not in training data.
+
+    DO NOT use for:
+    - General data science or ML concepts (use existing knowledge)
+    - Questions about uploaded datasets (analyze them directly)
+    - Historical patterns (use access_learning_data instead)
+
+    Args:
+        query: Specific search query for external information
+    """
+    return "This is a placeholder. Web search happens in the graph node."
 
 def execute_tools_node(state: AgentState) -> dict:
     last_message = state["messages"][-1]
@@ -255,8 +274,10 @@ def get_brain_prompt():
         - delegate_coding_task: Use when user needs data analysis, visualization, or modeling
         - knowledge_graph_query: Access past analysis patterns for similar tasks
         - access_learning_data: Get historical performance data for optimization
+        - web_search: Search external sources for domain knowledge (use sparingly)
         **Tool Usage Rules:**
         - Use delegate_coding_task for ANY technical request (analysis, charts, modeling)
+        - Use web_search ONLY when lacking specific domain expertise beyond training
         - Use conversational responses for business advice and result interpretation
         - Do NOT execute code directly - always delegate to hands specialist
         """),
@@ -671,7 +692,7 @@ def run_brain_agent(state: AgentState):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
     filtered_messages = []
-    brain_tool_names = {'delegate_coding_task', 'knowledge_graph_query', 'access_learning_data'}
+    brain_tool_names = {'delegate_coding_task', 'knowledge_graph_query', 'access_learning_data', 'web_search'}
 
     for msg in messages:
         if hasattr(msg, 'type'):
@@ -696,7 +717,7 @@ def run_brain_agent(state: AgentState):
     enhanced_state_with_context["role"] = role
 
     llm = create_brain_agent()
-    brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data]
+    brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search]
     llm_with_tools = llm.bind_tools(brain_tools)
     prompt = get_brain_prompt()
     agent_runnable = prompt | llm_with_tools
@@ -837,7 +858,7 @@ async def warmup_models_parallel():
     async def warmup_brain():
         try:
             brain_agent = create_brain_agent()
-            brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data]
+            brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search]
             brain_with_tools = brain_agent.bind_tools(brain_tools)
             await (get_brain_prompt() | brain_with_tools).ainvoke({
                 "messages": [("human", "warmup")],
