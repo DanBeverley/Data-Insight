@@ -30,7 +30,9 @@ import builtins
 def execute_tool(tool_name: str, tool_args: dict, session_id: str) -> str:
     """Shared tool executor for both main graph and subgraph"""
     if tool_name == 'python_code_interpreter':
-        code = tool_args["code"]
+        code = tool_args.get("code", "")
+        if not code:
+            return f"Error: No code provided in tool arguments. Received args: {tool_args}"
         start_time = time.time()
 
         from src.mlops.monitoring import PerformanceMonitor, MetricType
@@ -110,6 +112,9 @@ def execute_tool(tool_name: str, tool_args: dict, session_id: str) -> str:
     elif tool_name == 'access_learning_data':
         query = tool_args["query"]
         return access_learning_data_logic(query, session_id)
+    elif tool_name == 'web_search':
+        query = tool_args["query"]
+        return web_search_logic(query, session_id)
     else:
         raise ValueError(f"Unknown tool '{tool_name}'")
 
@@ -202,6 +207,29 @@ def access_learning_data_logic(query: str, session_id: str) -> str:
 
     except Exception as e:
         return f"Learning data access failed: {str(e)}"
+
+
+def web_search_logic(query: str, session_id: str) -> str:
+    try:
+        from .web_search import search_web
+
+        performance_monitor.record_metric(
+            session_id=session_id,
+            metric_name="web_search_used",
+            value=1.0,
+            context={"query": query}
+        )
+
+        return search_web(query)
+
+    except Exception as e:
+        performance_monitor.record_metric(
+            session_id=session_id,
+            metric_name="web_search_error",
+            value=1.0,
+            context={"error": str(e), "query": query}
+        )
+        return f"Web search failed: {str(e)}"
 
 
 def retrieve_historical_patterns_logic(task_description: str, session_id: str) -> str:
