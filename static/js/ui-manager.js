@@ -494,7 +494,9 @@ class UIManager {
         if (data.validation) {
             const qualityStatus = data.validation.is_valid ? 'Good' : 'Issues Detected';
             this.app.animateValueChange('dataQuality', qualityStatus);
-            this.displayValidationIssues(data.validation.issues);
+            if (data.validation.issues) {
+                this.displayValidationIssues(data.validation.issues);
+            }
         } else {
             this.app.animateValueChange('dataQuality', 'Not Assessed');
         }
@@ -677,7 +679,7 @@ class UIManager {
             return;
         }
 
-        if (!issues || issues.length === 0) {
+        if (!issues || !Array.isArray(issues) || issues.length === 0) {
             container.innerHTML = '<div class="no-issues">✅ No validation issues found</div>';
             return;
         }
