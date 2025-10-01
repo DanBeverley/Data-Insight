@@ -57,7 +57,13 @@ def create_hands_subgraph():
         data_context = state.get("data_context", "")
 
         llm = create_hands_agent()
-        from ..agent import get_hands_prompt
+        try:
+            from ..agent import get_hands_prompt
+        except ImportError:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from agent import get_hands_prompt
         prompt = get_hands_prompt()
         agent_runnable = prompt | llm
 
@@ -112,29 +118,30 @@ def create_hands_subgraph():
         """Summarize subgraph execution result"""
         messages = state.get("messages", [])
         last_tool_msg = None
-
         for msg in reversed(messages):
             if hasattr(msg, 'type') and msg.type == 'tool':
                 last_tool_msg = msg
                 break
-
         if last_tool_msg:
             summary = last_tool_msg.content
         else:
             summary = "Task completed with no output."
-
         summary_message = AIMessage(content=summary)
         return {"messages": [summary_message]}
 
-    from ..agent import HandsSubgraphState
+    try:
+        from ..agent import HandsSubgraphState
+    except ImportError:
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from agent import HandsSubgraphState
     subgraph = StateGraph(HandsSubgraphState)
     subgraph.add_node("hands", run_hands_subgraph_agent)
     subgraph.add_node("parser", parse_subgraph_tool_calls)
     subgraph.add_node("action", execute_subgraph_tools)
     subgraph.add_node("summarize", summarize_hands_result)
-
     subgraph.set_entry_point("hands")
-
     subgraph.add_conditional_edges(
         "hands",
         lambda state: "parser" if (
@@ -145,18 +152,15 @@ def create_hands_subgraph():
         ) else END,
         {"parser": "parser", END: END}
     )
-
     subgraph.add_conditional_edges(
         "parser",
         subgraph_should_continue,
         {"action": "action", END: END}
     )
-
     subgraph.add_conditional_edges(
         "action",
         subgraph_route_after_action,
         {"summarize": "summarize"}
     )
-
     subgraph.set_finish_point("summarize")
     return subgraph.compile()
