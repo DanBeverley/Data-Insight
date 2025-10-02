@@ -211,6 +211,12 @@ def access_learning_data_logic(query: str, session_id: str) -> str:
 
 def web_search_logic(query: str, session_id: str) -> str:
     try:
+        session_store = getattr(builtins, '_session_store', None)
+        if session_store and session_id in session_store:
+            web_search_enabled = session_store[session_id].get("web_search_enabled", False)
+            if not web_search_enabled:
+                return "Web search is currently disabled. Please enable it in settings to use this feature."
+
         from .web_search import search_web
 
         performance_monitor.record_metric(

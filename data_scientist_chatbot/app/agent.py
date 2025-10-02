@@ -179,13 +179,19 @@ def access_learning_data(query: str) -> str:
 @tool(args_schema=WebSearchInput)
 def web_search(query: str) -> str:
     """
-    Search the web for external domain knowledge or current information.
-    Use SPARINGLY only when lacking specific domain expertise not in training data.
+    Search the web for current market data, trends, or domain-specific context.
 
-    DO NOT use for:
+    Use for:
+    - Current market trends or benchmarks ("Does this reflect current market trends?")
+    - Industry-specific standards or regulations
+    - Recent events or news affecting the data domain
+    - Domain expertise beyond general data science knowledge
+
+    Don't use for:
     - General data science or ML concepts (use existing knowledge)
     - Questions about uploaded datasets (analyze them directly)
     - Historical patterns (use access_learning_data instead)
+    - Normal exploratory data analysis requests
 
     Args:
         query: Specific search query for external information
@@ -208,7 +214,6 @@ def execute_tools_node(state: AgentState) -> dict:
     for tool_call in tool_calls:
         session_id = state.get("session_id")
         
-        # Handle both dict and object formats
         if isinstance(tool_call, dict):
             tool_name = tool_call['name']
             tool_args = tool_call.get('args', tool_call.get('arguments', {}))
@@ -220,7 +225,6 @@ def execute_tools_node(state: AgentState) -> dict:
             tool_id = tool_call.id
         
         print(f"DEBUG execute_tools: Processing {tool_name} with args: {tool_args}")
-        
         if not session_id:
             content = "Error: Session ID is missing."
         else:
@@ -238,7 +242,6 @@ def execute_tools_node(state: AgentState) -> dict:
 
         # Apply semantic output sanitization to remove technical debug artifacts
         sanitized_content = sanitize_output(content)
-
         tool_responses.append(ToolMessage(content=sanitized_content, tool_call_id=tool_id))
     
     python_executions = state.get("python_executions", 0)
@@ -434,9 +437,7 @@ def parse_tool_calls(state: AgentState):
 
     if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
         return state
-
     content_str = str(last_message.content).strip()
-
     if '```python' in content_str:
         code_match = re.search(r'```python\s*(.*?)\s*```', content_str, re.DOTALL)
         if code_match:
@@ -823,7 +824,7 @@ def run_hands_agent(state: AgentState):
             summary_content = "Task completed but no result returned."
 
         print(f"DEBUG: Hands subgraph execution completed")
-        print(f"DEBUG: Hands summary content: {summary_content[:200] if summary_content else 'None'}...")
+        print(f"DEBUG: Hands summary content: {summary_content[:20] if summary_content else 'None'}...")
 
         # Check if this was a delegation from brain (has tool_call in previous message)
         last_message = state.get("messages", [])[-1] if state.get("messages") else None
@@ -833,11 +834,9 @@ def run_hands_agent(state: AgentState):
                         last_message.tool_calls[0].get('name') == 'delegate_coding_task')
 
         if is_delegation:
-            # Return as ToolMessage to match the tool_call
             tool_call_id = last_message.tool_calls[0].get('id', 'unknown')
             summary_response = ToolMessage(content=summary_content, tool_call_id=tool_call_id)
         else:
-            # Return as AIMessage for direct routing
             summary_response = AIMessage(content=summary_content)
 
         result_state = {
@@ -866,7 +865,6 @@ async def warmup_models_parallel():
                 "role": "data consultant"
             })
         except: pass
-
     async def warmup_hands():
         try:
             hands_agent = create_hands_agent()
@@ -875,23 +873,19 @@ async def warmup_models_parallel():
                 "data_context": ""
             })
         except: pass
-
     async def warmup_router():
         try:
             router_agent = create_router_agent()
             await (get_router_prompt() | router_agent).ainvoke({"messages": [("human", "warmup")]})
         except: pass
-
     async def warmup_status():
         try:
             status_agent = create_status_agent()
             await (get_status_agent_prompt() | status_agent).ainvoke({"agent_name": "system", "user_goal": "startup", "dataset_context": "", "tool_name": "", "tool_details": ""})
         except: pass
-
     try:
         await asyncio.gather(warmup_brain(), warmup_hands(), warmup_router(), warmup_status())
         print("🚀 All models warmed in parallel")
-
     except Exception as e:
         print(f"⚠️ Parallel warmup error: {e}")
 
