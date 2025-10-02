@@ -126,8 +126,14 @@ class SessionManager {
         try {
             const data = await this.app.apiClient.createNewSession();
             this.app.currentSessionId = data.session_id;
-            this.app.agentSessionId = data.session_id; // Sync agent session ID
+            this.app.agentSessionId = data.session_id;
             this.clearChatMessages();
+
+            localStorage.removeItem('hasFirstMessage');
+            if (this.app.blackHole) {
+                this.app.blackHole.resetBlackHole();
+            }
+
             this.loadSessions();
         } catch (error) {
             console.error('Failed to create new session:', error);

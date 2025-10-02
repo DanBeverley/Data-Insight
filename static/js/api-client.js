@@ -221,14 +221,13 @@ class ApiClient {
     }
 
     // Chat & Streaming APIs
-    streamAgentResponse(message, sessionId, onStatus, onFinalResponse, onError) {
-        // Close any existing connection to prevent overlaps
+    streamAgentResponse(message, sessionId, webSearchEnabled, onStatus, onFinalResponse, onError) {
         if (this.currentEventSource) {
             this.currentEventSource.close();
         }
 
         this.currentEventSource = new EventSource(
-            `/api/agent/chat-stream?message=${encodeURIComponent(message)}&session_id=${sessionId}`
+            `/api/agent/chat-stream?message=${encodeURIComponent(message)}&session_id=${sessionId}&web_search_enabled=${webSearchEnabled}`
         );
 
         this.currentEventSource.onopen = () => {

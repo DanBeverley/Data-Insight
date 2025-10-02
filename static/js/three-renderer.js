@@ -530,7 +530,6 @@ class ThreeRenderer {
                 uniform vec3 u_color1;
                 uniform vec3 u_color2;
 
-                // Simplex Noise
                 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
                 vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
                 vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
@@ -563,23 +562,18 @@ class ThreeRenderer {
                     vec2 uv = gl_FragCoord.xy / u_resolution.xy;
                     uv.x *= u_resolution.x / u_resolution.y;
 
-                    // Vastly slower time for subtle wave movement
                     float time = u_time * 0.02;
 
                     vec2 p = uv * 3.0;
 
-                    // Add mouse influence to wave distortion
-                    vec2 mouseInfluence = (u_mouse - 0.5) * 2.0; // Convert to -1 to 1 range
-                    mouseInfluence *= 0.3; // Reduce influence strength
+                    vec2 mouseInfluence = (u_mouse - 0.5) * 2.0;
+                    mouseInfluence *= 0.3;
 
-                    // Apply mouse distortion to coordinates
                     p += mouseInfluence;
 
-                    // Domain Warping: distort the coordinates with noise for a flowing effect
                     vec2 q = vec2(fbm(p + time), fbm(p + vec2(2.3, 8.5) + time));
                     float r = fbm(p + q * 0.8);
 
-                    // Add more mouse influence to the final wave pattern
                     r += mouseInfluence.x * 0.1 + mouseInfluence.y * 0.1;
 
                     float lines = fract(r * 18.0);

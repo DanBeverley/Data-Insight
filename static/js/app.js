@@ -42,6 +42,7 @@ class DataInsightApp {
     initializeModules() {
         this.animationManager = new AnimationManager();
         this.threeRenderer = new ThreeRenderer();
+        this.blackHole = new BlackHole('#blackhole');
         this.apiClient = new ApiClient();
         this.uiManager = new UIManager();
         this.chatInterface = new ChatInterface();
@@ -52,6 +53,7 @@ class DataInsightApp {
         this.chatInterface.setApp(this);
         this.sessionManager.setApp(this);
         this.apiClient.setApp(this);
+        this.themeManager.setApp(this);
     }
 
     setupEventListeners() {
@@ -90,7 +92,6 @@ class DataInsightApp {
             if (section.id === sectionId) {
                 section.classList.remove('hidden');
                 section.classList.add('active');
-                this.animationManager.addSuccessGlow(section);
             } else {
                 section.classList.add('hidden');
                 section.classList.remove('active');

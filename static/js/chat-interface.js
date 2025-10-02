@@ -14,10 +14,31 @@ class ChatInterface {
         const heroUploadBtn = document.getElementById('heroUploadBtn');
         const heroFileInput = document.getElementById('heroFileInput');
         const heroChatMessages = document.getElementById('heroChatMessages');
+        const settingsToggleBtn = document.getElementById('settingsToggleBtn');
+        const settingsPanel = document.getElementById('settingsPanel');
+        const webSearchToggle = document.getElementById('webSearchToggle');
 
         if (!heroSendBtn || !heroChatInput || !heroChatMessages) {
             console.warn('Hero chat elements not found');
             return;
+        }
+
+        if (settingsToggleBtn && settingsPanel && webSearchToggle) {
+            const webSearchEnabled = localStorage.getItem('webSearchEnabled') === 'true';
+            webSearchToggle.checked = webSearchEnabled;
+
+            settingsToggleBtn.addEventListener('click', () => {
+                settingsPanel.classList.toggle('open');
+                const arrow = settingsToggleBtn.querySelector('.settings-arrow');
+                if (arrow) {
+                    arrow.classList.toggle('rotated');
+                }
+            });
+
+            webSearchToggle.addEventListener('change', (e) => {
+                localStorage.setItem('webSearchEnabled', e.target.checked);
+                console.log('Web search', e.target.checked ? 'enabled' : 'disabled');
+            });
         }
 
         // Ensure we have a session ID for agent communication
@@ -28,6 +49,12 @@ class ChatInterface {
         const sendMessage = () => {
             const message = heroChatInput.value.trim();
             if (!message) return;
+
+            const isFirstMessage = localStorage.getItem('hasFirstMessage') !== 'true';
+            if (isFirstMessage && this.app.blackHole) {
+                this.app.blackHole.triggerExpansion();
+                localStorage.setItem('hasFirstMessage', 'true');
+            }
 
             this.addChatMessage('user', message);
             heroChatInput.value = '';
@@ -109,16 +136,17 @@ class ChatInterface {
 
     streamAgentResponse(message) {
         const statusMessageElement = this.showStreamingStatusPlaceholder();
+        const webSearchEnabled = localStorage.getItem('webSearchEnabled') === 'true';
 
         this.app.apiClient.streamAgentResponse(
             message,
             this.app.agentSessionId,
+            webSearchEnabled,
             (statusText, statusType) => {
                 this.updateStreamingStatusWithType(statusMessageElement, statusText, statusType, 'Processing');
             },
             (data) => {
                 setTimeout(() => {
-                    // Mark all remaining tasks as completed
                     const remainingLines = statusMessageElement.querySelectorAll('.status-line:not(.completed)');
                     remainingLines.forEach(line => {
                         line.classList.add('completed');
@@ -147,24 +175,13 @@ class ChatInterface {
         const messageDiv = document.createElement('div');
         messageDiv.className = 'chat-message bot streaming-status-container';
         messageDiv.innerHTML = `
-            <div class="status-header">
-                <div class="status-title">
-                    <i class="fa-solid fa-circle-info"></i>
-                    <span>Processing Status</span>
-                </div>
-                <button class="status-toggle-btn" title="Toggle details">
-                    <i class="fa-solid fa-chevron-down"></i>
-                </button>
-            </div>
             <div class="status-lines-wrapper">
                 <!-- Status lines will be added dynamically -->
             </div>
         `;
 
         heroChatMessages.appendChild(messageDiv);
-        this.setupStatusToggle(messageDiv);
 
-        // Smooth scroll to bottom
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
 
         return messageDiv;
@@ -203,48 +220,43 @@ class ChatInterface {
         const wrapper = containerElement.querySelector('.status-lines-wrapper');
         if (!wrapper) return;
 
-        // Find all existing lines and mark them as "past"
         const existingLines = wrapper.querySelectorAll('.status-line');
         existingLines.forEach(line => {
-            line.classList.add('past');
-            if (!line.classList.contains('past')) {
-                line.classList.add('completed');
-                const statusText = line.querySelector('.status-text');
-                if (statusText) {
-                    requestAnimationFrame(() => {
-                        this.createScratchLines(statusText);
-                    });
-                }
+            line.classList.remove('active');
+            line.classList.add('completed');
+            const sandclock = line.querySelector('.sandclock-icon');
+            if (sandclock) {
+                sandclock.style.opacity = '0';
             }
         });
 
-        // Create new status line
+        const cleanedText = newStatusText.replace(/^Processing:\s*/i, '').trim();
+
         const statusLine = document.createElement('div');
-        statusLine.className = `status-line ${statusType}`;
+        statusLine.className = `status-line ${statusType === 'active' ? 'active' : statusType}`;
         statusLine.innerHTML = `
-            <div class="spinner"></div>
-            <div class="status-text">${newStatusText}</div>
+            <i class="sandclock-icon fa-solid fa-hourglass-half"></i>
+            <div class="status-text">${cleanedText}</div>
         `;
 
         wrapper.appendChild(statusLine);
 
         if (statusType === 'completed') {
+            statusLine.classList.remove('active');
             statusLine.classList.add('completed');
-            setTimeout(() => {
-                const statusTextElement = statusLine.querySelector('.status-text');
-                if (statusTextElement) {
-                    this.createScratchLines(statusTextElement);
-                }
-            }, 100);
+            const sandclock = statusLine.querySelector('.sandclock-icon');
+            if (sandclock) {
+                sandclock.style.opacity = '0';
+            }
+        } else if (statusType === 'active') {
+            statusLine.classList.add('active');
         }
 
-        // Update task progress
         this.updateTaskProgress(wrapper, statusType);
 
-        // Limit the number of visible status lines
         const allLines = wrapper.querySelectorAll('.status-line');
         if (allLines.length > 5) {
-            const pastLines = wrapper.querySelectorAll('.status-line.past');
+            const pastLines = wrapper.querySelectorAll('.status-line.completed');
             if (pastLines.length > 8) {
                 for (let i = 0; i < pastLines.length - 6; i++) {
                     pastLines[i].remove();
@@ -423,15 +435,10 @@ class ChatInterface {
         messageDiv.appendChild(contentWrapper);
         heroChatMessages.appendChild(messageDiv);
 
-        // Apply animation
-        this.app.animationManager.animateMessageFadeIn(messageDiv);
-
-        // Typeset LaTeX math formulas
         if (window.MathJax && window.MathJax.typesetPromise) {
             window.MathJax.typesetPromise([messageDiv]).catch(err => console.warn('MathJax error:', err));
         }
 
-        // Smooth scroll to bottom
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
     }
 
@@ -454,7 +461,6 @@ class ChatInterface {
         messagesContainer.appendChild(messageDiv);
         this.loadingMessageElement = messageDiv;
 
-        // Smooth scroll to bottom
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
@@ -466,10 +472,8 @@ class ChatInterface {
     }
 
     formatMessage(message) {
-        // Split message by double newlines to separate table from interpretation
         const parts = message.split('\n\n');
 
-        // If we have multiple parts, process each separately and combine
         if (parts.length > 1) {
             let formattedParts = [];
             for (let i = 0; i < parts.length; i++) {
@@ -486,7 +490,6 @@ class ChatInterface {
             return formattedParts.join('<br><br>');
         }
 
-        // Single part processing
         if (this.isDataFrameOutput(message)) {
             return this.convertDataFrameToTable(message);
         }
@@ -495,7 +498,6 @@ class ChatInterface {
             return this.convertFirstRowsToTable(message);
         }
 
-        // Check for table-like content with pipes
         if (message.includes('|') && message.includes('-')) {
             return this.convertMarkdownTableToHtml(message);
         }
@@ -541,14 +543,13 @@ class ChatInterface {
                     otherHTML = '';
                 }
 
-                // Process header
                 const headers = line.split('|').map(h => h.trim()).filter(h => h);
                 tableHTML += '<thead><tr>';
                 headers.forEach(header => {
                     tableHTML += `<th>${header}</th>`;
                 });
                 tableHTML += '</tr></thead><tbody>';
-                i++; // Skip separator line
+                i++;
                 continue;
             }
 
@@ -585,7 +586,6 @@ class ChatInterface {
     }
 
     convertDataFrameToTable(message) {
-        // Implementation for converting DataFrame output to HTML table
         const lines = message.split('\n');
         let headers = [];
         let dataRows = [];
@@ -606,7 +606,6 @@ class ChatInterface {
             }
         }
 
-        // Generate headers
         if (headers.length !== maxColumns) {
             headers = [];
             if (dataRows.length > 0 && dataRows[0].data.length > headers.length) {
@@ -642,7 +641,6 @@ class ChatInterface {
     }
 
     convertFirstRowsToTable(message) {
-        // Implementation for converting first rows response to HTML table
         return this.convertDataFrameToTable(message);
     }
 
