@@ -1,0 +1,11 @@
+FROM ollama/ollama:latest
+
+COPY docker/ollama-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/ollama-entrypoint.sh
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
+    CMD ollama list || exit 1
+
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/local/bin/ollama-entrypoint.sh"]
