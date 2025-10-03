@@ -232,7 +232,6 @@ class ApiClient {
 
         this.currentEventSource.onopen = () => {
             console.log("SSE Connection opened");
-            onStatus?.('Thinking...', 'processing');
         };
 
         this.currentEventSource.onmessage = (event) => {

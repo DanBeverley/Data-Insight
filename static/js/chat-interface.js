@@ -135,7 +135,7 @@ class ChatInterface {
     }
 
     streamAgentResponse(message) {
-        const statusMessageElement = this.showStreamingStatusPlaceholder();
+        let statusMessageElement = null;
         const webSearchEnabled = localStorage.getItem('webSearchEnabled') === 'true';
 
         this.app.apiClient.streamAgentResponse(
@@ -143,20 +143,28 @@ class ChatInterface {
             this.app.agentSessionId,
             webSearchEnabled,
             (statusText, statusType) => {
+                if (!statusMessageElement) {
+                    statusMessageElement = this.showStreamingStatusPlaceholder();
+                }
                 this.updateStreamingStatusWithType(statusMessageElement, statusText, statusType, 'Processing');
             },
             (data) => {
                 setTimeout(() => {
-                    const remainingLines = statusMessageElement.querySelectorAll('.status-line:not(.completed)');
-                    remainingLines.forEach(line => {
-                        line.classList.add('completed');
-                        const statusText = line.querySelector('.status-text');
-                        if (statusText) {
-                            setTimeout(() => {
-                                this.createScratchLines(statusText);
-                            }, 100);
-                        }
-                    });
+                    if (statusMessageElement) {
+                        const remainingLines = statusMessageElement.querySelectorAll('.status-line.active');
+                        remainingLines.forEach(line => {
+                            line.classList.remove('active');
+                            line.classList.add('completed');
+                            const spinner = line.querySelector('.status-spinner');
+                            const statusText = line.querySelector('.status-text');
+                            if (spinner) {
+                                spinner.style.opacity = '0';
+                            }
+                            if (statusText) {
+                                statusText.style.animation = 'none';
+                            }
+                        });
+                    }
                     this.addChatMessage('bot', data.response, data.plots);
                 }, 150);
             },
@@ -220,13 +228,17 @@ class ChatInterface {
         const wrapper = containerElement.querySelector('.status-lines-wrapper');
         if (!wrapper) return;
 
-        const existingLines = wrapper.querySelectorAll('.status-line');
+        const existingLines = wrapper.querySelectorAll('.status-line.active');
         existingLines.forEach(line => {
             line.classList.remove('active');
             line.classList.add('completed');
-            const sandclock = line.querySelector('.sandclock-icon');
-            if (sandclock) {
-                sandclock.style.opacity = '0';
+            const spinner = line.querySelector('.status-spinner');
+            const statusText = line.querySelector('.status-text');
+            if (spinner) {
+                spinner.style.opacity = '0';
+            }
+            if (statusText) {
+                statusText.style.animation = 'none';
             }
         });
 
@@ -235,7 +247,7 @@ class ChatInterface {
         const statusLine = document.createElement('div');
         statusLine.className = `status-line ${statusType === 'active' ? 'active' : statusType}`;
         statusLine.innerHTML = `
-            <i class="sandclock-icon fa-solid fa-hourglass-half"></i>
+            <div class="status-spinner"></div>
             <div class="status-text">${cleanedText}</div>
         `;
 
@@ -244,9 +256,9 @@ class ChatInterface {
         if (statusType === 'completed') {
             statusLine.classList.remove('active');
             statusLine.classList.add('completed');
-            const sandclock = statusLine.querySelector('.sandclock-icon');
-            if (sandclock) {
-                sandclock.style.opacity = '0';
+            const spinner = statusLine.querySelector('.status-spinner');
+            if (spinner) {
+                spinner.style.opacity = '0';
             }
         } else if (statusType === 'active') {
             statusLine.classList.add('active');
@@ -280,60 +292,6 @@ class ChatInterface {
             }
             progressText.textContent = ` (${completedLines.length}/${allLines.length})`;
         }
-    }
-
-    createScratchLines(statusText) {
-        const text = statusText.textContent.trim();
-        if (!text) return;
-
-        const words = text.split(' ');
-        const lines = [];
-        let currentLine = '';
-
-        // Create a temporary element to measure text width
-        const tempDiv = document.createElement('div');
-        tempDiv.style.position = 'absolute';
-        tempDiv.style.visibility = 'hidden';
-        tempDiv.style.fontSize = getComputedStyle(statusText).fontSize;
-        tempDiv.style.fontFamily = getComputedStyle(statusText).fontFamily;
-        document.body.appendChild(tempDiv);
-
-        const availableWidth = statusText.offsetWidth - 40; // Account for spinner and padding
-
-        for (let i = 0; i < words.length; i++) {
-            const testLine = currentLine ? currentLine + ' ' + words[i] : words[i];
-            tempDiv.textContent = testLine;
-            const width = tempDiv.offsetWidth;
-
-            if (width > availableWidth && currentLine) {
-                lines.push(currentLine);
-                currentLine = words[i];
-            } else {
-                currentLine = testLine;
-            }
-        }
-
-        if (currentLine) {
-            lines.push(currentLine);
-        }
-
-        if (tempDiv.parentNode) {
-            tempDiv.parentNode.removeChild(tempDiv);
-        }
-
-        // Apply scratch lines to each line of text
-        lines.forEach((lineText, index) => {
-            setTimeout(() => {
-                const scratchLine = document.createElement('div');
-                scratchLine.className = 'scratch-line';
-                scratchLine.style.cssText = `
-                    --scratch-width: ${Math.random() * 20 + 80}%;
-                    top: ${(index + 0.5) * 1.2}em;
-                `;
-                statusText.style.position = 'relative';
-                statusText.appendChild(scratchLine);
-            }, index * 50);
-        });
     }
 
     updateStreamingStatusWithType(containerElement, newStatusText, statusType = 'active', taskName = '') {
@@ -529,60 +487,48 @@ class ChatInterface {
 
     convertMarkdownTableToHtml(message) {
         const lines = message.split('\n');
-        let tableHTML = '<div class="table-responsive-container"><div class="table-scroll-wrapper"><table class="data-table">';
-        let inTable = false;
-        let otherHTML = '';
+        let result = '';
+        let i = 0;
 
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
+        while (i < lines.length) {
+            const line = lines[i].trim();
 
-            if (line.includes('|') && !inTable && line.includes('-')) {
-                inTable = true;
-                if (otherHTML.trim()) {
-                    tableHTML = this.convertMarkdownToHtml(otherHTML) + tableHTML;
-                    otherHTML = '';
-                }
-
+            if (line.includes('|') && line.split('|').length > 2) {
                 const headers = line.split('|').map(h => h.trim()).filter(h => h);
-                tableHTML += '<thead><tr>';
-                headers.forEach(header => {
-                    tableHTML += `<th>${header}</th>`;
-                });
-                tableHTML += '</tr></thead><tbody>';
-                i++;
-                continue;
-            }
 
-            if (inTable) {
-                if (line.includes('|')) {
-                    const cells = line.split('|').map(c => c.trim()).filter(c => c);
-                    tableHTML += '<tr>';
-                    cells.forEach(cell => {
-                        tableHTML += `<td>${cell}</td>`;
+                if (i + 1 < lines.length && lines[i + 1].includes('|') && lines[i + 1].includes('-')) {
+                    let tableHTML = '<div class="table-responsive-container"><div class="table-scroll-wrapper"><table class="data-table">';
+                    tableHTML += '<thead><tr>';
+                    headers.forEach(header => {
+                        tableHTML += `<th>${header}</th>`;
                     });
-                    tableHTML += '</tr>';
-                } else if (line) {
-                    otherHTML += line + '\n';
-                } else {
-                    inTable = false;
+                    tableHTML += '</tr></thead><tbody>';
+
+                    i += 2;
+
+                    while (i < lines.length && lines[i].includes('|')) {
+                        const cells = lines[i].split('|').map(c => c.trim()).filter(c => c);
+                        if (cells.length > 0) {
+                            tableHTML += '<tr>';
+                            cells.forEach(cell => {
+                                tableHTML += `<td>${this.convertMarkdownToHtml(cell)}</td>`;
+                            });
+                            tableHTML += '</tr>';
+                        }
+                        i++;
+                    }
+
                     tableHTML += '</tbody></table></div></div>';
-                }
-            } else {
-                if (line) {
-                    otherHTML += line + '\n';
+                    result += tableHTML;
+                    continue;
                 }
             }
+
+            result += this.convertMarkdownToHtml(line) + '<br>';
+            i++;
         }
 
-        if (inTable) {
-            tableHTML += '</tbody></table></div></div>';
-        }
-
-        if (otherHTML.trim()) {
-            tableHTML += '<br>' + this.convertMarkdownToHtml(otherHTML);
-        }
-
-        return tableHTML;
+        return result;
     }
 
     convertDataFrameToTable(message) {
