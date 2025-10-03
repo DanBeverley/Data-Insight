@@ -20,9 +20,11 @@ if ! ollama list >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "Pulling models..."
-ollama pull llama3.2:3b
-ollama pull qwen2.5:7b
+echo "Pulling local router model..."
+ollama pull phi3:3.8b-mini-128k-instruct-q4_K_M
 
-echo "Models ready. Ollama server running."
+echo "Router model ready. Cloud models (gpt-oss, qwen3-coder) will be accessed via Ollama cloud."
+ollama pull gpt-oss:20b-cloud
+ollama pull gpt-oss:120b-cloud
+ollama pull qwen3-coder:480b-cloud
 wait $OLLAMA_PID
