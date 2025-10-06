@@ -2,6 +2,8 @@ class ChatInterface {
     constructor() {
         this.app = null;
         this.loadingMessageElement = null;
+        this.selectedFile = null;
+        this.attachmentBadge = null;
     }
 
     setApp(app) {
@@ -48,7 +50,7 @@ class ChatInterface {
 
         const sendMessage = () => {
             const message = heroChatInput.value.trim();
-            if (!message) return;
+            if (!message && !this.selectedFile) return;
 
             const isFirstMessage = localStorage.getItem('hasFirstMessage') !== 'true';
             if (isFirstMessage && this.app.blackHole) {
@@ -56,9 +58,13 @@ class ChatInterface {
                 localStorage.setItem('hasFirstMessage', 'true');
             }
 
-            this.addChatMessage('user', message);
-            heroChatInput.value = '';
-            this.streamAgentResponse(message);
+            if (this.selectedFile) {
+                this.sendMessageWithAttachment(message);
+            } else {
+                this.addChatMessage('user', message);
+                heroChatInput.value = '';
+                this.streamAgentResponse(message);
+            }
         };
 
         heroSendBtn.addEventListener('click', sendMessage);
@@ -74,62 +80,13 @@ class ChatInterface {
                 heroFileInput.click();
             });
 
-            heroFileInput.addEventListener('change', async (e) => {
+            heroFileInput.addEventListener('change', (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
 
-                const sessionId = this.app.agentSessionId || this.app.currentSessionId;
-                if (!sessionId) {
-                    console.error('No session ID available for upload');
-                    this.addChatMessage('bot', 'Error: Please refresh the page and try again.');
-                    return;
-                }
-
-                console.log(`Uploading ${file.name} to session ${sessionId}`);
-                this.addChatMessage('user', `Uploading ${file.name}...`);
-
-                try {
-                    this.showLoadingMessage();
-                    const data = await this.app.apiClient.uploadFile(file, sessionId);
-
-                    if (data.status === 'success') {
-                        this.app.currentSessionId = data.session_id;
-                        this.app.agentSessionId = data.agent_session_id || data.session_id;
-
-                        if (data.agent_analysis) {
-                            this.addChatMessage('bot', data.agent_analysis);
-                        } else {
-                            const profileSummary = data.profiling_summary || {};
-                            let message = data.shape && data.shape.length >= 2
-                                ? `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`
-                                : `Dataset uploaded successfully!`;
-
-                            if (profileSummary.quality_score) {
-                                message += ` Quality Score: ${profileSummary.quality_score}/100.`;
-                            }
-                            if (profileSummary.anomalies_detected) {
-                                message += ` Detected ${profileSummary.anomalies_detected} anomalies.`;
-                            }
-                            if (profileSummary.profiling_time) {
-                                message += ` Analysis completed in ${profileSummary.profiling_time}s.`;
-                            }
-                            if (data.intelligence_summary && data.intelligence_summary.profiling_completed) {
-                                message += ` Domain: ${data.intelligence_summary.primary_domain}.`;
-                            }
-                            message += ` You can now ask me questions about your data.`;
-                            this.addChatMessage('bot', message);
-                        }
-
-                        if (data.pii_detection && data.pii_detection.requires_consent) {
-                            this.showPIIConsentDialog(data.pii_detection);
-                        }
-                    } else {
-                        this.addChatMessage('bot', `Upload error: ${data.detail || 'Unknown error'}`);
-                    }
-                } catch (error) {
-                    this.hideLoadingMessage();
-                    this.addChatMessage('bot', `Upload error: ${error.message}`);
-                }
+                this.selectedFile = file;
+                this.showAttachmentBadge(file);
+                e.target.value = '';
             });
         }
     }
@@ -329,7 +286,7 @@ class ChatInterface {
         this.updateStreamingStatus(containerElement, `${prefix}${fullStatusText}`, typeClass);
     }
 
-    addChatMessage(sender, responseData, plots = null) {
+    addChatMessage(sender, responseData, plots = null, attachmentFileName = null) {
         const heroChatMessages = document.getElementById('heroChatMessages');
         if (!heroChatMessages) return;
 
@@ -339,10 +296,26 @@ class ChatInterface {
         const contentWrapper = document.createElement('div');
         contentWrapper.className = 'message-content-wrapper';
 
+        if (attachmentFileName && sender === 'user') {
+            const attachmentDiv = document.createElement('div');
+            attachmentDiv.className = 'message-attachment';
+            attachmentDiv.innerHTML = `
+                <i class="fa-solid fa-file"></i>
+                <span>${attachmentFileName}</span>
+            `;
+            contentWrapper.appendChild(attachmentDiv);
+        }
+
         if (typeof responseData === 'string') {
             const content = document.createElement('div');
             content.className = 'message-content';
-            content.innerHTML = `<p>${this.formatMessage(responseData)}</p>`;
+            // Only format bot messages, not user messages
+            if (sender === 'bot') {
+                content.innerHTML = responseData; // Already formatted by backend
+            } else {
+                // User messages: convert markdown but no table detection
+                content.innerHTML = `<p>${this.convertMarkdownToHtml(responseData)}</p>`;
+            }
             contentWrapper.appendChild(content);
         } else if (responseData && typeof responseData === 'object' && responseData.content) {
             // Handle structured response data
@@ -352,7 +325,11 @@ class ChatInterface {
 
                 switch (item.type) {
                     case 'text':
-                        content.innerHTML = `<p>${this.formatMessage(item.text)}</p>`;
+                        if (sender === 'bot') {
+                            content.innerHTML = item.text; // Already formatted by backend
+                        } else {
+                            content.innerHTML = `<p>${this.convertMarkdownToHtml(item.text)}</p>`;
+                        }
                         break;
                     case 'code':
                         content.innerHTML = `<pre><code class="${item.language || ''}">${item.code}</code></pre>`;
@@ -361,7 +338,7 @@ class ChatInterface {
                         content.innerHTML = this.formatTableContent(item.data);
                         break;
                     default:
-                        content.innerHTML = `<p>${this.formatMessage(JSON.stringify(item))}</p>`;
+                        content.innerHTML = `<p>${this.convertMarkdownToHtml(JSON.stringify(item))}</p>`;
                 }
 
                 contentWrapper.appendChild(content);
@@ -664,6 +641,114 @@ class ChatInterface {
         } catch (error) {
             console.error('Privacy consent error:', error);
             this.addChatMessage('bot', 'Error processing privacy preference.');
+        }
+    }
+
+    showAttachmentBadge(file) {
+        const chatInputArea = document.querySelector('.chat-input-area');
+        if (!chatInputArea) return;
+
+        this.removeAttachmentBadge();
+
+        const badge = document.createElement('div');
+        badge.className = 'attachment-badge';
+        badge.innerHTML = `
+            <i class="fa-solid fa-file"></i>
+            <span class="attachment-name">${file.name}</span>
+            <button class="attachment-remove" title="Remove attachment">
+                <i class="fa-solid fa-times"></i>
+            </button>
+        `;
+
+        const textarea = chatInputArea.querySelector('textarea');
+        chatInputArea.insertBefore(badge, textarea);
+
+        this.attachmentBadge = badge;
+
+        badge.querySelector('.attachment-remove').addEventListener('click', () => {
+            this.removeAttachment();
+        });
+    }
+
+    removeAttachment() {
+        this.selectedFile = null;
+        this.removeAttachmentBadge();
+    }
+
+    removeAttachmentBadge() {
+        if (this.attachmentBadge) {
+            this.attachmentBadge.remove();
+            this.attachmentBadge = null;
+        }
+    }
+
+    async sendMessageWithAttachment(message) {
+        const file = this.selectedFile;
+        const heroChatInput = document.getElementById('heroChatInput');
+
+        const displayMessage = message
+            ? `${message}`
+            : `Uploading ${file.name}...`;
+
+        this.addChatMessage('user', displayMessage, null, file.name);
+
+        if (heroChatInput) {
+            heroChatInput.value = '';
+        }
+        this.removeAttachment();
+
+        const sessionId = this.app.agentSessionId || this.app.currentSessionId;
+        if (!sessionId) {
+            console.error('No session ID available for upload');
+            this.addChatMessage('bot', 'Error: Please refresh the page and try again.');
+            return;
+        }
+
+        try {
+            this.showLoadingMessage();
+            const data = await this.app.apiClient.uploadFile(file, sessionId);
+
+            if (data.status === 'success') {
+                this.app.currentSessionId = data.session_id;
+                this.app.agentSessionId = data.agent_session_id || data.session_id;
+
+                if (data.agent_analysis) {
+                    this.addChatMessage('bot', data.agent_analysis);
+                } else {
+                    const profileSummary = data.profiling_summary || {};
+                    let botMessage = data.shape && data.shape.length >= 2
+                        ? `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`
+                        : `Dataset uploaded successfully!`;
+
+                    if (profileSummary.quality_score) {
+                        botMessage += ` Quality Score: ${profileSummary.quality_score}/100.`;
+                    }
+                    if (profileSummary.anomalies_detected) {
+                        botMessage += ` Detected ${profileSummary.anomalies_detected} anomalies.`;
+                    }
+                    if (profileSummary.profiling_time) {
+                        botMessage += ` Analysis completed in ${profileSummary.profiling_time}s.`;
+                    }
+                    if (data.intelligence_summary && data.intelligence_summary.profiling_completed) {
+                        botMessage += ` Domain: ${data.intelligence_summary.primary_domain}.`;
+                    }
+                    botMessage += ` You can now ask me questions about your data.`;
+                    this.addChatMessage('bot', botMessage);
+                }
+
+                if (data.pii_detection && data.pii_detection.requires_consent) {
+                    this.showPIIConsentDialog(data.pii_detection);
+                }
+
+                if (message) {
+                    this.streamAgentResponse(message);
+                }
+            } else {
+                this.addChatMessage('bot', `Upload error: ${data.detail || 'Unknown error'}`);
+            }
+        } catch (error) {
+            this.hideLoadingMessage();
+            this.addChatMessage('bot', `Upload error: ${error.message}`);
         }
     }
 }

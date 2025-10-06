@@ -369,7 +369,83 @@ body[data-theme='light'] .btn-new-chat:hover i {
 .chat-input-area {
     padding: 0.75rem;
     border-top: 1px solid var(--color-border);
-    display: flex; gap: 0.75rem; align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.attachment-badge {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    color: var(--color-light);
+    width: 100%;
+    order: -1;
+}
+
+.attachment-badge i {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
+.attachment-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+}
+
+.attachment-remove {
+    background: none;
+    border: none;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    padding: 0.25rem;
+    border-radius: 3px;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.attachment-remove:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--color-light);
+}
+
+.message-attachment {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+    width: fit-content;
+}
+
+.message-attachment i {
+    font-size: 0.9rem;
+}
+
+body[data-theme='light'] .attachment-badge {
+    background-color: rgba(0, 0, 0, 0.05);
+}
+
+body[data-theme='light'] .attachment-remove:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+body[data-theme='light'] .message-attachment {
+    background-color: rgba(0, 0, 0, 0.1);
 }
 .chat-input-area textarea {
     flex-grow: 1; background: transparent; border: none;
