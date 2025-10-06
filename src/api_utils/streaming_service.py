@@ -81,7 +81,7 @@ def _try_format_markdown_table(text: str):
         # Skip separator line (usually line 1: |---|---|)
         data_start = 2 if len(table_lines) > 1 and '-' in table_lines[1] else 1
 
-        html = '<div class="data-table">\n<table class="formatted-table markdown-table">\n<thead>\n<tr>'
+        html = '<div class="table-responsive-container">\n<div class="table-scroll-wrapper">\n<table class="data-table markdown-table">\n<thead>\n<tr>'
         for header in headers:
             html += f'<th>{header}</th>'
         html += '</tr>\n</thead>\n<tbody>\n'
@@ -95,7 +95,7 @@ def _try_format_markdown_table(text: str):
                     html += f'<td>{cell}</td>'
                 html += '</tr>\n'
 
-        html += '</tbody>\n</table>\n</div>'
+        html += '</tbody>\n</table>\n</div>\n</div>'
 
         # Include any text before the table
         prefix = '\n'.join(lines[:table_start]) if table_start > 0 else ''
@@ -157,7 +157,7 @@ def _try_format_dataframe(text: str):
 
         print(f"DEBUG DF: Found {len(columns)} columns: {columns[:5]}")
 
-        html = '<div class="data-table">\n<table class="formatted-table">\n<thead>\n<tr>'
+        html = '<div class="table-responsive-container">\n<div class="table-scroll-wrapper">\n<table class="data-table">\n<thead>\n<tr>'
 
         if has_index:
             html += '<th class="index-col">Index</th>'
@@ -182,7 +182,7 @@ def _try_format_dataframe(text: str):
             html += '</tr>\n'
             row_count += 1
 
-        html += '</tbody>\n</table>\n</div>'
+        html += '</tbody>\n</table>\n</div>\n</div>'
 
         print(f"DEBUG DF: Successfully formatted {row_count} rows")
         consumed = len(text)  # Consume entire DataFrame

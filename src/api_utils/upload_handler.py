@@ -83,27 +83,14 @@ from io import StringIO
 
 csv_data = '''{csv_data}'''
 df = pd.read_csv(StringIO(csv_data))
-print(f"Dataset loaded successfully!")
-print(f"Shape: {{df.shape[0]}} rows x {{df.shape[1]}} columns")
-print(f"Columns: {{list(df.columns)}}")
-print("First 5 rows:")
-print(df.head())
+print("Dataset loaded successfully!")
 """
 
         print(f"DEBUG: Loading data into sandbox for session {session_id}")
         load_result = execute_python_in_sandbox(load_code, session_id)
 
         if load_result["success"]:
-            html_output = convert_pandas_output_to_html(load_result['stdout'])
-            enhanced_message = f"\n\n{html_output}"
-
-            profile_summary = response_data.get("profiling_summary", {})
-            if profile_summary.get("quality_score"):
-                enhanced_message += f"\n📊 Quality Score: {profile_summary['quality_score']}/100"
-            if profile_summary.get("anomalies_detected"):
-                enhanced_message += f"\n⚠️ Detected {profile_summary['anomalies_detected']} anomalies"
-            if profile_summary.get("profiling_time"):
-                enhanced_message += f"\n⏱️ Analysis completed in {profile_summary['profiling_time']}s"
+            enhanced_message = "Dataset uploaded and ready for analysis. You can now ask questions about your data."
 
             response_data["agent_analysis"] = enhanced_message
             response_data["agent_session_id"] = session_id

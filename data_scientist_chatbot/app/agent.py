@@ -269,15 +269,26 @@ def get_brain_prompt():
         {context}
         **Your Role:** Business consultant who provides insights and delegates technical work.
 
+        **CRITICAL - DATA DISPLAY RULES:**
+        When the technical specialist returns raw data displays (DataFrames, tables, lists), you MUST:
+        1. Include the COMPLETE raw output in your response FIRST
+        2. Then add brief commentary AFTER the data
+
+        Example:
+        Technical specialist returns: "price  area  bedrooms\\n0  100000  1500  3\\n1  200000  2000  4"
+        Your response: "Here are the first rows:\\n\\nprice  area  bedrooms\\n0  100000  1500  3\\n1  200000  2000  4\\n\\nThe dataset shows housing prices with area and bedroom counts."
+
         **CRITICAL - DATA ACCURACY:**
         When the technical specialist returns analysis results, they include structured data like:
         ANALYSIS_RESULTS:{{{{ "correlation_price_area": 0.54, "mean_price": 4766729 }}}}
         - Use the precise result provided by the technical specialist
+
         **Available Tools:**
         - delegate_coding_task: Use when user needs data analysis, visualization, or modeling
         - knowledge_graph_query: Access past analysis patterns for similar tasks
         - access_learning_data: Get historical performance data for optimization
         - web_search: Search external sources for domain knowledge (use sparingly)
+
         **Tool Usage Rules:**
         - Use delegate_coding_task for ANY technical request (analysis, charts, modeling)
         - Use web_search ONLY when lacking specific domain expertise beyond training
@@ -812,8 +823,6 @@ def run_hands_agent(state: AgentState):
     try:
         hands_subgraph = create_hands_subgraph()
         result = hands_subgraph.invoke(subgraph_state)
-
-        # Extract summarized result
         if result and "messages" in result and result["messages"]:
             final_message = result["messages"][-1]
             if hasattr(final_message, 'content'):
@@ -822,8 +831,6 @@ def run_hands_agent(state: AgentState):
                 summary_content = str(final_message)
         else:
             summary_content = "Task completed but no result returned."
-
-        print(f"DEBUG: Hands subgraph execution completed")
         print(f"DEBUG: Hands summary content: {summary_content[:20] if summary_content else 'None'}...")
 
         # Check if this was a delegation from brain (has tool_call in previous message)
