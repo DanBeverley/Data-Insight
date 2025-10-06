@@ -2,6 +2,7 @@
 
 import re
 import logging
+import warnings
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -274,8 +275,14 @@ class IntelligentDataProfiler:
         # Try parsing as datetime
         if series.dtype == 'object':
             try:
-                pd.to_datetime(series.dropna().head(10))
-                return True
+                sample = series.dropna().head(10)
+                if len(sample) > 0:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        parsed = pd.to_datetime(sample, errors='coerce')
+                        valid_ratio = parsed.notna().sum() / len(sample)
+                        if valid_ratio > 0.7:
+                            return True
             except:
                 pass
                 

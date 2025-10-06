@@ -2,16 +2,15 @@ import os
 import json
 import sqlite3
 from pathlib import Path
-from typing import TypedDict, Sequence, Optional, Dict, Any
-from datetime import datetime, timedelta
+from typing import TypedDict, Sequence, Optional, Dict, Any, List
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.tools import tool
 from langchain_core.messages import BaseMessage, ToolMessage
 from langchain_core.messages.ai import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END, MessagesState, add_messages
+from typing_extensions import Annotated
 try:
     from langgraph.checkpoint.sqlite import SqliteSaver
     CHECKPOINTER_AVAILABLE = True
@@ -21,6 +20,7 @@ except ImportError:
     SqliteSaver = None
     memory = None
     CHECKPOINTER_AVAILABLE = False
+
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -29,24 +29,59 @@ try:
     from tools import execute_python_in_sandbox
     from context_manager import ContextManager, ConversationContext
     from performance_monitor import PerformanceMonitor
+    from core.model_manager import ModelManager
+    from core.agent_factory import create_brain_agent, create_hands_agent, create_router_agent, create_status_agent, create_hands_subgraph
+    from tools.executor import execute_tool
+    from tools.parsers import parse_message_to_tool_call
+    from utils.context import get_data_context
+    from utils.sanitizers import sanitize_output
 except ImportError:
     try:
         from .tools import execute_python_in_sandbox
         from .context_manager import ContextManager, ConversationContext
         from .performance_monitor import PerformanceMonitor
+        from .core.model_manager import ModelManager
+        from .core.agent_factory import create_brain_agent, create_hands_agent, create_router_agent, create_status_agent, create_hands_subgraph
+        from .tools.executor import execute_tool
+        from .tools.parsers import parse_message_to_tool_call
+        from .utils.context import get_data_context
+        from .utils.sanitizers import sanitize_output
     except ImportError:
         raise ImportError("Could not import required modules")
+import re
+import logging
+from difflib import SequenceMatcher
 
-import time
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 project_root = Path(__file__).parent.parent.parent
 env_file = project_root / ".env"
 load_dotenv(env_file)
+model_manager = ModelManager()
 
 class AgentState(TypedDict):
-    messages: Sequence[BaseMessage]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     session_id: str
     python_executions: int
+    plan: Optional[str]
+    scratchpad: str
+    business_objective: Optional[str]
+    task_type: Optional[str]
+    target_column: Optional[str]
+    workflow_stage: Optional[str]
+    current_agent: str
+    business_context: Dict[str, Any]
+    retry_count: int
+    last_agent_sequence: List[str]
+    router_decision: Optional[str]
+
+class HandsSubgraphState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    session_id: str
+    python_executions: int
+    data_context: str
+    retry_count: int
 
 performance_monitor = PerformanceMonitor()
 context_manager = ContextManager()
@@ -69,131 +104,116 @@ def python_code_interpreter(code: str) -> str:
     """
     return "This is a placeholder. Execution happens in the graph node."
 
+class GraphQueryInput(BaseModel):
+    query: str = Field(description="Natural language query about data relationships, feature lineage, or past analysis patterns")
+
 @tool(args_schema=PatternInput)
 def retrieve_historical_patterns(task_description: str) -> str:
     """
     Retrieve proven successful code patterns from past sessions for similar tasks.
     Call this before performing common data science tasks like EDA, visualization,
     modeling, or data cleaning to leverage learned patterns and best practices.
-    
+
     Args:
         task_description: Description of the task you're about to perform
                          (e.g., 'visualization', 'correlation_analysis', 'ml_modeling')
     """
     return "This is a placeholder. Pattern retrieval happens in the graph node."
 
-def retrieve_historical_patterns_logic(task_description: str, session_id: str) -> str:
-    try:
-        patterns = context_manager.get_cross_session_patterns(
-            pattern_type=task_description, 
-            limit=3
-        )
-        
-        performance_monitor.record_metric(
-            session_id=session_id,
-            metric_name="pattern_retrieval",
-            value=len(patterns),
-            context={"task_description": task_description}
-        )
-        
-        if not patterns:
-            return f"No historical patterns found for '{task_description}'. Now execute the task using python_code_interpreter tool with standard best practices."
-        
-        pattern_summaries = []
-        for pattern in patterns:
-            summary = f"**{pattern['type']}** (confidence: {pattern['confidence']:.2f}, used {pattern['success_count']} times)"
-            if pattern.get('data'):
-                data_preview = str(pattern['data'])[:200]
-                summary += f"\nPattern details: {data_preview}{'...' if len(str(pattern['data'])) > 200 else ''}"
-            pattern_summaries.append(summary)
-        
-        result = f"Found {len(patterns)} proven patterns for '{task_description}':\n\n" + "\n\n".join(pattern_summaries)
-        result += "\n\nNow use python_code_interpreter tool to implement the task, adapting these successful patterns."
-        
-        return result
-        
-    except Exception as e:
-        performance_monitor.record_metric(
-            session_id=session_id,
-            metric_name="pattern_retrieval_error",
-            value=1.0,
-            context={"error": str(e), "task_description": task_description}
-        )
-        return f"Error retrieving patterns: {str(e)}"
+class LearningDataInput(BaseModel):
+    query: str = Field(description="Query for execution history or patterns - e.g., 'show successful visualization code' or 'get recent analysis patterns'")
+
+class WebSearchInput(BaseModel):
+    query: str = Field(description="Search query for external domain knowledge or current information")
+
+class CodingTask(BaseModel):
+    task_description: str = Field(description="Clear description of the coding task for the specialized coding agent")
+
+@tool(args_schema=CodingTask)
+def delegate_coding_task(task_description: str) -> str:
+    """
+    Delegate computational work to specialized coding agent. Use ONLY when the user has:
+    - Uploaded a dataset and needs analysis, visualization, or modeling
+    - Specific technical requests requiring data processing or machine learning
+    - Questions that require code execution to answer properly
+
+    DO NOT use for:
+    - Conversational exchanges, greetings, or general questions
+    - Requests when no dataset is available
+    - Explanations that don't require computation
+    """
+    return "Delegation confirmed. Coding agent will execute this task."
+
+@tool(args_schema=GraphQueryInput)
+def knowledge_graph_query(query: str) -> str:
+    """
+    Query relationships between datasets, features, and analysis patterns from previous work.
+    Use ONLY when you need to reference or compare with historical data analysis patterns.
+
+    DO NOT use for:
+    - General conversation or greetings
+    - First-time questions about capabilities
+    - Simple responses that don't require historical context
+
+    Args:
+        query: Natural language query about data relationships from past analyses
+    """
+    return "This is a placeholder. Graph query happens in the graph node."
+
+@tool(args_schema=LearningDataInput)
+def access_learning_data(query: str) -> str:
+    """
+    Access successful code patterns and execution strategies from previous sessions.
+    Use ONLY when you need to optimize approach based on historical performance data.
+
+    DO NOT use for:
+    - Casual conversation or capability questions
+    - Initial interactions without specific technical needs
+    - General responses that don't require historical learning context
+
+    Args:
+        query: Description of specific learning patterns needed for current technical task
+    """
+    return "This is a placeholder. Learning data access happens in the graph node."
+
+@tool(args_schema=WebSearchInput)
+def web_search(query: str) -> str:
+    """
+    Search the web for current market data, trends, or domain-specific context.
+
+    Use for:
+    - Current market trends or benchmarks ("Does this reflect current market trends?")
+    - Industry-specific standards or regulations
+    - Recent events or news affecting the data domain
+    - Domain expertise beyond general data science knowledge
+
+    Don't use for:
+    - General data science or ML concepts (use existing knowledge)
+    - Questions about uploaded datasets (analyze them directly)
+    - Historical patterns (use access_learning_data instead)
+    - Normal exploratory data analysis requests
+
+    Args:
+        query: Specific search query for external information
+    """
+    return "This is a placeholder. Web search happens in the graph node."
 
 def execute_tools_node(state: AgentState) -> dict:
     last_message = state["messages"][-1]
-    content_str = str(last_message.content) if last_message.content else ""
-    print(f"DEBUG execute_tools: Parsing content: {content_str[:200]}...")
-    
-    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-        tool_calls = last_message.tool_calls
-        print(f"DEBUG execute_tools: Found {len(tool_calls)} tool calls in message")
-    else:
-        tool_calls = []
-        import json
-        import re
-        
-        try:
-            json_start = content_str.find('{')
-            if json_start != -1:
-                brace_count = 0
-                json_end = json_start
-                for i, char in enumerate(content_str[json_start:], json_start):
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            json_end = i + 1
-                            break
-                
-                json_str = content_str[json_start:json_end]
-                print(f"DEBUG execute_tools: Attempting to parse JSON: {json_str[:200]}...")
-                
-                if '"""' in json_str:
-                    print("DEBUG execute_tools: Fixing triple-quoted strings for JSON parsing")
-                    import re
-                    code_match = re.search(r'"code":\s*"""([^"]+(?:"[^"]+)*)"""', json_str, re.DOTALL)
-                    if code_match:
-                        code_content = code_match.group(1).strip()
-                        escaped_code = json.dumps(code_content)
-                        json_str = re.sub(r'"code":\s*"""[^"]+(?:"[^"]+)*"""', f'"code": {escaped_code}', json_str, flags=re.DOTALL)
-                        print(f"DEBUG execute_tools: Fixed JSON: {json_str[:200]}...")
-                
-                try:
-                    tool_data = json.loads(json_str)
-                    if 'name' in tool_data and 'arguments' in tool_data:
-                        tool_name = tool_data['name']
-                        args_data = tool_data['arguments']
-                        
-                        print(f"DEBUG execute_tools: Tool name: {tool_name}")
-                        print(f"DEBUG execute_tools: Arguments type: {type(args_data)}")
-                        
-                        tool_calls.append({
-                            "name": tool_name,
-                            "args": args_data,
-                            "id": f"call_{len(tool_calls)}"
-                        })
-                        print(f"DEBUG execute_tools: Successfully extracted tool call: {tool_name}")
-                        
-                except json.JSONDecodeError as e:
-                    print(f"DEBUG execute_tools: JSON parse error: {e}")
-                    print(f"DEBUG execute_tools: Failed JSON: {json_str}")
-                
-        except Exception as e:
-            print(f"DEBUG execute_tools: Failed to parse tool calls: {e}")
-            return {"messages": state["messages"]}
-    
-    if not tool_calls:
+
+    if not (hasattr(last_message, 'tool_calls') and last_message.tool_calls):
         print("DEBUG execute_tools: No tool calls found")
         return {"messages": state["messages"]}
+
+    tool_calls = last_message.tool_calls
+    if tool_calls is None:
+        tool_calls = []
+    print(f"DEBUG execute_tools: Found {len(tool_calls)} tool calls in message")
     
     tool_responses = []
     for tool_call in tool_calls:
         session_id = state.get("session_id")
         
-        # Handle both dict and object formats
         if isinstance(tool_call, dict):
             tool_name = tool_call['name']
             tool_args = tool_call.get('args', tool_call.get('arguments', {}))
@@ -205,50 +225,24 @@ def execute_tools_node(state: AgentState) -> dict:
             tool_id = tool_call.id
         
         print(f"DEBUG execute_tools: Processing {tool_name} with args: {tool_args}")
-        
         if not session_id:
             content = "Error: Session ID is missing."
         else:
             try:
                 if tool_name == 'python_code_interpreter':
-                    code = tool_args["code"]
-                    print(f"DEBUG: Received clean code from Pydantic schema ({len(code)} chars)")
-                    start_time = time.time()
-                    result = execute_python_in_sandbox(code, session_id)
-                    execution_time = time.time() - start_time
-                    performance_monitor.record_metric(
-                        session_id=session_id, 
-                        metric_name="code_execution_time", 
-                        value=execution_time,
-                        context={"code_length": len(code), "success": True}
-                    )
-                    
-                    stdout_content = result.get('stdout', '')
-                    stderr_content = result.get('stderr', '')
-                    plots = result.get('plots', [])
+                    print(f"DEBUG: Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
 
-                    output = []
-                    if stdout_content:
-                        output.append(stdout_content)
-                    if stderr_content:
-                        output.append(f"Error: {stderr_content}")
-                    if plots:
-                        output.append(f"\n📊 Generated {len(plots)} visualization(s)")
-                    
-                    content = "\n".join(output) or "Code executed successfully."
-
-                elif tool_name == 'retrieve_historical_patterns':
-                    task_description = tool_args["task_description"]
-                    content = retrieve_historical_patterns_logic(task_description, session_id)
-                else:
-                    content = f"Error: Unknown tool '{tool_name}'"
+                content = execute_tool(tool_name, tool_args, session_id)
             except Exception as e:
                 content = f"Execution failed in tool node: {str(e)}"
                 
         print(f"DEBUG execute_tools: Tool {tool_name} FULL result:")
         print(content)
         print("DEBUG execute_tools: End of tool result")
-        tool_responses.append(ToolMessage(content=content, tool_call_id=tool_id))
+
+        # Apply semantic output sanitization to remove technical debug artifacts
+        sanitized_content = sanitize_output(content)
+        tool_responses.append(ToolMessage(content=sanitized_content, tool_call_id=tool_id))
     
     python_executions = state.get("python_executions", 0)
     for tool_name in [tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "") for tc in tool_calls]:
@@ -258,311 +252,640 @@ def execute_tools_node(state: AgentState) -> dict:
     
     result_state = {
         "messages": state["messages"] + tool_responses,
-        "python_executions": python_executions
+        "python_executions": python_executions,
+        "plan": state.get("plan"),
+        "scratchpad": state.get("scratchpad", ""),
+        "retry_count": 0,  # Reset after successful tool execution
+        "last_agent_sequence": state.get("last_agent_sequence", []) + ["action"]
     }
     print(f"DEBUG execute_tools_node: Python executions count: {python_executions}")
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
     return result_state
 
-def create_agent_executor():
-    """Creates the stateful agent by manually constructing the graph."""
-    
-    from langchain_ollama import ChatOllama
-    
-    llm = ChatOllama(
-        model="qwen2.5-coder:14b",
-        base_url="http://localhost:11434",
-        temperature=0.0
-    )
-    tools = [python_code_interpreter, retrieve_historical_patterns]
-    llm_with_tools = llm  
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a data scientist assistant with access to a dataset `df`. 
+def get_brain_prompt():
+    return ChatPromptTemplate.from_messages([
+        ("system", """You are Insight, a {role} in a multi-agent system.
+        {context}
+        **Your Role:** Business consultant who provides insights and delegates technical work.
 
-            When you need to analyze data or create visualizations, use python_code_interpreter tool.
-            After the tool executes successfully, provide a clear explanation of what was created.
+        **CRITICAL - DATA ACCURACY:**
+        When the technical specialist returns analysis results, they include structured data like:
+        ANALYSIS_RESULTS:{{{{ "correlation_price_area": 0.54, "mean_price": 4766729 }}}}
+        - Use the precise result provided by the technical specialist
+        **Available Tools:**
+        - delegate_coding_task: Use when user needs data analysis, visualization, or modeling
+        - knowledge_graph_query: Access past analysis patterns for similar tasks
+        - access_learning_data: Get historical performance data for optimization
+        - web_search: Search external sources for domain knowledge (use sparingly)
+        **Tool Usage Rules:**
+        - Use delegate_coding_task for ANY technical request (analysis, charts, modeling)
+        - Use web_search ONLY when lacking specific domain expertise beyond training
+        - Use conversational responses for business advice and result interpretation
+        - Do NOT execute code directly - always delegate to hands specialist
+        """),
+        MessagesPlaceholder(variable_name="messages")
+    ])
 
-            TOOLS:
-            - python_code_interpreter: Execute Python code on the dataset
+def get_hands_prompt():
+    """Technical execution prompt for Hands agent"""
+    return ChatPromptTemplate.from_messages([
+        ("system", """You are a senior data scientist assistant focused on technical execution with access to a dataset `df`.
+                    Your primary goal is to assist the user with their data analysis tasks. You MUST respond ONLY with a valid JSON structure for the `python_code_interpreter` tool.
+                    Do not include any other text, explanations, or markdown.
+                    {data_context}
+                    THINKING PROCESS (Internal - use for complex tasks):
+                    1. **PLAN:** Outline approach for complex multi-step tasks
+                    2. **EXECUTE:** Execute step-by-step using the available tools: python_code_interpreter
+                    3. **SYNTHESIZE:** Note findings after each execution
+                    4. **RESPOND:** Provide clear explanations to user
+                    TECHNICAL EXECUTION CAPABILITIES:
+                    - Generate intelligent preprocessing code based on data characteristics
+                    - Create comprehensive model training and evaluation workflows
+                    - Execute end-to-end ML pipelines autonomously
+                    - Provide sophisticated data analysis and visualization
+                    MANDATORY FORMAT - Always respond with this exact JSON structure:
+                    {{{{
+                    "name": "python_code_interpreter",
+                    "arguments": {{{{
+                        "code": "your_python_code_here"
+                    }}}}
+                    }}}}
+                    SANDBOX EXECUTION MASTERY:
+                    You execute code in a sandbox environment. Master these principles for ANY operation:
 
-            RULES:
-            - For all data analysis/visualization: Use python_code_interpreter
-            - Always use matplotlib.use('Agg') for plotting
-            - Use actual column names from the data
-            - Never use plt.close() - always use plt.show() to let the plots be saved
-            - For bar charts: Use plt.figure(), create plot, then plt.show()"""),
-            MessagesPlaceholder(variable_name="messages"),])
-    agent_runnable = prompt | llm_with_tools
-    
-    def parse_tool_calls(state: AgentState):
-        """
-        Parses tool calls from the last AI message's content and adds them
-        to the .tool_calls attribute.
-        """
-        import json
-        last_message = state["messages"][-1]
-        
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            return state
+                    **CRITICAL - DATASET ACCESS:**
+                    - The dataset loaded as a pandas DataFrame variable named `df`
+                    - NEVER use pd.read_csv(), pd.read_excel(), or any data loading functions
+                    - DIRECTLY use `df` for all operations: df.head(), df.corr(), df['column'], etc.
+                    **OUTPUT VISIBILITY RULES:**
+                    1. EXPRESSIONS that return data (df.head(), df.info(), model.summary()) → Wrap in print()
+                    2. ASSIGNMENT operations (result = df.mean()) → Add print(result) on next line
+                    3. FUNCTIONS with return values → Always capture and print if user needs to see
+                    4. DESCRIPTIVE operations → Always make results visible with print()
+                    5. COMPUTATIONS → Print intermediate steps when helpful for understanding
+                    **STRUCTURED DATA OUTPUT (CRITICAL):**
+                    After computing ANY numeric results (correlations, statistics, model metrics, etc.), output them as JSON:
+                    ```python
+                    import json
+                    results_data = {{
+                        "metric_name": value,
+                        "correlation_price_area": 0.54,
+                        "model_accuracy": 0.87,
+                        # Any computed values that matter
+                    }}
+                    print("ANALYSIS_RESULTS:" + json.dumps(results_data))
+                    ```
+                    This ensures the consulting agent can reference exact values instead of approximating.
 
-        content_str = str(last_message.content).strip()
-        
-        # Primary: Handle JSON format for qwen2.5-coder
-        try:
-            # Clean up content to extract JSON
-            json_str = content_str
-            
-            # Remove any markdown code blocks if present
-            if json_str.startswith('```json'):
-                import re
-                json_str = re.sub(r'^```json\s*', '', json_str)
-                json_str = re.sub(r'\s*```$', '', json_str)
-            elif json_str.startswith('```'):
-                import re
-                json_str = re.sub(r'^```\s*', '', json_str)
-                json_str = re.sub(r'\s*```$', '', json_str)
-            
-            # Try to find JSON object in the content
-            if not json_str.startswith('{'):
-                import re
-                json_match = re.search(r'\{.*\}', json_str, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
-            
-            tool_data = json.loads(json_str)
-            
-            if 'name' in tool_data and 'arguments' in tool_data:
-                tool_name = tool_data['name']
-                tool_args = tool_data['arguments']
-                
-                new_message = AIMessage(
-                    content="",
-                    tool_calls=[{
-                        "name": tool_name,
-                        "args": tool_args,
-                        "id": f"json_{tool_name}"
-                    }]
-                )
-                state["messages"][-1] = new_message
-                return state
-                
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"DEBUG: JSON parsing failed: {e}")
-            print(f"DEBUG: Content: {content_str[:200]}...")
-        
-        # Fallback: Handle ReAct format: Thought: ... Action: ... Action Input: ...
-        if "Action:" in content_str and "Action Input:" in content_str:
-            import re
-            
-            # Extract Action (tool name)
-            action_match = re.search(r'Action:\s*([^\n]+)', content_str)
-            if not action_match:
-                return state
-            
-            tool_name = action_match.group(1).strip()
-            
-            # Extract Action Input (code/query) - improved to handle multiline code
-            action_input_match = re.search(r'Action Input:\s*(.*?)(?=\n(?:Thought|Action|Observation)|\Z)', content_str, re.DOTALL)
-            if not action_input_match:
-                return state
-                
-            action_input = action_input_match.group(1).strip()
-            
-            # Create tool call based on ReAct format
-            if tool_name == "python_code_interpreter":
-                tool_args = {"code": action_input}
-            elif tool_name == "retrieve_historical_patterns":
-                tool_args = {"task_description": action_input}
-            else:
-                return state
-                
-            new_message = AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": tool_name,
-                    "args": tool_args,
-                    "id": f"react_{tool_name}"
-                }]
-            )
-            state["messages"][-1] = new_message
-            return state
-        
-        # Fallback: Handle JSON format if present
-        if content_str.startswith("{") and '"name":' in content_str:
+                    **SMART OUTPUT PATTERNS:**
+                    - Data inspection: print(df.head(10)), print(df.info()), print(df.describe())
+                    - Analysis results: corr_matrix = df.corr(); print(corr_matrix); print("ANALYSIS_RESULTS:" + json.dumps({{"correlation_matrix": corr_matrix.to_dict()}}))
+                    - Model outputs: print("Accuracy:", score); print("ANALYSIS_RESULTS:" + json.dumps({{"accuracy": score}}))
+                    **GENERAL PRINCIPLE:** Print visual output AND structured JSON for numeric results
+                    TOOLS:
+                    - python_code_interpreter: Execute Python code on the dataset
+                    WORKFLOW:
+                    1. FIRST RESPONSE: Return ONLY valid JSON for python_code_interpreter (no explanatory text, no markdown)
+                    2. AFTER EXECUTION: When the tool result comes back, provide a clear explanation in natural language
+                    EXPLANATION FORMAT (after successful execution):
+                    "Successfully created [visualization type] that shows [business insight]. The chart reveals [key finding] which indicates [business implication]."
+                    POST-EXECUTION COMMUNICATION:
+                    After tool execution completes, you MUST provide a natural explanation that:
+                    - Describes what analysis/visualization was completed
+                    - Highlights the key findings and patterns discovered
+                    - Explains the business value and actionable insights
+                    - Uses conversational language that enables business interpretation
+                    RULES:
+                    - When you need to execute code: Return ONLY valid JSON (no explanatory text, no markdown)
+                    - After a tool executes successfully: ALWAYS respond in conversational language explaining what was created or discovered
+                    - When explaining results: Use natural, conversational language that helps business users understand the value
+                    - For all data analysis/visualization: Use python_code_interpreter
+                    - Always use matplotlib.use('Agg') for plotting
+                    - CRITICAL: Use actual column names from the dataset context above - never hardcode column names
+                    - Never use plt.close() - always use plt.show() to let the plots be saved
+                    - IMPORTANT: If you use markdown, ensure JSON is properly formatted within code blocks
+                    - Follow the exact JSON structure shown below
+                    **TASK INFERENCE PRIORITY:**
+                    1. Infer the specific task from the full conversation context and user request
+                    2. If the task is unclear, empty, or just a greeting, respond conversationally asking for clarification
+                    3. Only proceed with code execution if you understand exactly what the user wants
+                    **JSON STRUCTURE:**
+                    {{{{
+                    "name": "python_code_interpreter",
+                    "arguments": {{{{
+                        "code": "your_specific_analysis_code_here"
+                    }}}}
+                    }}}}"""),
+                            MessagesPlaceholder(variable_name="messages")
+                        ])
+
+def get_router_prompt():
+    """Hyper-focused, programmatic prompt for router agent"""
+    return ChatPromptTemplate.from_messages([
+        ("system", """You are a Context-Aware Task Classifier. Analyze the user's request along with session context to route intelligently.
+                    **YOUR INPUTS:**
+                    1. User's message
+                    2. Current session state (dataset availability)
+                    **ROUTING LOGIC:**
+                    - HANDS: Direct technical commands that require code execution (analysis, visualization, modeling, statistics)
+                    - BRAIN: Conversation, planning, interpretation, discussion without immediate code execution
+                    **TECHNICAL TASK INDICATORS (when dataset available → HANDS):**
+                    - Data analysis: "analyze", "explore", "examine", "investigate"
+                    - Visualization: "plot", "chart", "graph", "visualize", "show"
+                    - Statistics: "correlation", "distribution", "summary", "statistics"
+                    - Modeling: "predict", "model", "machine learning", "classification"
+                    - Data operations: "clean", "transform", "filter", "group"
+                    **CONTEXT AWARENESS:**
+                    If session shows "No dataset uploaded yet":
+                    - Route ALL requests to BRAIN (even technical-sounding ones need consultation first)
+                    If session shows "Dataset loaded":
+                    - Technical tasks → HANDS
+                    - Conversation/questions → BRAIN
+                    **CRITICAL OUTPUT FORMAT:**
+                    Output ONLY raw JSON. No markdown, no code fences, no backticks, no extra text.
+                    Valid formats: {{"routing_decision": "brain"}} or {{"routing_decision": "hands"}}
+                    INVALID: ```json\n{{"routing_decision": "hands"}}\n``` (DO NOT use code fences)
+                    INVALID: Here is the decision: {{"routing_decision": "hands"}} (DO NOT add text)
+                    **EXAMPLES:**
+                    Session: "No dataset uploaded yet" + User: "analyze the data" → {{"routing_decision": "brain"}}
+                    Session: "Dataset loaded: 500x10" + User: "plot histogram" → {{"routing_decision": "hands"}}
+                    Session: "Dataset loaded: 500x10" + User: "analyze correlations" → {{"routing_decision": "hands"}}
+                    Session: "Dataset loaded: 500x10" + User: "what does this mean?" → {{"routing_decision": "brain"}}"""),
+                    ("human", "Session context: {session_context}"),
+                    MessagesPlaceholder(variable_name="messages")
+                    ])
+
+
+def get_status_agent_prompt():
+    """Prompt for the dedicated status generation agent"""
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_template("""Generate a quirky status update in 5-10 words maximum
+                                            Agent: {current_agent}
+                                            Task: {user_goal}
+                                            Examples:
+                                            - "Pippity Popping..."
+                                            - "Hallucinating..."
+                                            - "Hunting for patterns..."
+                                            - "Wizarding..."
+                                            Output only the status message, nothing else.""")
+
+def parse_tool_calls(state: AgentState):
+    """Parses tool calls from the last AI message's content"""
+    last_message = state["messages"][-1]
+
+    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+        return state
+    content_str = str(last_message.content).strip()
+    if '```python' in content_str:
+        code_match = re.search(r'```python\s*(.*?)\s*```', content_str, re.DOTALL)
+        if code_match:
+            code_content = code_match.group(1).strip()
+            json_str = f'{{"name": "python_code_interpreter", "arguments": {{"code": "{code_content.replace(chr(34), chr(92)+chr(34)).replace(chr(10), chr(92)+"n")}"}}}}'
+            logger.debug("Auto-wrapped Python code in JSON")
             try:
-                # Handle multiline strings by using regex to extract name and args
-                import re
-                
-                # Extract tool name
-                name_match = re.search(r'"name":\s*"([^"]+)"', content_str)
-                if not name_match:
-                    raise ValueError("No tool name found")
-                
-                tool_name = name_match.group(1)
-                
-                # Extract arguments section
-                args_match = re.search(r'"arguments":\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}', content_str, re.DOTALL)
-                if not args_match:
-                    # Try simpler pattern for code argument
+                import json
+                tool_data = json.loads(json_str)
+                last_message.tool_calls = [{
+                    "name": tool_data['name'],
+                    "args": tool_data['arguments'],
+                    "id": f"python_{tool_data['name']}"
+                }]
+                last_message.content = ""
+                return state
+            except Exception:
+                pass
+
+    if parse_message_to_tool_call(last_message, "json"):
+        return state
+
+    if "Action:" in content_str and "Action Input:" in content_str:
+        action_match = re.search(r'Action:\s*([^\n]+)', content_str)
+        if not action_match:
+            return state
+
+        tool_name = action_match.group(1).strip()
+        action_input_match = re.search(r'Action Input:\s*(.*?)(?=\n(?:Thought|Action|Observation)|\Z)', content_str, re.DOTALL)
+        if not action_input_match:
+            return state
+
+        action_input = action_input_match.group(1).strip()
+
+        if tool_name == "python_code_interpreter":
+            tool_args = {"code": action_input}
+        elif tool_name == "retrieve_historical_patterns":
+            tool_args = {"task_description": action_input}
+        else:
+            return state
+
+        new_message = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": tool_name,
+                "args": tool_args,
+                "id": f"react_{tool_name}"
+            }]
+        )
+        state["messages"][-1] = new_message
+        return state
+
+    if content_str.startswith("{") and '"name":' in content_str:
+        try:
+            name_match = re.search(r'"name":\s*"([^"]+)"', content_str)
+            if not name_match:
+                raise ValueError("No tool name found")
+
+            tool_name = name_match.group(1)
+            args_match = re.search(r'"arguments":\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}', content_str, re.DOTALL)
+            if not args_match:
+                code_match = re.search(r'"code":\s*"""([^"]+(?:"""[^"]*"""[^"]*)*?)"""', content_str, re.DOTALL)
+                if code_match:
+                    tool_args = {"code": code_match.group(1)}
+                else:
+                    tool_args = {}
+            else:
+                args_str = args_match.group(1)
+                try:
+                    tool_args = json.loads("{" + args_str + "}")
+                except:
                     code_match = re.search(r'"code":\s*"""([^"]+(?:"""[^"]*"""[^"]*)*?)"""', content_str, re.DOTALL)
                     if code_match:
                         tool_args = {"code": code_match.group(1)}
                     else:
                         tool_args = {}
-                else:
-                    # Try to parse the arguments
-                    args_str = args_match.group(1)
-                    try:
-                        tool_args = json.loads("{" + args_str + "}")
-                    except:
-                        # Fallback: extract code from triple quotes
-                        code_match = re.search(r'"code":\s*"""([^"]+(?:"""[^"]*"""[^"]*)*?)"""', content_str, re.DOTALL)
-                        if code_match:
-                            tool_args = {"code": code_match.group(1)}
-                        else:
-                            tool_args = {}
-                
-                new_message = AIMessage(
-                    content="",
-                    tool_calls=[{
-                        "name": tool_name,
-                        "args": tool_args,
-                        "id": f"call_{tool_name}"
-                    }]
-                )
-                state["messages"][-1] = new_message
-            except Exception as e:
-                pass
-            
-        return state
 
-    def run_agent(state: AgentState):
-        """Invoke the agent with the current state and inject data profile context"""
-        python_executions = state.get("python_executions", 0)
-        session_id = state.get("session_id")
-        
-        # Inject data profile context if available
-        enhanced_state = state.copy()
-        
-        try:
-            import builtins
-            if (hasattr(builtins, '_session_store') and 
-                session_id in builtins._session_store and 
-                'data_profile' in builtins._session_store[session_id]):
-                
-                data_profile = builtins._session_store[session_id]['data_profile']
-                column_context = data_profile.ai_agent_context['column_details']
-                
-                # Create enhanced system message with data context
-                context_prompt = ChatPromptTemplate.from_messages([
-                    ("system", f"""You are a data scientist assistant with access to a dataset `df`. Always respond in JSON format.
-
-DATASET CONTEXT:
-You have access to a dataset with the following columns and their details:
-{chr(10).join(f'• {col}: {info["dtype"]} ({info["semantic_type"]}) - {info["null_count"]} nulls, {info["unique_count"]} unique values' 
-              for col, info in column_context.items())}
-
-VISUALIZATION SUGGESTIONS:
-{chr(10).join(f'• {sug["type"]}: {sug["description"]}' for sug in data_profile.ai_agent_context.get('visualization_suggestions', [])[:3])}
-
-CODE GENERATION HINTS:
-• Numeric columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['numeric_columns'])}
-• Categorical columns: {', '.join(data_profile.ai_agent_context['code_generation_hints']['categorical_columns'])}
-• Suggested targets: {', '.join(data_profile.ai_agent_context['code_generation_hints']['suggested_target_columns'])}
-
-MANDATORY FORMAT - Always respond with this exact JSON structure:
-
-{{{{
-  "name": "python_code_interpreter",
-  "arguments": {{{{
-    "code": "your_python_code_here"
-  }}}}
-}}}}
-
-TOOLS:
-- python_code_interpreter: Execute Python code on the dataset
-
-RULES:
-- For all data analysis/visualization: Use python_code_interpreter
-- Always use matplotlib.use('Agg') for plotting
-- Use actual column names from the dataset context above
-- Return ONLY valid JSON, no other text
-- Never use plt.close() - always use plt.show() to let the plots be saved
-- For bar charts: Use plt.figure(), create plot, then plt.show()
-- Put all Python code in the "code" field
-
-EXAMPLE:
-{{{{
-  "name": "python_code_interpreter", 
-  "arguments": {{{{
-    "code": "import matplotlib.pyplot as plt\\nimport seaborn as sns\\ncorr_matrix = df.corr()\\nsns.heatmap(corr_matrix, annot=True, cmap='coolwarm')\\nplt.title('Correlation Heatmap')\\nplt.show()"
-  }}}}
-}}}}"""),
-                    MessagesPlaceholder(variable_name="messages"),
-                ])
-                
-                enhanced_agent = context_prompt | llm_with_tools
-                agent_outcome = enhanced_agent.invoke(enhanced_state)
-                
-            else:
-                agent_outcome = agent_runnable.invoke(enhanced_state)
-                
+            new_message = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": tool_name,
+                    "args": tool_args,
+                    "id": f"call_{tool_name}"
+                }]
+            )
+            state["messages"][-1] = new_message
         except Exception as e:
-            agent_outcome = agent_runnable.invoke(enhanced_state)
-            
-        return {"messages": enhanced_state["messages"] + [agent_outcome]}
+            pass
 
-    def should_continue(state: AgentState):
-        last_message = state["messages"][-1]
-        messages = state["messages"]
-        
-        # Check for recursive plot generation pattern
-        if len(messages) >= 6:  # Need at least 3 tool cycles to detect pattern
-            recent_messages = messages[-6:]  # Last 6 messages (3 cycles)
-            tool_results = [msg for msg in recent_messages if hasattr(msg, 'content') and 
-                           isinstance(msg.content, str) and 'PLOT_SAVED' in msg.content]
-            
-            # If we have multiple successful plot generations, check if it's the same code
-            if len(tool_results) >= 2:
-                recent_tool_calls = [msg for msg in recent_messages if hasattr(msg, 'tool_calls') and msg.tool_calls]
-                
-                # Check if last 2 tool calls are identical (recursive pattern)
-                if len(recent_tool_calls) >= 2:
-                    last_code = str(recent_tool_calls[-1].tool_calls[0]) if recent_tool_calls[-1].tool_calls else ""
-                    prev_code = str(recent_tool_calls[-2].tool_calls[0]) if recent_tool_calls[-2].tool_calls else ""
-                    
-                    if last_code == prev_code and last_code != "":
-                        # Recursive plot detected - terminate to prevent loop
-                        return END
-        
-        # Normal flow - continue if there are tool calls
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            return "action"    
-        return END 
+    return state
 
-    graph = StateGraph(AgentState)
-    graph.add_node("agent", run_agent)
-    graph.add_node("parser", parse_tool_calls) 
-    graph.add_node("action", execute_tools_node)
-    graph.set_entry_point("agent")
-    graph.add_edge("agent", "parser")
-    graph.add_conditional_edges(
-        "parser",
-        should_continue,
-        {
-            "action": "action", 
-            END: END
-        },
-    )  
-    graph.add_edge("action", "agent")
-    
-    if CHECKPOINTER_AVAILABLE and memory:
-        agent_executor = graph.compile(checkpointer=memory)
+def run_router_agent(state: AgentState):
+    """Context-aware routing decision considering session state and user message"""
+    session_id = state.get("session_id")
+    last_user_message = None
+    for msg in reversed(state["messages"]):
+        if hasattr(msg, 'type') and msg.type == "human":
+            last_user_message = msg
+            break
+
+    if not last_user_message:
+        print("DEBUG: No human message found, defaulting to brain")
+        return {"messages": state["messages"], "router_decision": "brain", "current_agent": "router"}
+
+    session_context = ""
+    try:
+        import builtins
+        print(f"DEBUG: Router checking session_id: {session_id}")
+        print(f"DEBUG: Router has builtins._session_store: {hasattr(builtins, '_session_store')}")
+        if hasattr(builtins, '_session_store'):
+            print(f"DEBUG: Router session_id in store: {session_id in builtins._session_store}")
+            if session_id in builtins._session_store:
+                session_data = builtins._session_store[session_id]
+                print(f"DEBUG: Router session data keys: {list(session_data.keys())}")
+                if 'dataframe' in session_data:
+                    df = session_data['dataframe']
+                    dataset_info = f"Dataset loaded: {df.shape[0]} rows x {df.shape[1]} columns"
+                    session_context = f"Session state: {dataset_info}"
+                    print(f"DEBUG: Router found dataset: {dataset_info}")
+                elif 'data_profile' in session_data:
+                    session_context = "Session state: Dataset loaded"
+                    print("DEBUG: Router found data_profile but no dataframe")
+                else:
+                    session_context = "Session state: No dataset uploaded yet"
+                    print("DEBUG: Router no data_profile in session")
+            else:
+                session_context = "Session state: No dataset uploaded yet"
+                print("DEBUG: Router session_id not in store")
+        else:
+            session_context = "Session state: No dataset uploaded yet"
+            print("DEBUG: Router no _session_store in builtins")
+    except Exception as e:
+        session_context = "Session state: No dataset uploaded yet"
+        print(f"DEBUG: Router exception: {e}")
+
+    print(f"DEBUG: Router context: {session_context}")
+    print(f"DEBUG: Router analyzing message: {str(last_user_message.content)[:100]}...")
+
+    contextual_router_state = {
+        "messages": [last_user_message],
+        "session_context": session_context
+    }
+
+    llm = create_router_agent()
+    prompt = get_router_prompt()
+    agent_runnable = prompt | llm
+
+    try:
+        response = agent_runnable.invoke(contextual_router_state)
+        content = str(response.content).strip()
+
+        json_match = re.search(r'\{[^}]*"routing_decision"[^}]*\}', content)
+        if not json_match:
+            print("DEBUG: Router failed to produce JSON, defaulting to brain")
+            return {"messages": state["messages"], "router_decision": "brain", "current_agent": "router"}
+
+        json_str = json_match.group(0)
+        router_data = json.loads(json_str)
+        decision = router_data.get('routing_decision', 'brain')
+
+        print(f"DEBUG: Router decision: {decision}")
+
+        result_state = {
+            "messages": state["messages"],
+            "router_decision": decision,
+            "current_agent": "router"
+        }
+        return result_state
+
+    except Exception as e:
+        print(f"Router error: {e}, defaulting to brain")
+        print(f"DEBUG: Router response content was: {repr(content)}")
+        return {"messages": state["messages"], "router_decision": "brain", "current_agent": "router"}
+
+def run_brain_agent(state: AgentState):
+    session_id = state.get("session_id")
+    enhanced_state = state.copy()
+
+    if 'plan' not in enhanced_state:
+        enhanced_state['plan'] = None
+    if 'scratchpad' not in enhanced_state:
+        enhanced_state['scratchpad'] = ""
+    if 'current_agent' not in enhanced_state:
+        enhanced_state['current_agent'] = "brain"
+    if 'business_context' not in enhanced_state:
+        enhanced_state['business_context'] = {}
+    if 'retry_count' not in enhanced_state:
+        enhanced_state['retry_count'] = 0
+    if 'last_agent_sequence' not in enhanced_state:
+        enhanced_state['last_agent_sequence'] = []
+
+    # Track brain agent execution
+    last_sequence = enhanced_state.get("last_agent_sequence", [])
+    enhanced_state["last_agent_sequence"] = last_sequence + ["brain"]
+
+    # Check for recent tool execution results
+    recent_tool_result = None
+    messages = enhanced_state.get("messages", [])
+    print(f"DEBUG: Brain received {len(messages)} total messages in state")
+    for i, msg in enumerate(messages):
+        if hasattr(msg, 'type'):
+            content_preview = str(msg.content)[:80] if hasattr(msg, 'content') else 'no content'
+            print(f"DEBUG: Message {i}: type={msg.type}, content={content_preview}")
+    if messages:
+        for i in range(len(messages) - 1, max(-1, len(messages) - 3), -1):
+            msg = messages[i]
+            if hasattr(msg, 'type') and msg.type == 'tool':
+                content_str = str(msg.content)
+                if 'Generated' in content_str and 'visualization' in content_str:
+                    recent_tool_result = msg.content
+                    break
+                elif 'PLOT_SAVED' in content_str and 'plot_' in content_str:
+                    import re
+                    plot_match = re.search(r'PLOT_SAVED:([^\s]+\.png)', content_str)
+                    if plot_match:
+                        recent_tool_result = f"Created visualization: {plot_match.group(1)}"
+                        break
+
+    logger.debug(f"Brain agent - recent tool result found: {recent_tool_result is not None}")
+    data_context = get_data_context(session_id)
+    logger.debug(f"Brain data context length: {len(data_context) if data_context else 0} chars")
+
+    # Extract recent conversation history to prevent inappropriate tool usage
+    conversation_history = ""
+    recent_messages = messages[-3:] if messages and len(messages) >= 3 else (messages if messages else [])
+    history_parts = []
+    for msg in recent_messages:
+        if hasattr(msg, 'type') and hasattr(msg, 'content'):
+            content_preview = str(msg.content)[:50]
+            if msg.type == 'human':
+                history_parts.append(f"User: {content_preview}")
+            elif msg.type == 'ai':
+                history_parts.append(f"Assistant: {content_preview}")
+    if history_parts:
+        conversation_history = " | ".join(history_parts)
+
+    # Build context and role for template variables
+    context = ""
+    if data_context and data_context.strip():
+        context = f"Working with data: {data_context}"
     else:
-        agent_executor = graph.compile()
-    
-    return agent_executor
+        context = "Ready to help analyze data. Need dataset upload first."
 
-def create_enhanced_agent_executor(session_id: str = None):
-    return create_agent_executor()
+    if conversation_history and conversation_history.strip():
+        context += f" | Recent: {conversation_history}"
+
+    role = "business consultant" if recent_tool_result is not None else "data consultant"
+
+    messages = enhanced_state.get("messages", [])
+    if messages is None:
+        messages = []
+
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    filtered_messages = []
+    brain_tool_names = {'delegate_coding_task', 'knowledge_graph_query', 'access_learning_data', 'web_search'}
+
+    for msg in messages:
+        if hasattr(msg, 'type'):
+            if msg.type == 'human':
+                filtered_messages.append(msg)
+            elif msg.type == 'ai':
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    compatible_calls = [tc for tc in msg.tool_calls if tc.get('name') in brain_tool_names]
+                    if compatible_calls:
+                        filtered_messages.append(msg)
+                    elif msg.content:
+                        filtered_messages.append(AIMessage(content=msg.content))
+                else:
+                    filtered_messages.append(msg)
+            elif msg.type == 'tool':
+                filtered_messages.append(msg)
+
+    # Add template variables to state
+    enhanced_state_with_context = enhanced_state.copy()
+    enhanced_state_with_context["messages"] = filtered_messages
+    enhanced_state_with_context["context"] = context
+    enhanced_state_with_context["role"] = role
+
+    llm = create_brain_agent()
+    brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search]
+    llm_with_tools = llm.bind_tools(brain_tools)
+    prompt = get_brain_prompt()
+    agent_runnable = prompt | llm_with_tools
+
+    try:
+        original_count = len(enhanced_state.get('messages', []))
+        filtered_count = len(filtered_messages)
+        print(f"DEBUG: Brain agent filtered messages: {original_count} -> {filtered_count}")
+        response = agent_runnable.invoke(enhanced_state_with_context)
+        print(f"DEBUG: Brain agent response type: {type(response)}")
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            print(f"DEBUG: Brain agent tool calls: {[tc.get('name') for tc in response.tool_calls]}")
+
+        result_state = {
+            "messages": [response],
+            "current_agent": "brain",
+            "last_agent_sequence": enhanced_state["last_agent_sequence"],
+            "retry_count": enhanced_state["retry_count"]
+        }
+        return result_state
+    except Exception as e:
+        print(f"DEBUG: Brain agent full error: {str(e)}")
+        print(f"DEBUG: Brain agent error type: {type(e)}")
+        return {"messages": [AIMessage(content=f"Brain agent error: {e}")]}
+
+def run_hands_agent(state: AgentState):
+    session_id = state.get("session_id")
+
+    # Track hands agent execution
+    enhanced_state = state.copy()
+    last_sequence = enhanced_state.get("last_agent_sequence", [])
+    enhanced_state["last_agent_sequence"] = last_sequence + ["hands"]
+
+    # Check for loop prevention
+    retry_count = enhanced_state.get("retry_count", 0)
+    if last_sequence and len(last_sequence) >= 4:
+        recent_sequence = last_sequence[-4:]
+        if recent_sequence == ["brain", "hands", "brain", "hands"]:
+            print(f"DEBUG: Hands agent - detected potential loop, incrementing retry count")
+            enhanced_state["retry_count"] = retry_count + 1
+
+    # Extract task: either from Brain's delegation or direct user command
+    last_message = state["messages"][-1] if state["messages"] else None
+    task_description = "Perform data analysis task"
+
+    # Check if this is a delegation from brain or direct routing from router
+    current_agent = enhanced_state.get("current_agent", "")
+    previous_agent = enhanced_state.get("last_agent_sequence", [])[-1] if enhanced_state.get("last_agent_sequence") else ""
+
+    if previous_agent == "router":
+        # Direct routing from router - use original user message
+        user_messages = [msg for msg in state["messages"] if hasattr(msg, 'type') and msg.type == 'human']
+        if user_messages:
+            task_description = user_messages[-1].content
+            print(f"DEBUG: Direct router->hands task: {task_description}")
+    elif (last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls):
+        # Delegation from brain
+        tool_call = last_message.tool_calls[0]
+        if tool_call.get('name') == 'delegate_coding_task':
+            task_description = tool_call.get('args', {}).get('task_description', task_description)
+            print(f"DEBUG: Brain delegation task: {task_description}")
+
+    # Get dataset context for Hands agent
+    data_context = get_data_context(session_id)
+    logger.debug(f"Data context length: {len(data_context) if data_context else 0} chars")
+    logger.debug(f"Hands agent starting with session_id: {session_id}")
+
+    # Use subgraph for both direct routing and delegation to ensure isolation
+    router_decision = state.get("router_decision")
+    if router_decision == "hands":
+        # Direct routing: extract user task from last human message
+        user_messages = [msg for msg in state["messages"] if hasattr(msg, 'type') and msg.type == 'human']
+        if user_messages:
+            task_description = user_messages[-1].content
+            print(f"DEBUG: Direct router->hands task: {task_description}")
+        else:
+            task_description = "Perform data analysis task"
+
+    print(f"DEBUG: Using subgraph for hands execution: {task_description}")
+
+    # Create subgraph state with task as user message
+    subgraph_state = {
+        "messages": [("human", task_description)],
+        "session_id": session_id,
+        "python_executions": state.get("python_executions", 0),
+        "data_context": data_context,
+        "retry_count": state.get("retry_count", 0)
+    }
+
+    # Execute hands subgraph to isolate execution
+    try:
+        hands_subgraph = create_hands_subgraph()
+        result = hands_subgraph.invoke(subgraph_state)
+
+        # Extract summarized result
+        if result and "messages" in result and result["messages"]:
+            final_message = result["messages"][-1]
+            if hasattr(final_message, 'content'):
+                summary_content = final_message.content
+            else:
+                summary_content = str(final_message)
+        else:
+            summary_content = "Task completed but no result returned."
+
+        print(f"DEBUG: Hands subgraph execution completed")
+        print(f"DEBUG: Hands summary content: {summary_content[:20] if summary_content else 'None'}...")
+
+        # Check if this was a delegation from brain (has tool_call in previous message)
+        last_message = state.get("messages", [])[-1] if state.get("messages") else None
+        is_delegation = (last_message and
+                        hasattr(last_message, 'tool_calls') and
+                        last_message.tool_calls and
+                        last_message.tool_calls[0].get('name') == 'delegate_coding_task')
+
+        if is_delegation:
+            tool_call_id = last_message.tool_calls[0].get('id', 'unknown')
+            summary_response = ToolMessage(content=summary_content, tool_call_id=tool_call_id)
+        else:
+            summary_response = AIMessage(content=summary_content)
+
+        result_state = {
+            "messages": [summary_response],
+            "current_agent": "hands",
+            "last_agent_sequence": enhanced_state.get("last_agent_sequence", []),
+            "retry_count": enhanced_state.get("retry_count", 0)
+        }
+        return result_state
+
+    except Exception as e:
+        print(f"DEBUG: Hands subgraph execution failed: {e}")
+        return {"messages": [AIMessage(content=f"Hands execution failed: {e}")]}
+
+async def warmup_models_parallel():
+    """Warm up models in parallel for faster startup"""
+    import asyncio
+    async def warmup_brain():
+        try:
+            brain_agent = create_brain_agent()
+            brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search]
+            brain_with_tools = brain_agent.bind_tools(brain_tools)
+            await (get_brain_prompt() | brain_with_tools).ainvoke({
+                "messages": [("human", "warmup")],
+                "context": "Ready to help analyze data. Need dataset upload first.",
+                "role": "data consultant"
+            })
+        except: pass
+    async def warmup_hands():
+        try:
+            hands_agent = create_hands_agent()
+            await (get_hands_prompt() | hands_agent).ainvoke({
+                "messages": [("human", "warmup")],
+                "data_context": ""
+            })
+        except: pass
+    async def warmup_router():
+        try:
+            router_agent = create_router_agent()
+            await (get_router_prompt() | router_agent).ainvoke({"messages": [("human", "warmup")]})
+        except: pass
+    async def warmup_status():
+        try:
+            status_agent = create_status_agent()
+            await (get_status_agent_prompt() | status_agent).ainvoke({"agent_name": "system", "user_goal": "startup", "dataset_context": "", "tool_name": "", "tool_details": ""})
+        except: pass
+    try:
+        await asyncio.gather(warmup_brain(), warmup_hands(), warmup_router(), warmup_status())
+        print("🚀 All models warmed in parallel")
+    except Exception as e:
+        print(f"⚠️ Parallel warmup error: {e}")
+

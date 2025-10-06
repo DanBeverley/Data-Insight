@@ -60,19 +60,19 @@ def _reload_dataset_if_available(sandbox: Sandbox, session_id: str):
             csv_data = df.to_csv(index=False)
             
             reload_code = f"""
-import pandas as pd
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import seaborn as sns
-from io import StringIO
+                            import pandas as pd
+                            import numpy as np
+                            import matplotlib
+                            matplotlib.use('Agg')
+                            import matplotlib.pyplot as plt
+                            import seaborn as sns
+                            from io import StringIO
 
-# Reload dataset from session
-csv_data = '''{csv_data}'''
-df = pd.read_csv(StringIO(csv_data))
-print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
-"""
+                            # Reload dataset from session
+                            csv_data = '''{csv_data}'''
+                            df = pd.read_csv(StringIO(csv_data))
+                            print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
+                            """
             
             result = sandbox.run_code(reload_code, timeout=10)
             print(f"DEBUG: Dataset reload {'successful' if result else 'failed'} for session {session_id}")
@@ -101,74 +101,95 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
     plot_urls = []
 
     try:
+        print("DEBUG: Starting sandbox execution try block")
+        import psutil
+        import sys
+        import os  
+        print("DEBUG: Imported os successfully")
+        sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+        print("DEBUG: Added src to path")
+        from src.mlops.monitoring import PerformanceMonitor, MetricType
+
+        monitor = PerformanceMonitor()
+
+        # Record initial resource usage
+        process = psutil.Process()
+        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+        initial_cpu = process.cpu_percent()
+
+        import builtins
+        session_store = getattr(builtins, '_session_store', None)
+        dataset_load_code = ""
+
+        if session_store and session_id in session_store and "dataframe" in session_store[session_id]:
+            df = session_store[session_id]["dataframe"]
+            csv_data = df.to_csv(index=False)
+            dataset_load_code = f"""
+from io import StringIO
+csv_data = '''{csv_data}'''
+df = pd.read_csv(StringIO(csv_data))
+"""
+
         is_plotting = any(pattern in code for pattern in [
             'plt.', 'sns.', '.plot(', '.hist(', 'matplotlib', 'seaborn'])
         patterns_found = [p for p in ["plt.", "sns.", ".plot(", ".hist(", "matplotlib", "seaborn"] if p in code]
-        print(f"DEBUG: Plot detection - code contains: {patterns_found}")     
+        print(f"DEBUG: Plot detection - code contains: {patterns_found}")
         if 'df.corr()' in code:
             code = code.replace('df.corr()', 'df.select_dtypes(include=[np.number]).corr()')
-        
-        if is_plotting:
-            import re
-            code = re.sub(r'plt\.show\(\)', '', code)
-            
-            enhanced_code = f"""
+
+        enhanced_code = f"""
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
-import uuid
+import seaborn as sns
 import sys
-
-{code}
-
-# Auto-save any plots created
 import os
-print("Checking for figures to save...")
-fig_nums = plt.get_fignums()
-print(f"Found {{len(fig_nums)}} figures: {{fig_nums}}")
-if fig_nums:
-    for fig_num in fig_nums:
-        try:
-            plt.figure(fig_num)
-            plot_filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
-            print(f"Saving figure {{fig_num}} to {{plot_filename}}")
-            
-            # Save with more explicit path and error handling
-            try:
-                plt.savefig(plot_filename, format='png', dpi=150, bbox_inches='tight')
-                print(f"plt.savefig completed")
-            except Exception as save_e:
-                print(f"plt.savefig failed: {{save_e}}")
-                raise save_e
-            
-            # Verify file was created
-            if os.path.exists(plot_filename):
-                file_size = os.path.getsize(plot_filename)
-                print(f"File created: {{plot_filename}} ({{file_size}} bytes)")
-                print(f"PLOT_SAVED:{{plot_filename}}")
-            else:
-                print(f"ERROR: Plot file {{plot_filename}} was not created after savefig")
-                # List current directory contents
-                import glob
-                files = glob.glob("*.png")
-                print(f"PNG files in directory: {{files}}")
-            
-            sys.stdout.flush()
-            plt.close()
-        except Exception as e:
-            print(f"ERROR: Failed to save plot {{fig_num}}: {{e}}")
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
-else:
-    print("No figures to save")
-    sys.stdout.flush()
+import glob
+
+def use_noop(*args, **kwargs):
+    pass
+
+matplotlib.use = use_noop
+plt.use = use_noop
+
+{dataset_load_code}
+
+before_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
+
+try:
+{chr(10).join('    ' + line for line in code.split(chr(10)))}
+except Exception as e:
+    print(f"Execution error: {{type(e).__name__}}: {{e}}")
+    import traceback
+    traceback.print_exc()
+
+after_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
+new_pngs = after_pngs - before_pngs
+processed = set()
+
+for fig_num in plt.get_fignums():
+    import uuid
+    filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
+    plt.figure(fig_num)
+    plt.savefig(filename, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig_num)
+    if os.path.exists(filename):
+        print(f"PLOT_SAVED:{{filename}}")
+        processed.add(filename)
+
+for png in new_pngs:
+    if png not in processed and os.path.exists(png) and os.path.getsize(png) > 100:
+        print(f"PLOT_SAVED:{{os.path.basename(png)}}")
 """
-        else:
-            enhanced_code = code
         
+        print(f"DEBUG: About to run code in sandbox. Enhanced code length: {len(enhanced_code)}")
+        print(f"DEBUG: First 500 chars of enhanced code: {enhanced_code[:500]}")
         result = sandbox.run_code(enhanced_code, timeout=30)
+        print("DEBUG: Sandbox execution completed")
+        print(f"DEBUG: Result type: {type(result)}")
+        print(f"DEBUG: Result has logs: {hasattr(result, 'logs')}")
         
         performance_monitor.record_metric(
             session_id=session_id,
@@ -183,6 +204,10 @@ else:
         stdout_content = '\n'.join(stdout_lines)
         stderr_content = '\n'.join(stderr_lines)
 
+        print(f"DEBUG: stdout_lines count: {len(stdout_lines)}")
+        print(f"DEBUG: Full stdout_content: {stdout_content}")
+        print(f"DEBUG: Full stderr_content: {stderr_content if stderr_content else 'EMPTY'}")
+
         from pathlib import Path
         current_path = Path(__file__).resolve()
         project_root = current_path
@@ -190,17 +215,21 @@ else:
             project_root = project_root.parent
         static_dir = project_root / "static" / "plots"
         static_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"DEBUG: Checking if stdout_content exists: {bool(stdout_content)}")
         if stdout_content:
+            print("DEBUG: Processing stdout content for plot downloads")
             import os
             from pathlib import Path
-            
+
             current_path = Path(__file__).resolve()
             project_root = current_path
             while project_root.name != "Data-Insight" and project_root.parent != project_root:
                 project_root = project_root.parent
-            
+
             static_dir = project_root / "static" / "plots"
             static_dir.mkdir(parents=True, exist_ok=True)
+            print(f"DEBUG: Static dir set to: {static_dir}")
             
             for line in stdout_content.split('\n'):
                 if line.startswith("PLOT_SAVED:"):
@@ -253,7 +282,25 @@ else:
                     pass
 
         clean_stdout = "\n".join([line for line in stdout_lines if not line.startswith("PLOT_SAVED:")])
-        
+
+        # Record final resource usage
+        try:
+            final_memory = process.memory_info().rss / 1024 / 1024  # MB
+            final_cpu = process.cpu_percent()
+            memory_usage = final_memory - initial_memory
+
+            monitor.record_metric(
+                deployment_id=session_id,
+                metric_type=MetricType.MEMORY_USAGE,
+                value=memory_usage,
+                metadata={"code_length": len(code)}
+            )
+
+            if memory_usage > 500:  # MB threshold
+                print(f"HIGH MEMORY USAGE: {memory_usage:.2f} MB")
+        except Exception as monitor_error:
+            print(f"Resource monitoring failed: {monitor_error}")
+
         return {
             "success": True,
             "stdout": clean_stdout,
@@ -262,6 +309,11 @@ else:
             "files": []
         }
     except Exception as e:
+        print(f"DEBUG: Exception in execute_python_in_sandbox: {e}")
+        print(f"DEBUG: Exception type: {type(e)}")
+        import traceback
+        print(f"DEBUG: Traceback: {traceback.format_exc()}")
+
         error_str = str(e)
         if "disconnected" in error_str.lower() or "timeout" in error_str.lower():
             try:

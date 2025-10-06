@@ -605,7 +605,6 @@ class InteractionFeatureGenerator(BaseEstimator, TransformerMixin):
     def fit(self, X: pd.DataFrame, y=None):
         numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
         
-        # Select top interactions based on correlation with target if available
         if y is not None and len(numeric_cols) > 1:
             correlations = []
             for i, col1 in enumerate(numeric_cols):
@@ -615,13 +614,11 @@ class InteractionFeatureGenerator(BaseEstimator, TransformerMixin):
                     if not np.isnan(corr):
                         correlations.append((corr, col1, col2))
             
-            # Sort by correlation and take top interactions
             correlations.sort(reverse=True)
             self.interaction_pairs_ = [
                 (col1, col2) for _, col1, col2 in correlations[:self.max_interactions]
             ]
         else:
-            # Random selection if no target
             import itertools
             pairs = list(itertools.combinations(numeric_cols, 2))
             self.interaction_pairs_ = pairs[:self.max_interactions]
@@ -653,7 +650,6 @@ def create_feature_engineering_config(
     datetime_cols = len(df.select_dtypes(include=['datetime64']).columns)
     memory_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
     
-    # Base configuration based on data size and complexity
     config = {
         'ratio_features': True,
         'statistical_features': True,
@@ -668,19 +664,16 @@ def create_feature_engineering_config(
         'dfs_chunk_size': 5000 if n_samples > 5000 else None
     }
     
-    # Adjust limits based on data size and memory
-    if memory_mb > 100:  # Large dataset
+    if memory_mb > 100:  
         config['max_features'] = min(500, config['max_features'])
         config['memory_limit_mb'] = 1500
-    elif n_samples < 1000:  # Small dataset
+    elif n_samples < 1000:  
         config['max_features'] = min(200, config['max_features'])
         config['interaction_features'] = numeric_cols >= 2
     
-    # Task-specific adjustments
     if task_type == 'classification' and n_samples < 5000:
         config['max_features'] = min(300, config['max_features'])
     
-    # Complexity level adjustments
     if complexity == 'high':
         config['max_features'] = min(2000, config['max_features'])
         config['memory_limit_mb'] = 3000
@@ -693,7 +686,4 @@ def create_feature_engineering_config(
                 f"memory_limit={config['memory_limit_mb']}MB")
     
     return config
-
-
-# Alias for backward compatibility
 AutoFeatureEngineer = AutomatedFeatureEngineer

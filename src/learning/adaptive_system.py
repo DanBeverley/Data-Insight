@@ -90,6 +90,50 @@ class AdaptiveLearningSystem:
             self.meta_db = PersistentMetaDatabase(db_path or "data_insight_meta.db")
         else:
             self.meta_db = None
+
+        # Raw execution data storage
+        self.execution_history: List[Dict[str, Any]] = []
+
+    def capture_execution_data(self, session_id: str, code: str, execution_time: float,
+                             success: bool, output: str, error: str = "", context: Dict[str, Any] = None):
+        """Store raw execution data without classification"""
+        execution_data = {
+            'session_id': session_id,
+            'code': code,
+            'execution_time': execution_time,
+            'success': success,
+            'output': output,
+            'error': error,
+            'timestamp': datetime.now().isoformat(),
+            'context': context or {}
+        }
+
+        self.execution_history.append(execution_data)
+
+        # Keep only recent executions (last 1000)
+        self.execution_history = self.execution_history[-1000:]
+
+        # Also store in knowledge graph for unified access
+        try:
+            import sys, os
+            sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+            from knowledge_graph.service import SessionDataStorage
+            storage = SessionDataStorage()
+            storage.add_execution(execution_data)
+        except Exception as e:
+            print(f"Failed to store execution in knowledge graph: {e}")
+
+    def get_execution_history(self, session_id: str = None, success_only: bool = False) -> List[Dict[str, Any]]:
+        """Get raw execution history data"""
+        history = self.execution_history
+
+        if session_id:
+            history = [ex for ex in history if ex['session_id'] == session_id]
+
+        if success_only:
+            history = [ex for ex in history if ex['success']]
+
+        return history
         
     def monitor_and_adapt(self, current_model, X_new: pd.DataFrame, y_new: pd.Series,
                          task_type: TaskType, algorithm_name: str = "") -> Dict[str, Any]:

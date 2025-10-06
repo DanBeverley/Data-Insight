@@ -8,25 +8,57 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']]
+            },
+            svg: { fontCache: 'global' }
+        };
+    </script>
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css">
 </head>
 <body>
+    <canvas id="bgParticles"></canvas>
+    <div id="blackhole">
+        <div class="centerHover"></div>
+    </div> 
+
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button id="newChatBtn" class="btn-new-chat">
+                <i class="fa-solid fa-plus"></i>
+                <span>New Chat</span>
+            </button>
+        </div>
+        <div class="sidebar-content">
+            <div class="session-list" id="sessionList">
+            </div>
+        </div>
+    </div>
+
     <div id="app">
         <header class="header">
             <div class="header-content">
-                <div class="logo">DataInsight AI</div>
-                <div> 
-                    <button id="themeToggle" class="btn-theme" title="Toggle Theme">
-                        <i class="icon-theme"></i> 
+                <div class="header-left">
+                    <button id="sidebarToggle" class="btn-sidebar-toggle" title="Toggle Sidebar">
+                        <i class="fa-solid fa-bars"></i>
                     </button>
-                    <a href="/static/dashboard.html" id="manualAnalyze" class="btn-header">Manual Mode</a>
+                    <div class="logo">DataInsight AI</div>
+                </div>
+                <div class="header-right">
+                    <button id="themeToggle" class="btn-theme" title="Toggle Theme">
+                        <i class="icon-theme"></i>
+                    </button>
                 </div>
             </div>
         </header>
 
         <main class="main">
-            <canvas id="interactiveCube"></canvas>
             <div class="chat-container">
                 <div class="chat-messages" id="heroChatMessages">
                     <div class="chat-message bot">
@@ -37,13 +69,38 @@
                 </div>
                 <div class="chat-input-area">
                     <input type="file" id="heroFileInput" accept=".csv,.xlsx,.xls" hidden>
-                    <button id="heroUploadBtn" class="btn-input" title="Upload dataset">+</button>
+                    <button id="settingsToggleBtn" class="btn-input" title="Settings">
+                        <i class="fa-solid fa-chevron-down settings-arrow"></i>
+                    </button>
+                    <div id="settingsPanel" class="settings-panel">
+                        <div class="settings-option">
+                            <i class="fa-solid fa-globe settings-icon"></i>
+                            <span>Web Search</span>
+                            <label class="settings-switch">
+                                <input type="checkbox" id="webSearchToggle">
+                                <span class="settings-slider"></span>
+                            </label>
+                        </div>
+                        <div class="settings-option settings-upload" id="heroUploadBtn">
+                            <i class="fa-solid fa-paperclip settings-icon"></i>
+                            <span>Upload Data</span>
+                            <i class="fa-solid fa-upload settings-upload-icon"></i>
+                        </div>
+                    </div>
                     <textarea id="heroChatInput" placeholder="Ask about your data..." rows="1"></textarea>
                     <button id="heroSendMessage" class="btn-input send-btn" title="Send Message"><i class="fa-solid fa-paper-plane"></i></button>
                 </div>
             </div>
         </main>
     </div>
-    <script src="/static/script.js"></script>
+    <script src="static/js/animation-manager.js"></script>
+    <script src="static/js/three-renderer.js"></script>
+    <script src="static/js/blackhole.js"></script>
+    <script src="static/js/api-client.js"></script>
+    <script src="static/js/ui-manager.js"></script>
+    <script src="static/js/chat-interface.js"></script>
+    <script src="static/js/session-manager.js"></script>
+    <script src="static/js/theme-manager.js"></script>
+    <script src="static/js/app.js"></script>
 </body>
 </html>

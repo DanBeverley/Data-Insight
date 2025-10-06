@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import warnings
 from typing import Dict, List, Tuple, Set, Optional
 from scipy import stats
 from scipy.stats import chi2_contingency, pearsonr, spearmanr
@@ -228,8 +229,14 @@ class RelationshipDiscovery:
                 datetime_cols.append(col)
             elif df[col].dtype == 'object':
                 try:
-                    pd.to_datetime(df[col].dropna().iloc[:100])
-                    datetime_cols.append(col)
+                    sample = df[col].dropna().iloc[:100]
+                    if len(sample) > 0:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            parsed = pd.to_datetime(sample, errors='coerce')
+                            valid_ratio = parsed.notna().sum() / len(sample)
+                            if valid_ratio > 0.7:
+                                datetime_cols.append(col)
                 except:
                     continue
         
@@ -243,7 +250,9 @@ class RelationshipDiscovery:
                 try:
                     # Convert to datetime if needed
                     if not pd.api.types.is_datetime64_any_dtype(df[dt_col]):
-                        dt_series = pd.to_datetime(df[dt_col])
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            dt_series = pd.to_datetime(df[dt_col], errors='coerce')
                     else:
                         dt_series = df[dt_col]
                     

@@ -29,6 +29,13 @@ from data_quality.quality_assessor import ContextAwareQualityAssessor
 from data_quality.drift_monitor import ComprehensiveDriftMonitor
 from data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
 
+try:
+    from security.privacy_engine import PrivacyEngine
+    from security.compliance_manager import ComplianceManager
+except ImportError:
+    PrivacyEngine = None
+    ComplianceManager = None
+
 class ProfilerStatus(Enum):
     SUCCESS = "success"
     WARNING = "warning"
@@ -78,7 +85,7 @@ class HybridDataProfiler:
         self.quality_assessor = ContextAwareQualityAssessor()
         self.drift_monitor = ComprehensiveDriftMonitor()
         self.missing_value_intelligence = AdvancedMissingValueIntelligence()
-        
+
         # Profile history for comparison
         self.profile_history: List[DataProfileSummary] = []
         
@@ -144,10 +151,20 @@ class HybridDataProfiler:
                 logging.info("Phase 4: Missing value intelligence analysis...")
                 missing_analysis = self.missing_value_intelligence.analyze_missing_patterns(df)
             
-            # 5. Drift Analysis (if reference provided)
+            # 5. PII Detection & Privacy Assessment
+            pii_detection = None
+            if self.config.get('enable_privacy_analysis', True):
+                logging.info("Phase 5: PII detection and privacy assessment...")
+                try:
+                    privacy_engine = PrivacyEngine()
+                    pii_detection = privacy_engine.assess_privacy_risk(df)
+                except Exception as e:
+                    logging.warning(f"PII detection failed: {e}")
+
+            # 6. Drift Analysis (if reference provided)
             drift_results = []
             if self.config['enable_drift_monitoring'] and reference_df is not None:
-                logging.info("Phase 5: Data drift monitoring...")
+                logging.info("Phase 6: Data drift monitoring...")
                 try:
                     self.drift_monitor.fit_reference(reference_df)
                     drift_results = self.drift_monitor.detect_drift(df)
@@ -201,8 +218,10 @@ class HybridDataProfiler:
                         'quality_assessment': self.config['enable_quality_assessment'],
                         'anomaly_detection': self.config['enable_anomaly_detection'],
                         'missing_analysis': self.config['enable_missing_value_analysis'],
-                        'drift_monitoring': self.config['enable_drift_monitoring'] and reference_df is not None
-                    }
+                        'drift_monitoring': self.config['enable_drift_monitoring'] and reference_df is not None,
+                        'privacy_analysis': self.config.get('enable_privacy_analysis', True)
+                    },
+                    'pii_detection': pii_detection
                 }
             )
             

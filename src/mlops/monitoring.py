@@ -91,7 +91,7 @@ class PerformanceMonitor:
         with open(self.alerts_file, 'w') as f:
             json.dump(alerts_data, f, indent=2, default=str)
     
-    def record_metric(self, deployment_id: str, metric_type: MetricType, 
+    def record_metric(self, deployment_id: str, metric_type: MetricType,
                      value: float, metadata: Optional[Dict[str, Any]] = None):
         
         key = f"{deployment_id}_{metric_type.value}"
@@ -145,6 +145,8 @@ class PerformanceMonitor:
         alert_id = f"{deployment_id}_{metric_type.value}_{int(time.time())}"
         
         message = f"{metric_type.value} threshold exceeded for {deployment_id}: {current_value} > {threshold_value}"
+
+        print(f"⚠️  ALERT [{severity.value.upper()}]: {message}")
         
         alert = Alert(
             alert_id=alert_id,
