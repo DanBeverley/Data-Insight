@@ -1,5 +1,6 @@
 import pytest
 import pandas as pd
+import os
 from pathlib import Path
 from typing import Dict, Any
 
@@ -122,3 +123,31 @@ def sample_graph_state() -> Dict[str, Any]:
         "current_agent": "brain",
         "iteration_count": 1
     }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def configure_ollama_deterministic():
+    os.environ["OLLAMA_SEED"] = "42"
+    os.environ["OLLAMA_TEMPERATURE"] = "0.0"
+    os.environ["OLLAMA_NUM_PREDICT"] = "512"
+    yield
+    os.environ.pop("OLLAMA_SEED", None)
+    os.environ.pop("OLLAMA_TEMPERATURE", None)
+    os.environ.pop("OLLAMA_NUM_PREDICT", None)
+
+
+@pytest.fixture(scope="module")
+def vcr_config():
+    return {
+        "filter_headers": ["authorization", "x-api-key"],
+        "record_mode": "once",
+        "match_on": ["method", "scheme", "host", "port", "path", "query"],
+        "cassette_library_dir": "tests/fixtures/vcr_cassettes"
+    }
+
+
+@pytest.fixture
+def vcr_cassette_dir(fixtures_dir: Path) -> Path:
+    cassette_dir = fixtures_dir / "vcr_cassettes"
+    cassette_dir.mkdir(exist_ok=True)
+    return cassette_dir
