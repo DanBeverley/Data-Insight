@@ -1,0 +1,119 @@
+name: Nightly Test Generation
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  generate-adversarial-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ollama pytest
+
+      - name: Pull Ollama model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama pull qwen2.5:7b
+
+      - name: Generate adversarial scenarios
+        run: |
+          python tests/utils/llm_test_generator.py --mode=adversarial --count=20
+
+      - name: Run generated tests
+        continue-on-error: true
+        run: |
+          pytest tests/e2e/scenarios/generated/ -m generated --maxfail=10 -v
+
+      - name: Upload generated tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-adversarial-tests
+          path: tests/e2e/scenarios/generated/
+
+  generate-coverage-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ollama pytest
+
+      - name: Pull Ollama model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama pull qwen2.5:7b
+
+      - name: Generate coverage scenarios
+        run: |
+          python tests/utils/llm_test_generator.py --mode=coverage --count=30
+
+      - name: Run generated tests
+        continue-on-error: true
+        run: |
+          pytest tests/e2e/scenarios/generated/ -m generated --maxfail=15 -v
+
+      - name: Upload generated tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-coverage-tests
+          path: tests/e2e/scenarios/generated/
+
+  capture-regressions:
+    runs-on: ubuntu-latest
+    needs: [generate-adversarial-tests, generate-coverage-tests]
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: generated-adversarial-tests
+          path: tests/e2e/scenarios/generated/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: generated-coverage-tests
+          path: tests/e2e/scenarios/generated/
+
+      - name: Move failed tests to regression suite
+        run: |
+          mkdir -p tests/e2e/scenarios/regression
+          find tests/e2e/scenarios/generated -name "*.py" -exec mv {} tests/e2e/scenarios/regression/ \;
+
+      - uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "Add LLM-generated regression tests from nightly run"
+          title: "🤖 New regression tests from nightly generation"
+          body: |
+            ## Automated Test Generation
+
+            This PR adds regression tests discovered by the nightly LLM test generator.
+
+            **Tests Generated:**
+            - Adversarial scenarios: 20
+            - Coverage scenarios: 30
+
+            **Action Required:**
+            Review generated tests and merge if valid.
+
+          branch: auto-tests/nightly-${{ github.run_id }}
+          delete-branch: true
