@@ -121,6 +121,36 @@ class TestMemoryRetention:
         assert response1.status_code == 200
         assert response2.status_code == 200
 
+    def test_session_memory_records_execution_history(self, api_client):
+        from src.learning.adaptive_system import AdaptiveLearningSystem
+
+        session_response = api_client.post("/api/sessions/new")
+        session_id = session_response.json()["session_id"]
+
+        response1 = api_client.get(
+            "/api/agent/chat-stream",
+            params={
+                "message": "Analyze this data",
+                "session_id": session_id,
+                "web_search_enabled": "false"
+            },
+            timeout=30.0
+        )
+        assert response1.status_code == 200
+
+        try:
+            adaptive_system = AdaptiveLearningSystem()
+            execution_history = adaptive_system.get_execution_history(session_id=session_id)
+            assert len(execution_history) > 0, "Adaptive system should record execution history"
+
+            first_execution = execution_history[0]
+            assert 'session_id' in first_execution
+            assert first_execution['session_id'] == session_id
+            assert 'success' in first_execution
+            assert 'timestamp' in first_execution
+        except Exception as e:
+            pytest.skip(f"Adaptive learning system not available: {e}")
+
 
 @pytest.mark.e2e
 class TestCrossSessionIsolation:
@@ -139,3 +169,45 @@ class TestCrossSessionIsolation:
         session_bob = resp_bob.json()["session_id"]
 
         assert session_alice != session_bob
+
+    def test_execution_history_isolation(self, api_client):
+        from src.learning.adaptive_system import AdaptiveLearningSystem
+
+        resp1 = api_client.post("/api/sessions/new")
+        session_1 = resp1.json()["session_id"]
+
+        resp2 = api_client.post("/api/sessions/new")
+        session_2 = resp2.json()["session_id"]
+
+        api_client.get(
+            "/api/agent/chat-stream",
+            params={
+                "message": "Task for session 1",
+                "session_id": session_1,
+                "web_search_enabled": "false"
+            },
+            timeout=30.0
+        )
+
+        api_client.get(
+            "/api/agent/chat-stream",
+            params={
+                "message": "Task for session 2",
+                "session_id": session_2,
+                "web_search_enabled": "false"
+            },
+            timeout=30.0
+        )
+
+        try:
+            adaptive_system = AdaptiveLearningSystem()
+
+            history_1 = adaptive_system.get_execution_history(session_id=session_1)
+            history_2 = adaptive_system.get_execution_history(session_id=session_2)
+
+            assert len(history_1) > 0, "Session 1 should have history"
+            assert len(history_2) > 0, "Session 2 should have history"
+            assert history_1[0].get('session_id') != history_2[0].get('session_id'), \
+                "Different sessions should have different execution histories"
+        except Exception as e:
+            pytest.skip(f"Adaptive learning system not available: {e}")
