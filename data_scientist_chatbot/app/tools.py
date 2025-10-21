@@ -3,10 +3,12 @@ import sys
 import uuid
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, TYPE_CHECKING
 from pathlib import Path
-from e2b_code_interpreter import Sandbox
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from e2b_code_interpreter import Sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,9 @@ print(f"DEBUG: tools.py module loaded, using persistent sandboxes: {id(session_s
 performance_monitor = PerformanceMonitor()
 
 
-def get_sandbox(session_id: str) -> Sandbox:
+def get_sandbox(session_id: str) -> "Sandbox":
+    from e2b_code_interpreter import Sandbox
+
     if session_id not in session_sandboxes:
         print(f"DEBUG: Creating new sandbox for session {session_id}")
         sandbox = Sandbox.create(timeout=300)
@@ -65,7 +69,7 @@ def get_sandbox(session_id: str) -> Sandbox:
     return session_sandboxes[session_id]
 
 
-def _reload_dataset_if_available(sandbox: Sandbox, session_id: str):
+def _reload_dataset_if_available(sandbox: "Sandbox", session_id: str):
     """Attempt to reload dataset into sandbox if available in session store"""
     try:
         import builtins
