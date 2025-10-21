@@ -64,11 +64,12 @@ def check_database_schema(database_manager: DatabaseManager) -> dict:
         
         expected_tables = [
             'dataset_characteristics',
-            'project_configs', 
+            'project_configs',
             'pipeline_executions',
             'learning_patterns',
             'execution_feedback',
-            'system_metrics'
+            'system_metrics',
+            'model_registry'
         ]
         
         missing_tables = [table for table in expected_tables if table not in existing_tables]

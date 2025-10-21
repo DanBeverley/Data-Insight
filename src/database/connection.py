@@ -15,8 +15,6 @@ try:
 except ImportError:
     SQLALCHEMY_AVAILABLE = False
 
-from ..config import Config
-
 
 class DatabaseConfig:
     """Database configuration with environment-based settings"""

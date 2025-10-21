@@ -3,6 +3,8 @@
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
+from datetime import datetime
+from sqlalchemy import text
 
 from .connection import DatabaseManager, get_database_manager
 from ..learning.persistent_storage import PipelineExecution, DatasetCharacteristics, ProjectConfig
@@ -80,7 +82,7 @@ class OptimizedDatabaseService:
                 """
                 
                 # Execute UPSERT operations
-                session.execute(dataset_upsert, {
+                session.execute(text(dataset_upsert), {
                     'hash': execution.dataset_characteristics.dataset_hash,
                     'samples': execution.dataset_characteristics.n_samples,
                     'features': execution.dataset_characteristics.n_features,
@@ -100,8 +102,8 @@ class OptimizedDatabaseService:
                     'diversity': execution.dataset_characteristics.feature_diversity_score,
                     'quality': execution.dataset_characteristics.data_quality_score
                 })
-                
-                session.execute(config_upsert, {
+
+                session.execute(text(config_upsert), {
                     'hash': execution.project_config.config_hash,
                     'objective': execution.project_config.objective,
                     'domain': execution.project_config.domain,
@@ -113,8 +115,8 @@ class OptimizedDatabaseService:
                     'privacy': execution.project_config.privacy_level,
                     'compliance': execution.project_config.compliance_requirements
                 })
-                
-                session.execute(execution_insert, {
+
+                session.execute(text(execution_insert), {
                     'exec_id': execution.execution_id,
                     'session': execution.session_id,
                     'dataset_hash': execution.dataset_characteristics.dataset_hash,
@@ -131,7 +133,7 @@ class OptimizedDatabaseService:
                     'errors': execution.error_count,
                     'recovery': execution.recovery_attempts,
                     'timestamp': execution.timestamp,
-                    'metadata': execution.metadata
+                    'metadata': execution.execution_metadata
                 })
                 
                 return True
@@ -146,7 +148,7 @@ class OptimizedDatabaseService:
         try:
             with self.db.get_session() as session:
                 if self.db.config.is_postgresql():
-                    result = session.execute("SELECT * FROM system_learning_summary").fetchone()
+                    result = session.execute(text("SELECT * FROM system_learning_summary")).fetchone()
                     return {
                         'total_executions': result.total_executions,
                         'high_success_executions': result.high_success_executions,
@@ -179,12 +181,12 @@ class OptimizedDatabaseService:
                 query = """
                 SELECT * FROM find_similar_executions(
                     %(samples)s, %(features)s, %(domain)s, %(complexity)s, %(min_success)s, %(limit)s
-                ) ORDER BY 
-                    CASE WHEN user_satisfaction IS NOT NULL THEN user_satisfaction * 0.4 + similarity_score * 0.6 
+                ) ORDER BY
+                    CASE WHEN user_satisfaction IS NOT NULL THEN user_satisfaction * 0.4 + similarity_score * 0.6
                          ELSE similarity_score * 0.8 END DESC
                 """
-                
-                results = session.execute(query, {
+
+                results = session.execute(text(query), {
                     'samples': dataset_chars.n_samples,
                     'features': dataset_chars.n_features,
                     'domain': dataset_chars.domain,
@@ -216,7 +218,7 @@ class OptimizedDatabaseService:
         try:
             with self.db.get_session() as session:
                 if self.db.config.is_postgresql():
-                    results = session.execute("SELECT * FROM domain_performance_analytics").fetchall()
+                    results = session.execute(text("SELECT * FROM domain_performance_analytics")).fetchall()
                     return [
                         {
                             'domain': row.domain,
@@ -243,7 +245,7 @@ class OptimizedDatabaseService:
         try:
             with self.db.get_session() as session:
                 if self.db.config.is_postgresql():
-                    results = session.execute("SELECT * FROM strategy_effectiveness LIMIT 20").fetchall()
+                    results = session.execute(text("SELECT * FROM strategy_effectiveness LIMIT 20")).fetchall()
                     return [
                         {
                             'strategy_applied': row.strategy_applied,
@@ -270,7 +272,7 @@ class OptimizedDatabaseService:
             with self.db.get_session() as session:
                 if self.db.config.is_postgresql():
                     result = session.execute(
-                        "SELECT cleanup_old_executions(%(days)s)", 
+                        text("SELECT cleanup_old_executions(%(days)s)"),
                         {'days': retention_days}
                     ).scalar()
                     return result or 0
@@ -303,13 +305,13 @@ class OptimizedDatabaseService:
         try:
             with self.db.get_session() as session:
                 if self.db.config.is_postgresql():
-                    session.execute("""
-                        UPDATE pipeline_executions 
+                    session.execute(text("""
+                        UPDATE pipeline_executions
                         SET user_satisfaction = :satisfaction, success_rating = :rating
                         WHERE execution_id = :exec_id
-                    """, {
+                    """), {
                         'satisfaction': user_satisfaction,
-                        'rating': success_rating, 
+                        'rating': success_rating,
                         'exec_id': execution_id
                     })
                     return True
@@ -323,6 +325,104 @@ class OptimizedDatabaseService:
     def _update_feedback_sqlite(self, session, execution_id: str, user_satisfaction: float, success_rating: float) -> bool:
         """SQLite fallback for updating feedback"""
         return True
+
+    def insert_model_registry(self, model_data: Dict[str, Any]) -> bool:
+        """Insert model into registry"""
+        try:
+            with self.db.get_session() as session:
+                insert_query = """
+                INSERT INTO model_registry (
+                    model_id, session_id, user_id, dataset_hash, model_type,
+                    hyperparameters, blob_path, blob_url, file_checksum,
+                    file_size_bytes, training_metrics, model_version, framework,
+                    dependencies, is_active, created_at, access_count
+                ) VALUES (
+                    :model_id, :session_id, :user_id, :dataset_hash, :model_type,
+                    :hyperparameters, :blob_path, :blob_url, :file_checksum,
+                    :file_size_bytes, :training_metrics, :model_version, :framework,
+                    :dependencies, :is_active, :created_at, :access_count
+                )
+                """
+                session.execute(text(insert_query), model_data)
+                return True
+        except Exception as e:
+            self.logger.error(f"Model registry insert failed: {e}")
+            return False
+
+    def get_model_by_id(self, model_id: str) -> Optional[Dict[str, Any]]:
+        """Get model by ID"""
+        try:
+            with self.db.get_session() as session:
+                query = "SELECT * FROM model_registry WHERE model_id = :model_id"
+                result = session.execute(text(query), {'model_id': model_id}).fetchone()
+                return dict(result) if result else None
+        except Exception as e:
+            self.logger.error(f"Get model by ID failed: {e}")
+            return None
+
+    def query_models(
+        self,
+        session_id: Optional[str] = None,
+        dataset_hash: Optional[str] = None,
+        model_type: Optional[str] = None,
+        is_active: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Query models by criteria"""
+        try:
+            with self.db.get_session() as session:
+                conditions = ["is_active = :is_active"]
+                params = {'is_active': is_active}
+
+                if session_id:
+                    conditions.append("session_id = :session_id")
+                    params['session_id'] = session_id
+
+                if dataset_hash:
+                    conditions.append("dataset_hash = :dataset_hash")
+                    params['dataset_hash'] = dataset_hash
+
+                if model_type:
+                    conditions.append("model_type = :model_type")
+                    params['model_type'] = model_type
+
+                where_clause = " AND ".join(conditions)
+                query = f"SELECT * FROM model_registry WHERE {where_clause}"
+
+                results = session.execute(text(query), params).fetchall()
+                return [dict(row) for row in results]
+        except Exception as e:
+            self.logger.error(f"Query models failed: {e}")
+            return []
+
+    def increment_model_access(self, model_id: str) -> bool:
+        """Increment model access count and update timestamp"""
+        try:
+            with self.db.get_session() as session:
+                query = """
+                UPDATE model_registry
+                SET access_count = access_count + 1,
+                    accessed_at = :now
+                WHERE model_id = :model_id
+                """
+                session.execute(text(query), {
+                    'model_id': model_id,
+                    'now': datetime.utcnow()
+                })
+                return True
+        except Exception as e:
+            self.logger.error(f"Increment model access failed: {e}")
+            return False
+
+    def update_model_status(self, model_id: str, is_active: bool) -> bool:
+        """Update model active status"""
+        try:
+            with self.db.get_session() as session:
+                query = "UPDATE model_registry SET is_active = :is_active WHERE model_id = :model_id"
+                session.execute(text(query), {'model_id': model_id, 'is_active': is_active})
+                return True
+        except Exception as e:
+            self.logger.error(f"Update model status failed: {e}")
+            return False
 
 
 def get_database_service() -> OptimizedDatabaseService:

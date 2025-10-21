@@ -124,7 +124,7 @@ if SQLALCHEMY_AVAILABLE:
         error_count = Column(Integer, default=0)
         recovery_attempts = Column(Integer, default=0)
         timestamp = Column(DateTime, nullable=False)
-        metadata = Column(JSONType, default=dict)
+        execution_metadata = Column(JSONType, default=dict)
         created_at = Column(DateTime, default=datetime.utcnow)
         
         # Relationships
@@ -192,13 +192,13 @@ if SQLALCHEMY_AVAILABLE:
     class SystemMetrics(Base):
         """System performance and health metrics"""
         __tablename__ = 'system_metrics'
-        
+
         metric_id = Column(String(100), primary_key=True)
         metric_type = Column(String(50), nullable=False)
         metric_value = Column(Float, nullable=False)
         metric_metadata = Column(JSONType, default=dict)
         timestamp = Column(DateTime, default=datetime.utcnow)
-        
+
         # Indexes
         __table_args__ = (
             Index('idx_metrics_type', 'metric_type'),
@@ -206,25 +206,62 @@ if SQLALCHEMY_AVAILABLE:
             Index('idx_metrics_type_time', 'metric_type', 'timestamp'),
         )
 
+
+    class ModelRegistry(Base):
+        """Registry for trained models stored in object storage"""
+        __tablename__ = 'model_registry'
+
+        model_id = Column(String(100), primary_key=True)
+        session_id = Column(String(100), nullable=False)
+        user_id = Column(String(100), nullable=True)
+        dataset_hash = Column(String(64), nullable=False)
+        model_type = Column(String(100), nullable=False)
+        hyperparameters = Column(JSONType, default=dict)
+        blob_path = Column(String(500), nullable=False)
+        blob_url = Column(String(1000), nullable=False)
+        file_checksum = Column(String(64), nullable=False)
+        file_size_bytes = Column(Integer, nullable=False)
+        training_metrics = Column(JSONType, default=dict)
+        model_version = Column(Integer, default=1)
+        framework = Column(String(50), nullable=True)
+        dependencies = Column(JSONType, default=list)
+        is_active = Column(Boolean, default=True)
+        created_at = Column(DateTime, default=datetime.utcnow)
+        accessed_at = Column(DateTime, nullable=True)
+        access_count = Column(Integer, default=0)
+
+        # Indexes
+        __table_args__ = (
+            Index('idx_model_session', 'session_id'),
+            Index('idx_model_user', 'user_id'),
+            Index('idx_model_dataset', 'dataset_hash'),
+            Index('idx_model_type', 'model_type'),
+            Index('idx_model_active', 'is_active'),
+            Index('idx_model_lookup', 'session_id', 'dataset_hash', 'model_type'),
+        )
+
 else:
     # Fallback classes when SQLAlchemy is not available
     class Base:
         pass
-    
+
     class DatasetCharacteristics:
         pass
-    
+
     class ProjectConfig:
         pass
-    
+
     class PipelineExecution:
         pass
-    
+
     class LearningPattern:
         pass
-    
+
     class ExecutionFeedback:
         pass
-    
+
     class SystemMetrics:
+        pass
+
+    class ModelRegistry:
         pass
