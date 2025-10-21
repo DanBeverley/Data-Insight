@@ -181,8 +181,13 @@ async def get_session_messages(session_id: str):
             )
             row = cursor.fetchone()
             if row:
-                checkpoint_data = pickle.loads(row[0])
-                logger.info(f"Checkpoint data keys: {checkpoint_data.keys()}")
+                try:
+                    checkpoint_data = pickle.loads(row[0])
+                    logger.info(f"Checkpoint data keys: {checkpoint_data.keys()}")
+                except Exception as pickle_error:
+                    logger.error(f"Failed to unpickle checkpoint for session {session_id}: {pickle_error}")
+                    logger.info(f"Checkpoint data type: {type(row[0])}, length: {len(row[0]) if row[0] else 0}")
+                    return messages
                 if 'channel_values' in checkpoint_data and 'messages' in checkpoint_data['channel_values']:
                     msg_count = len(checkpoint_data['channel_values']['messages'])
                     logger.info(f"Found {msg_count} messages in checkpoint for session {session_id}")
