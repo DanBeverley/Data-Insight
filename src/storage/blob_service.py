@@ -10,6 +10,7 @@ import logging
 try:
     from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
     from azure.identity import DefaultAzureCredential
+
     AZURE_AVAILABLE = True
 except ImportError:
     AZURE_AVAILABLE = False
@@ -24,13 +25,13 @@ class BlobStorageService:
         self,
         account_name: Optional[str] = None,
         account_key: Optional[str] = None,
-        container_name: str = "datainsight-models"
+        container_name: str = "datainsight-models",
     ):
         if not AZURE_AVAILABLE:
             raise ImportError("azure-storage-blob not installed. Run: pip install azure-storage-blob azure-identity")
 
         self.account_name = account_name or os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
-        self.account_key = account_key or  os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+        self.account_key = account_key or os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
         self.container_name = container_name
 
         if not self.account_name:
@@ -60,10 +61,7 @@ class BlobStorageService:
                 raise
 
     def upload_file(
-        self,
-        local_path: Path,
-        blob_path: str,
-        metadata: Optional[Dict[str, str]] = None
+        self, local_path: Path, blob_path: str, metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
         Upload file to blob storage with SHA256 checksum
@@ -83,20 +81,14 @@ class BlobStorageService:
         file_size = local_path.stat().st_size
 
         upload_metadata = metadata or {}
-        upload_metadata.update({
-            "sha256": checksum,
-            "uploaded_at": datetime.utcnow().isoformat(),
-            "original_name": local_path.name
-        })
+        upload_metadata.update(
+            {"sha256": checksum, "uploaded_at": datetime.utcnow().isoformat(), "original_name": local_path.name}
+        )
 
         blob_client = self.container_client.get_blob_client(blob_path)
 
         with open(local_path, "rb") as data:
-            blob_client.upload_blob(
-                data,
-                overwrite=True,
-                metadata=upload_metadata
-            )
+            blob_client.upload_blob(data, overwrite=True, metadata=upload_metadata)
 
         logger.info(f"Uploaded {local_path.name} to {blob_path} (SHA256: {checksum[:8]}...)")
 
@@ -105,15 +97,10 @@ class BlobStorageService:
             "blob_url": blob_client.url,
             "checksum": checksum,
             "size_bytes": file_size,
-            "uploaded_at": upload_metadata["uploaded_at"]
+            "uploaded_at": upload_metadata["uploaded_at"],
         }
 
-    def download_file(
-        self,
-        blob_path: str,
-        local_path: Path,
-        verify_checksum: bool = True
-    ) -> Dict[str, Any]:
+    def download_file(self, blob_path: str, local_path: Path, verify_checksum: bool = True) -> Dict[str, Any]:
         """
         Download file from blob storage with optional checksum verification
 
@@ -136,11 +123,7 @@ class BlobStorageService:
             download_stream = blob_client.download_blob()
             download_file.write(download_stream.readall())
 
-        result = {
-            "blob_path": blob_path,
-            "local_path": str(local_path),
-            "size_bytes": local_path.stat().st_size
-        }
+        result = {"blob_path": blob_path, "local_path": str(local_path), "size_bytes": local_path.stat().st_size}
 
         if verify_checksum:
             properties = blob_client.get_blob_properties()
@@ -148,11 +131,13 @@ class BlobStorageService:
 
             if expected_checksum:
                 actual_checksum = self._compute_sha256(local_path)
-                checksum_match = (actual_checksum == expected_checksum)
+                checksum_match = actual_checksum == expected_checksum
                 result["checksum_verified"] = checksum_match
 
                 if not checksum_match:
-                    logger.error(f"Checksum mismatch for {blob_path}: expected {expected_checksum[:8]}..., got {actual_checksum[:8]}...")
+                    logger.error(
+                        f"Checksum mismatch for {blob_path}: expected {expected_checksum[:8]}..., got {actual_checksum[:8]}..."
+                    )
                     raise ValueError("Checksum verification failed")
 
                 logger.info(f"Downloaded {blob_path} with verified checksum")
@@ -162,12 +147,7 @@ class BlobStorageService:
 
         return result
 
-    def get_presigned_url(
-        self,
-        blob_path: str,
-        expiry_hours: int = 24,
-        permissions: str = "r"
-    ) -> str:
+    def get_presigned_url(self, blob_path: str, expiry_hours: int = 24, permissions: str = "r") -> str:
         """
         Generate pre-signed SAS URL for temporary access
 
@@ -185,7 +165,7 @@ class BlobStorageService:
         blob_client = self.container_client.get_blob_client(blob_path)
 
         sas_permissions = BlobSasPermissions(read=True)
-        if 'w' in permissions:
+        if "w" in permissions:
             sas_permissions.write = True
 
         sas_token = generate_blob_sas(
@@ -194,7 +174,7 @@ class BlobStorageService:
             blob_name=blob_path,
             account_key=self.account_key,
             permission=sas_permissions,
-            expiry=datetime.utcnow() + timedelta(hours=expiry_hours)
+            expiry=datetime.utcnow() + timedelta(hours=expiry_hours),
         )
 
         return f"{blob_client.url}?{sas_token}"
@@ -214,7 +194,7 @@ class BlobStorageService:
             "size_bytes": properties.size,
             "content_type": properties.content_settings.content_type,
             "last_modified": properties.last_modified.isoformat(),
-            "metadata": properties.metadata
+            "metadata": properties.metadata,
         }
 
     @staticmethod

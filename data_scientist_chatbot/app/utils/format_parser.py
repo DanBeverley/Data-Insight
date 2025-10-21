@@ -1,4 +1,5 @@
 """Natural language parser for model save format extraction"""
+
 import re
 from typing import Optional
 
@@ -11,46 +12,46 @@ class FormatParser:
 
     def __init__(self):
         self.format_patterns = {
-            'onnx': [
-                r'\bonnx\b',
-                r'save\s+as\s+onnx',
-                r'export\s+to\s+onnx',
-                r'in\s+onnx\s+format',
+            "onnx": [
+                r"\bonnx\b",
+                r"save\s+as\s+onnx",
+                r"export\s+to\s+onnx",
+                r"in\s+onnx\s+format",
             ],
-            'joblib': [
-                r'\bjoblib\b',
-                r'save\s+with\s+joblib',
-                r'\.joblib\b',
+            "joblib": [
+                r"\bjoblib\b",
+                r"save\s+with\s+joblib",
+                r"\.joblib\b",
             ],
-            'pickle': [
-                r'\bpickle\b',
-                r'\bpkl\b',
-                r'save\s+as\s+pickle',
-                r'\.pkl\b',
+            "pickle": [
+                r"\bpickle\b",
+                r"\bpkl\b",
+                r"save\s+as\s+pickle",
+                r"\.pkl\b",
             ],
-            'pytorch': [
-                r'\bpytorch\b',
-                r'\btorch\b',
-                r'\.pt\b',
-                r'\.pth\b',
-                r'pytorch\s+format',
+            "pytorch": [
+                r"\bpytorch\b",
+                r"\btorch\b",
+                r"\.pt\b",
+                r"\.pth\b",
+                r"pytorch\s+format",
             ],
-            'h5': [
-                r'\bh5\b',
-                r'\bhdf5\b',
-                r'\.h5\b',
-                r'keras\s+format',
+            "h5": [
+                r"\bh5\b",
+                r"\bhdf5\b",
+                r"\.h5\b",
+                r"keras\s+format",
             ],
-            'savedmodel': [
-                r'\bsavedmodel\b',
-                r'saved_model',
-                r'tensorflow\s+savedmodel',
-                r'save\s+as\s+savedmodel',
+            "savedmodel": [
+                r"\bsavedmodel\b",
+                r"saved_model",
+                r"tensorflow\s+savedmodel",
+                r"save\s+as\s+savedmodel",
             ],
-            'json': [
-                r'xgboost.*json',
-                r'save\s+as\s+json',
-                r'\.json\b',
+            "json": [
+                r"xgboost.*json",
+                r"save\s+as\s+json",
+                r"\.json\b",
             ],
         }
 
@@ -114,12 +115,12 @@ class FormatParser:
             # save_format: onnx
             # Save as joblib
         """
-        comment_lines = [line for line in code.split('\n') if line.strip().startswith('#')]
+        comment_lines = [line for line in code.split("\n") if line.strip().startswith("#")]
 
         for line in comment_lines:
             line_lower = line.lower()
 
-            if 'format' in line_lower or 'save' in line_lower:
+            if "format" in line_lower or "save" in line_lower:
                 for format_name, patterns in self.format_patterns.items():
                     for pattern in patterns:
                         if re.search(pattern, line_lower):

@@ -8,6 +8,7 @@ import io
 @pytest.fixture(scope="module")
 def api_client():
     from src.api import app
+
     return TestClient(app)
 
 
@@ -32,9 +33,7 @@ class TestAPIContracts:
         csv_bytes = csv_buffer.getvalue().encode()
 
         response = api_client.post(
-            "/api/upload",
-            files={"file": ("test.csv", csv_bytes, "text/csv")},
-            data={"session_id": session_id}
+            "/api/upload", files={"file": ("test.csv", csv_bytes, "text/csv")}, data={"session_id": session_id}
         )
 
         assert response.status_code == 200
@@ -53,9 +52,7 @@ class TestAPIContracts:
         csv_bytes = csv_buffer.getvalue().encode()
 
         api_client.post(
-            "/api/upload",
-            files={"file": ("test.csv", csv_bytes, "text/csv")},
-            data={"session_id": session_id}
+            "/api/upload", files={"file": ("test.csv", csv_bytes, "text/csv")}, data={"session_id": session_id}
         )
 
         response = api_client.get(f"/api/data/{session_id}/profile")
@@ -75,9 +72,7 @@ class TestAPIContracts:
         csv_bytes = csv_buffer.getvalue().encode()
 
         api_client.post(
-            "/api/upload",
-            files={"file": ("test.csv", csv_bytes, "text/csv")},
-            data={"session_id": session_id}
+            "/api/upload", files={"file": ("test.csv", csv_bytes, "text/csv")}, data={"session_id": session_id}
         )
 
         response = api_client.get(
@@ -85,9 +80,9 @@ class TestAPIContracts:
             params={
                 "message": "What are the columns in the dataset?",
                 "session_id": session_id,
-                "web_search_enabled": "false"
+                "web_search_enabled": "false",
             },
-            timeout=60.0
+            timeout=60.0,
         )
 
         assert response.status_code == 200
@@ -104,8 +99,8 @@ class TestAPIContracts:
             params={
                 "message": "test",
                 "session_id": "invalid_session_does_not_exist_xyz",
-                "web_search_enabled": "false"
-            }
+                "web_search_enabled": "false",
+            },
         )
 
         assert response.status_code in [400, 404, 500]
@@ -134,10 +129,7 @@ class TestAPIValidation:
         pd.DataFrame({"a": [1, 2, 3]}).to_csv(csv_buffer, index=False)
         csv_bytes = csv_buffer.getvalue().encode()
 
-        response = api_client.post(
-            "/api/upload",
-            files={"file": ("test.csv", csv_bytes, "text/csv")}
-        )
+        response = api_client.post("/api/upload", files={"file": ("test.csv", csv_bytes, "text/csv")})
 
         assert response.status_code in [400, 422]
 

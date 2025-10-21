@@ -9,7 +9,7 @@ class TestDatabaseFailures:
     def test_database_connection_loss(self, sample_session_id: str):
         from src.database.connection import get_db_connection
 
-        with patch('psycopg2.connect') as mock_connect:
+        with patch("psycopg2.connect") as mock_connect:
             mock_connect.side_effect = psycopg2.OperationalError("connection lost")
 
             with pytest.raises(Exception):
@@ -18,7 +18,7 @@ class TestDatabaseFailures:
     def test_database_query_timeout(self, sample_session_id: str):
         from src.database.service import get_session_data
 
-        with patch('src.database.connection.get_db_connection') as mock_conn:
+        with patch("src.database.connection.get_db_connection") as mock_conn:
             mock_cursor = mock_conn.return_value.cursor.return_value
             mock_cursor.execute.side_effect = psycopg2.extensions.QueryCanceledError("query timeout")
 
@@ -28,10 +28,11 @@ class TestDatabaseFailures:
     def test_database_deadlock_recovery(self, sample_session_id: str):
         from src.database.service import save_session_data
 
-        with patch('src.database.connection.get_db_connection') as mock_conn:
+        with patch("src.database.connection.get_db_connection") as mock_conn:
             mock_cursor = mock_conn.return_value.cursor.return_value
 
             attempt_count = [0]
+
             def deadlock_then_success(*args, **kwargs):
                 attempt_count[0] += 1
                 if attempt_count[0] == 1:
@@ -48,7 +49,7 @@ class TestDatabaseFailures:
     def test_database_disk_full(self, sample_session_id: str):
         from src.database.service import save_session_data
 
-        with patch('src.database.connection.get_db_connection') as mock_conn:
+        with patch("src.database.connection.get_db_connection") as mock_conn:
             mock_cursor = mock_conn.return_value.cursor.return_value
             mock_cursor.execute.side_effect = psycopg2.OperationalError("disk full")
 
@@ -60,7 +61,7 @@ class TestDatabaseFailures:
     def test_database_transaction_rollback(self, sample_session_id: str):
         from src.database.service import save_session_data
 
-        with patch('src.database.connection.get_db_connection') as mock_conn:
+        with patch("src.database.connection.get_db_connection") as mock_conn:
             mock_conn_obj = mock_conn.return_value
             mock_cursor = mock_conn_obj.cursor.return_value
             mock_cursor.execute.side_effect = Exception("transaction error")

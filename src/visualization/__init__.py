@@ -7,9 +7,4 @@ capabilities for the DataInsight AI platform.
 
 from .data_explorer import IntelligentDataExplorer, VisualizationRequest, VisualizationResult, ChartType
 
-__all__ = ['IntelligentDataExplorer', 'VisualizationRequest', 'VisualizationResult', 'ChartType']
-
-
-
-
-
+__all__ = ["IntelligentDataExplorer", "VisualizationRequest", "VisualizationResult", "ChartType"]

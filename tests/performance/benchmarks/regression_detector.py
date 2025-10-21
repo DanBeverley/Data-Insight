@@ -33,12 +33,14 @@ class PerformanceRegressionDetector:
                 change = (current_value - baseline_value) / baseline_value
 
                 if change > self.threshold:
-                    regressions.append({
-                        "metric": metric,
-                        "baseline": baseline_value,
-                        "current": current_value,
-                        "change_pct": change * 100
-                    })
+                    regressions.append(
+                        {
+                            "metric": metric,
+                            "baseline": baseline_value,
+                            "current": current_value,
+                            "change_pct": change * 100,
+                        }
+                    )
 
         if regressions:
             print("⚠️  Performance Regressions Detected:")

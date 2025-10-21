@@ -9,7 +9,7 @@ class DataAnalysisFlowScenario(BaseScenario):
     def __init__(self, api_client, test_dataset: pd.DataFrame):
         super().__init__(
             name="Data Analysis Flow",
-            description="Complete user journey: Upload CSV → Profile data → Analyze correlation → Generate visualization"
+            description="Complete user journey: Upload CSV → Profile data → Analyze correlation → Generate visualization",
         )
         self.api_client = api_client
         self.test_dataset = test_dataset
@@ -24,36 +24,21 @@ class DataAnalysisFlowScenario(BaseScenario):
 
     def define_steps(self) -> list[ScenarioStep]:
         return [
-            ScenarioStep(
-                name="Create Session",
-                action="create_session",
-                expected_outcome="session_id",
-                timeout=10
-            ),
-            ScenarioStep(
-                name="Upload Dataset",
-                action="upload_csv",
-                expected_outcome="success",
-                timeout=30
-            ),
-            ScenarioStep(
-                name="Profile Dataset",
-                action="profile_data",
-                expected_outcome="column_profiles",
-                timeout=30
-            ),
+            ScenarioStep(name="Create Session", action="create_session", expected_outcome="session_id", timeout=10),
+            ScenarioStep(name="Upload Dataset", action="upload_csv", expected_outcome="success", timeout=30),
+            ScenarioStep(name="Profile Dataset", action="profile_data", expected_outcome="column_profiles", timeout=30),
             ScenarioStep(
                 name="Chat - Request Correlation Analysis",
                 action="chat_correlation",
                 expected_outcome="correlation",
-                timeout=60
+                timeout=60,
             ),
             ScenarioStep(
                 name="Verify Analysis Results",
                 action="verify_results",
                 expected_outcome="correlation_value",
-                timeout=10
-            )
+                timeout=10,
+            ),
         ]
 
     def _execute_step(self, step: ScenarioStep) -> bool:
@@ -111,9 +96,9 @@ class DataAnalysisFlowScenario(BaseScenario):
                 params={
                     "message": "What are the columns in the dataset?",
                     "session_id": self.session_id,
-                    "web_search_enabled": "false"
+                    "web_search_enabled": "false",
                 },
-                timeout=60.0
+                timeout=60.0,
             )
 
             if response.status_code == 200:
@@ -141,6 +126,7 @@ class TestDataAnalysisFlow:
     def api_client(self):
         from fastapi.testclient import TestClient
         from src.api import app
+
         return TestClient(app)
 
     @pytest.mark.slow
@@ -158,7 +144,7 @@ class TestDataAnalysisFlow:
         steps = [
             ScenarioStep("Create Session", "create_session", "session_id"),
             ScenarioStep("Upload Dataset", "upload_csv", "success"),
-            ScenarioStep("Profile Dataset", "profile_data", "column_profiles")
+            ScenarioStep("Profile Dataset", "profile_data", "column_profiles"),
         ]
 
         scenario.steps = steps

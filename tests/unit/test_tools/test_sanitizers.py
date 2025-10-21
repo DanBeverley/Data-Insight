@@ -90,7 +90,7 @@ class TestOutputSanitization:
 
         Line 2"""
         result = sanitize_output(output)
-        assert result.count('\n\n\n') == 0
+        assert result.count("\n\n\n") == 0
 
     def test_sanitize_preserves_important_technical_content(self):
         output = """The analysis completed with the following results:

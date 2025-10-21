@@ -1,4 +1,5 @@
 """LLM-driven task complexity analysis for intelligent routing"""
+
 from typing import Dict, Any
 from dataclasses import dataclass
 import json
@@ -7,12 +8,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ComplexityAssessment:
     score: int
     reasoning: str
     route_strategy: str
     needs_planning: bool
+
 
 class ComplexityAnalyzer:
     def __init__(self, llm):
@@ -21,8 +24,8 @@ class ComplexityAnalyzer:
     def analyze(self, user_request: str, session_context: Dict[str, Any]) -> ComplexityAssessment:
         """Assess task complexity and determine optimal routing strategy"""
 
-        has_dataset = session_context.get('has_dataset', False)
-        previous_artifacts = session_context.get('artifact_count', 0)
+        has_dataset = session_context.get("has_dataset", False)
+        previous_artifacts = session_context.get("artifact_count", 0)
 
         prompt = f"""Analyze the complexity of this data science request:
 
@@ -52,15 +55,15 @@ class ComplexityAnalyzer:
 
         try:
             response = self.llm.invoke([("human", prompt)])
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = response.content if hasattr(response, "content") else str(response)
 
             assessment_data = self._parse_response(content)
 
             return ComplexityAssessment(
-                score=assessment_data['complexity'],
-                reasoning=assessment_data['reasoning'],
-                route_strategy=assessment_data['route'],
-                needs_planning=assessment_data['complexity'] >= 8
+                score=assessment_data["complexity"],
+                reasoning=assessment_data["reasoning"],
+                route_strategy=assessment_data["route"],
+                needs_planning=assessment_data["complexity"] >= 8,
             )
         except Exception as e:
             logger.warning(f"Complexity analysis failed: {e}, defaulting to standard")
@@ -68,32 +71,33 @@ class ComplexityAnalyzer:
                 score=5,
                 reasoning="Default: complexity analysis unavailable",
                 route_strategy="standard",
-                needs_planning=False
+                needs_planning=False,
             )
 
     def _parse_response(self, content: str) -> Dict[str, Any]:
         """Extract JSON from LLM response"""
 
-        json_match = re.search(r'\{[^}]+\}', content)
+        json_match = re.search(r"\{[^}]+\}", content)
         if json_match:
             try:
                 data = json.loads(json_match.group(0))
 
-                if 'complexity' in data and 'route' in data:
+                if "complexity" in data and "route" in data:
                     return {
-                        'complexity': int(data['complexity']),
-                        'reasoning': data.get('reasoning', 'No reasoning provided'),
-                        'route': data['route']
+                        "complexity": int(data["complexity"]),
+                        "reasoning": data.get("reasoning", "No reasoning provided"),
+                        "route": data["route"],
                     }
             except (json.JSONDecodeError, ValueError):
                 pass
 
-        if any(kw in content.lower() for kw in ['simple', 'trivial', 'direct']):
-            return {'complexity': 2, 'reasoning': 'Simple task detected', 'route': 'direct'}
-        elif any(kw in content.lower() for kw in ['complex', 'multi-step', 'planning']):
-            return {'complexity': 8, 'reasoning': 'Complex task detected', 'route': 'collaborative'}
+        if any(kw in content.lower() for kw in ["simple", "trivial", "direct"]):
+            return {"complexity": 2, "reasoning": "Simple task detected", "route": "direct"}
+        elif any(kw in content.lower() for kw in ["complex", "multi-step", "planning"]):
+            return {"complexity": 8, "reasoning": "Complex task detected", "route": "collaborative"}
         else:
-            return {'complexity': 5, 'reasoning': 'Standard task', 'route': 'standard'}
+            return {"complexity": 5, "reasoning": "Standard task", "route": "standard"}
+
 
 def create_complexity_analyzer(llm) -> ComplexityAnalyzer:
     return ComplexityAnalyzer(llm)

@@ -9,17 +9,20 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
+
 def get_session_db():
     db_path = Path("sessions_metadata.db")
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
             title TEXT,
             created_at TEXT,
             last_updated TEXT
         )
-    """)
+    """
+    )
     conn.commit()
     return conn
 
@@ -32,7 +35,9 @@ async def get_sessions():
     db_conn = get_session_db()
 
     try:
-        cursor = db_conn.execute("SELECT session_id, title, created_at, last_updated FROM sessions ORDER BY created_at DESC")
+        cursor = db_conn.execute(
+            "SELECT session_id, title, created_at, last_updated FROM sessions ORDER BY created_at DESC"
+        )
         db_sessions = cursor.fetchall()
 
         for row in db_sessions:
@@ -43,14 +48,12 @@ async def get_sessions():
             if session_id not in session_store:
                 session_store[session_id] = {
                     "session_id": session_id,
-                    "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now()
+                    "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now(),
                 }
 
-            sessions.append({
-                "id": session_id,
-                "title": title or "New Chat",
-                "created_at": created_at or datetime.now().isoformat()
-            })
+            sessions.append(
+                {"id": session_id, "title": title or "New Chat", "created_at": created_at or datetime.now().isoformat()}
+            )
     except Exception as e:
         logger.error(f"Failed to load sessions from database: {e}")
     finally:
@@ -67,16 +70,13 @@ async def create_new_session():
     new_session_id = str(uuid.uuid4())
     created_at = datetime.now()
 
-    session_store[new_session_id] = {
-        "session_id": new_session_id,
-        "created_at": created_at
-    }
+    session_store[new_session_id] = {"session_id": new_session_id, "created_at": created_at}
 
     db_conn = get_session_db()
     try:
         db_conn.execute(
             "INSERT INTO sessions (session_id, title, created_at, last_updated) VALUES (?, ?, ?, ?)",
-            (new_session_id, "New Chat", created_at.isoformat(), created_at.isoformat())
+            (new_session_id, "New Chat", created_at.isoformat(), created_at.isoformat()),
         )
         db_conn.commit()
         logger.info(f"Created new session: {new_session_id}")
@@ -126,7 +126,7 @@ async def rename_session(session_id: str, request: dict):
         try:
             db_conn.execute(
                 "UPDATE sessions SET title = ?, last_updated = ? WHERE session_id = ?",
-                (new_title, datetime.now().isoformat(), session_id)
+                (new_title, datetime.now().isoformat(), session_id),
             )
             db_conn.commit()
             logger.info(f"Renamed session {session_id} to '{new_title}'")
@@ -148,16 +148,13 @@ async def get_session_messages(session_id: str):
     if session_id not in session_store:
         db_conn = get_session_db()
         try:
-            cursor = db_conn.execute(
-                "SELECT session_id, created_at FROM sessions WHERE session_id = ?",
-                (session_id,)
-            )
+            cursor = db_conn.execute("SELECT session_id, created_at FROM sessions WHERE session_id = ?", (session_id,))
             row = cursor.fetchone()
             if row:
                 session_id_db, created_at = row
                 session_store[session_id] = {
                     "session_id": session_id_db,
-                    "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now()
+                    "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now(),
                 }
                 logger.info(f"Restored session {session_id} to session_store from database")
             else:
@@ -174,10 +171,11 @@ async def get_session_messages(session_id: str):
 
     try:
         from data_scientist_chatbot.app.core.graph_builder import memory
+
         if memory:
             cursor = memory.conn.execute(
                 "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
-                (session_id,)
+                (session_id,),
             )
             row = cursor.fetchone()
             if row:
@@ -188,16 +186,14 @@ async def get_session_messages(session_id: str):
                     logger.error(f"Failed to unpickle checkpoint for session {session_id}: {pickle_error}")
                     logger.info(f"Checkpoint data type: {type(row[0])}, length: {len(row[0]) if row[0] else 0}")
                     return messages
-                if 'channel_values' in checkpoint_data and 'messages' in checkpoint_data['channel_values']:
-                    msg_count = len(checkpoint_data['channel_values']['messages'])
+                if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
+                    msg_count = len(checkpoint_data["channel_values"]["messages"])
                     logger.info(f"Found {msg_count} messages in checkpoint for session {session_id}")
-                    for msg in checkpoint_data['channel_values']['messages']:
-                        if hasattr(msg, 'type') and msg.type in ['human', 'ai']:
-                            messages.append({
-                                "type": msg.type,
-                                "content": str(msg.content),
-                                "timestamp": datetime.now().isoformat()
-                            })
+                    for msg in checkpoint_data["channel_values"]["messages"]:
+                        if hasattr(msg, "type") and msg.type in ["human", "ai"]:
+                            messages.append(
+                                {"type": msg.type, "content": str(msg.content), "timestamp": datetime.now().isoformat()}
+                            )
                     logger.info(f"Returning {len(messages)} messages for session {session_id}")
                 else:
                     logger.warning(f"No messages found in checkpoint for session {session_id}")

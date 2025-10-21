@@ -8,7 +8,7 @@ class ToolDelegationScenario(BaseScenario):
     def __init__(self):
         super().__init__(
             name="Tool Delegation Flow",
-            description="Tests agent's ability to delegate tasks across brain→hands→tools chain"
+            description="Tests agent's ability to delegate tasks across brain→hands→tools chain",
         )
         self.session_id = None
         self.dataset_uploaded = False
@@ -16,6 +16,7 @@ class ToolDelegationScenario(BaseScenario):
 
     def setup(self) -> None:
         from src.api_utils.session_management import create_new_session
+
         self.session_id = create_new_session()["session_id"]
 
     def define_steps(self) -> List[ScenarioStep]:
@@ -24,26 +25,21 @@ class ToolDelegationScenario(BaseScenario):
                 name="Upload dataset",
                 action="upload_housing_data",
                 expected_outcome="dataset uploaded successfully",
-                timeout=30
+                timeout=30,
             ),
             ScenarioStep(
                 name="Request correlation analysis",
                 action="ask_correlation_price_area",
                 expected_outcome="correlation",
-                timeout=60
+                timeout=60,
             ),
-            ScenarioStep(
-                name="Request visualization",
-                action="ask_for_heatmap",
-                expected_outcome="plot",
-                timeout=60
-            ),
+            ScenarioStep(name="Request visualization", action="ask_for_heatmap", expected_outcome="plot", timeout=60),
             ScenarioStep(
                 name="Follow-up with derived insight",
                 action="ask_which_feature_strongest",
                 expected_outcome="area",
-                timeout=45
-            )
+                timeout=45,
+            ),
         ]
 
     def _execute_step(self, step: ScenarioStep) -> bool:
@@ -109,7 +105,9 @@ class ToolDelegationScenario(BaseScenario):
 
         try:
             response = ""
-            for chunk in stream_agent_response("Which feature has the strongest correlation with price?", self.session_id, False):
+            for chunk in stream_agent_response(
+                "Which feature has the strongest correlation with price?", self.session_id, False
+            ):
                 if "content" in chunk:
                     response += chunk["content"]
 
@@ -121,6 +119,7 @@ class ToolDelegationScenario(BaseScenario):
     def teardown(self) -> None:
         if self.session_id:
             from src.api_utils.session_management import clear_session
+
             try:
                 clear_session(self.session_id)
             except:

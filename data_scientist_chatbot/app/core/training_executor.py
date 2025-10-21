@@ -1,4 +1,5 @@
 """Unified training executor with CPU/GPU routing"""
+
 import sys
 import os
 from typing import Dict, Any, Optional, List
@@ -10,7 +11,8 @@ try:
     from ..utils.format_parser import extract_format_from_request
 except ImportError:
     from training_decision import TrainingDecisionEngine
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'utils'))
+
+    sys.path.append(os.path.join(os.path.dirname(__file__), "..", "utils"))
     from format_parser import extract_format_from_request
 
 
@@ -23,11 +25,7 @@ class TrainingExecutor:
         self.decision_engine = TrainingDecisionEngine()
 
     def execute_training(
-        self,
-        code: str,
-        session_id: str,
-        user_request: Optional[str] = None,
-        model_type: str = ""
+        self, code: str, session_id: str, user_request: Optional[str] = None, model_type: str = ""
     ) -> Dict[str, Any]:
         """
         Execute training code on appropriate infrastructure
@@ -46,10 +44,7 @@ class TrainingExecutor:
 
         # Decide environment
         decision = self.decision_engine.decide(
-            dataset_rows=dataset_rows,
-            feature_count=feature_count,
-            model_type=model_type,
-            code=code
+            dataset_rows=dataset_rows, feature_count=feature_count, model_type=model_type, code=code
         )
 
         print(f"[TrainingExecutor] Decision: {decision.environment}")
@@ -73,17 +68,18 @@ class TrainingExecutor:
         """Get dataset size from session store"""
         try:
             import builtins
-            session_store = getattr(builtins, '_session_store', None)
+
+            session_store = getattr(builtins, "_session_store", None)
 
             if session_store and session_id in session_store:
-                df = session_store[session_id].get('dataframe')
+                df = session_store[session_id].get("dataframe")
                 if df is not None:
                     return len(df), len(df.columns)
 
                 # Fallback to data_profile
-                data_profile = session_store[session_id].get('data_profile')
+                data_profile = session_store[session_id].get("data_profile")
                 if data_profile:
-                    return data_profile.row_count, len(data_profile.ai_agent_context['column_details'])
+                    return data_profile.row_count, len(data_profile.ai_agent_context["column_details"])
 
         except Exception as e:
             print(f"[TrainingExecutor] Could not get dataset info: {e}")
@@ -97,8 +93,9 @@ class TrainingExecutor:
 
         try:
             import importlib.util
-            parent_dir = os.path.join(os.path.dirname(__file__), '..')
-            tools_file_path = os.path.join(parent_dir, 'tools.py')
+
+            parent_dir = os.path.join(os.path.dirname(__file__), "..")
+            tools_file_path = os.path.join(parent_dir, "tools.py")
             spec = importlib.util.spec_from_file_location("tools_module", tools_file_path)
             tools_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(tools_module)
@@ -107,43 +104,34 @@ class TrainingExecutor:
             get_sandbox = tools_module.get_sandbox
 
             result = execute_python_in_sandbox(code, session_id)
-            result['execution_environment'] = 'cpu'
-            result['decision_reasoning'] = decision.reasoning
+            result["execution_environment"] = "cpu"
+            result["decision_reasoning"] = decision.reasoning
 
-            model_files = result.get('models', [])
+            model_files = result.get("models", [])
             if model_files:
-                result['model_files'] = model_files
+                result["model_files"] = model_files
                 print(f"[TrainingExecutor] Extracted {len(model_files)} model file(s)")
 
             return result
 
         except Exception as e:
             import traceback
+
             print(f"[TrainingExecutor] CPU execution error: {e}")
             traceback.print_exc()
-            return {
-                'success': False,
-                'stderr': f"CPU execution failed: {str(e)}",
-                'execution_environment': 'cpu'
-            }
+            return {"success": False, "stderr": f"CPU execution failed: {str(e)}", "execution_environment": "cpu"}
 
-    def _execute_on_gpu(
-        self,
-        code: str,
-        session_id: str,
-        user_format: Optional[str],
-        decision
-    ) -> Dict[str, Any]:
+    def _execute_on_gpu(self, code: str, session_id: str, user_format: Optional[str], decision) -> Dict[str, Any]:
         """Execute on GPU (Azure primary, AWS fallback)"""
         from .quota_tracker import quota_tracker
 
         # Step 1: Pre-check Azure quota
-        azure_has_quota = quota_tracker.has_available_quota('azure')
+        azure_has_quota = quota_tracker.has_available_quota("azure")
 
         if azure_has_quota:
             print(f"[TrainingExecutor] Azure quota available, attempting Azure ML")
             try:
-                sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+                sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
                 from tools import azure_gpu_train
 
                 result_str = azure_gpu_train(code, session_id, user_format)
@@ -152,13 +140,13 @@ class TrainingExecutor:
                 if success:
                     model_files = self._extract_model_files_from_result(result_str, session_id)
                     return {
-                        'success': True,
-                        'stdout': result_str,
-                        'stderr': '',
-                        'execution_environment': 'gpu_azure',
-                        'decision_reasoning': decision.reasoning,
-                        'plots': [],
-                        'model_files': model_files
+                        "success": True,
+                        "stdout": result_str,
+                        "stderr": "",
+                        "execution_environment": "gpu_azure",
+                        "decision_reasoning": decision.reasoning,
+                        "plots": [],
+                        "model_files": model_files,
                     }
                 else:
                     # Azure job failed
@@ -169,7 +157,9 @@ class TrainingExecutor:
                 print(f"[TrainingExecutor] Azure GPU failed: {error_msg}")
 
                 # Check if quota-related error
-                if any(keyword in error_msg.lower() for keyword in ['quota', 'limit exceeded', 'resourcequotaexceeded']):
+                if any(
+                    keyword in error_msg.lower() for keyword in ["quota", "limit exceeded", "resourcequotaexceeded"]
+                ):
                     print(f"[TrainingExecutor] Quota error detected, falling back to AWS")
                     return self._fallback_to_aws(code, session_id, user_format, decision)
                 else:
@@ -181,18 +171,12 @@ class TrainingExecutor:
             print(f"[TrainingExecutor] Azure quota exhausted, using AWS directly")
             return self._fallback_to_aws(code, session_id, user_format, decision)
 
-    def _fallback_to_aws(
-        self,
-        code: str,
-        session_id: str,
-        user_format: Optional[str],
-        decision
-    ) -> Dict[str, Any]:
+    def _fallback_to_aws(self, code: str, session_id: str, user_format: Optional[str], decision) -> Dict[str, Any]:
         """Fallback to AWS SageMaker"""
         from .quota_tracker import quota_tracker
 
         # Check AWS quota
-        aws_has_quota = quota_tracker.has_available_quota('aws')
+        aws_has_quota = quota_tracker.has_available_quota("aws")
 
         if not aws_has_quota:
             print(f"[TrainingExecutor] AWS quota also exhausted, falling back to CPU")
@@ -200,7 +184,7 @@ class TrainingExecutor:
 
         print(f"[TrainingExecutor] Executing on AWS SageMaker")
         try:
-            sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+            sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
             from tools import aws_gpu_train
 
             result_str = aws_gpu_train(code, session_id, user_format)
@@ -209,18 +193,19 @@ class TrainingExecutor:
             if success:
                 # Store fallback info in session
                 import builtins
-                if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
-                    builtins._session_store[session_id]['used_service'] = 'AWS (Azure fallback)'
+
+                if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                    builtins._session_store[session_id]["used_service"] = "AWS (Azure fallback)"
 
                 model_files = self._extract_model_files_from_result(result_str, session_id)
                 return {
-                    'success': True,
-                    'stdout': result_str,
-                    'stderr': '',
-                    'execution_environment': 'gpu_aws',
-                    'decision_reasoning': decision.reasoning + " (Azure→AWS fallback)",
-                    'plots': [],
-                    'model_files': model_files
+                    "success": True,
+                    "stdout": result_str,
+                    "stderr": "",
+                    "execution_environment": "gpu_aws",
+                    "decision_reasoning": decision.reasoning + " (Azure→AWS fallback)",
+                    "plots": [],
+                    "model_files": model_files,
                 }
             else:
                 raise Exception(result_str)
@@ -237,7 +222,8 @@ class TrainingExecutor:
         # Parse result string for model file paths
         if "local:" in result_str:
             import re
-            match = re.search(r'local:\s*([^\)]+)', result_str)
+
+            match = re.search(r"local:\s*([^\)]+)", result_str)
             if match:
                 model_files.append(match.group(1).strip())
         return model_files
@@ -254,13 +240,13 @@ def should_use_training_executor(code: str) -> bool:
     Returns True if code contains model training patterns
     """
     training_patterns = [
-        '.fit(',
-        'model.train(',
-        'train_test_split',
-        'GridSearchCV',
-        'RandomizedSearchCV',
-        'cross_val_score',
-        'Pipeline',
+        ".fit(",
+        "model.train(",
+        "train_test_split",
+        "GridSearchCV",
+        "RandomizedSearchCV",
+        "cross_val_score",
+        "Pipeline",
     ]
 
     return any(pattern in code for pattern in training_patterns)

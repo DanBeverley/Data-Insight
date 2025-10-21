@@ -7,7 +7,7 @@ class MemoryRetentionScenario(BaseScenario):
     def __init__(self, api_client):
         super().__init__(
             name="Memory Retention",
-            description="Multi-turn conversation testing context persistence across interactions"
+            description="Multi-turn conversation testing context persistence across interactions",
         )
         self.api_client = api_client
         self.session_id: str = None
@@ -24,20 +24,20 @@ class MemoryRetentionScenario(BaseScenario):
                 name="Turn 1: First Query",
                 action="turn_1",
                 expected_outcome="response",
-                metadata={"user_message": "Hello"}
+                metadata={"user_message": "Hello"},
             ),
             ScenarioStep(
                 name="Turn 2: Second Query",
                 action="turn_2",
                 expected_outcome="response",
-                metadata={"user_message": "What can you help me with?"}
+                metadata={"user_message": "What can you help me with?"},
             ),
             ScenarioStep(
                 name="Turn 3: Third Query",
                 action="turn_3",
                 expected_outcome="response",
-                metadata={"user_message": "Thank you"}
-            )
+                metadata={"user_message": "Thank you"},
+            ),
         ]
 
     def _execute_step(self, step: ScenarioStep) -> bool:
@@ -46,21 +46,14 @@ class MemoryRetentionScenario(BaseScenario):
         try:
             response = self.api_client.get(
                 "/api/agent/chat-stream",
-                params={
-                    "message": user_message,
-                    "session_id": self.session_id,
-                    "web_search_enabled": "false"
-                },
-                timeout=60.0
+                params={"message": user_message, "session_id": self.session_id, "web_search_enabled": "false"},
+                timeout=60.0,
             )
 
             if response.status_code == 200:
                 agent_response = response.text
 
-                self.conversation_history.append({
-                    "user": user_message,
-                    "agent": agent_response
-                })
+                self.conversation_history.append({"user": user_message, "agent": agent_response})
 
                 return len(agent_response) > 0
 
@@ -84,6 +77,7 @@ class TestMemoryRetention:
     def api_client(self):
         from fastapi.testclient import TestClient
         from src.api import app
+
         return TestClient(app)
 
     @pytest.mark.slow
@@ -100,22 +94,14 @@ class TestMemoryRetention:
 
         response1 = api_client.get(
             "/api/agent/chat-stream",
-            params={
-                "message": "Hello",
-                "session_id": session_id,
-                "web_search_enabled": "false"
-            },
-            timeout=30.0
+            params={"message": "Hello", "session_id": session_id, "web_search_enabled": "false"},
+            timeout=30.0,
         )
 
         response2 = api_client.get(
             "/api/agent/chat-stream",
-            params={
-                "message": "What can you help with?",
-                "session_id": session_id,
-                "web_search_enabled": "false"
-            },
-            timeout=30.0
+            params={"message": "What can you help with?", "session_id": session_id, "web_search_enabled": "false"},
+            timeout=30.0,
         )
 
         assert response1.status_code == 200
@@ -129,12 +115,8 @@ class TestMemoryRetention:
 
         response1 = api_client.get(
             "/api/agent/chat-stream",
-            params={
-                "message": "Analyze this data",
-                "session_id": session_id,
-                "web_search_enabled": "false"
-            },
-            timeout=30.0
+            params={"message": "Analyze this data", "session_id": session_id, "web_search_enabled": "false"},
+            timeout=30.0,
         )
         assert response1.status_code == 200
 
@@ -144,10 +126,10 @@ class TestMemoryRetention:
             assert len(execution_history) > 0, "Adaptive system should record execution history"
 
             first_execution = execution_history[0]
-            assert 'session_id' in first_execution
-            assert first_execution['session_id'] == session_id
-            assert 'success' in first_execution
-            assert 'timestamp' in first_execution
+            assert "session_id" in first_execution
+            assert first_execution["session_id"] == session_id
+            assert "success" in first_execution
+            assert "timestamp" in first_execution
         except Exception as e:
             pytest.skip(f"Adaptive learning system not available: {e}")
 
@@ -159,6 +141,7 @@ class TestCrossSessionIsolation:
     def api_client(self):
         from fastapi.testclient import TestClient
         from src.api import app
+
         return TestClient(app)
 
     def test_sessions_do_not_share_memory(self, api_client):
@@ -181,22 +164,14 @@ class TestCrossSessionIsolation:
 
         api_client.get(
             "/api/agent/chat-stream",
-            params={
-                "message": "Task for session 1",
-                "session_id": session_1,
-                "web_search_enabled": "false"
-            },
-            timeout=30.0
+            params={"message": "Task for session 1", "session_id": session_1, "web_search_enabled": "false"},
+            timeout=30.0,
         )
 
         api_client.get(
             "/api/agent/chat-stream",
-            params={
-                "message": "Task for session 2",
-                "session_id": session_2,
-                "web_search_enabled": "false"
-            },
-            timeout=30.0
+            params={"message": "Task for session 2", "session_id": session_2, "web_search_enabled": "false"},
+            timeout=30.0,
         )
 
         try:
@@ -207,7 +182,8 @@ class TestCrossSessionIsolation:
 
             assert len(history_1) > 0, "Session 1 should have history"
             assert len(history_2) > 0, "Session 2 should have history"
-            assert history_1[0].get('session_id') != history_2[0].get('session_id'), \
-                "Different sessions should have different execution histories"
+            assert history_1[0].get("session_id") != history_2[0].get(
+                "session_id"
+            ), "Different sessions should have different execution histories"
         except Exception as e:
             pytest.skip(f"Adaptive learning system not available: {e}")

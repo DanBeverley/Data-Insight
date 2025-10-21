@@ -25,7 +25,6 @@ Output format: JSON array
 ]
 
 Generate diverse, realistic failure scenarios.""",
-
         "coverage": """You are a QA engineer creating comprehensive test coverage for a data science AI agent.
 
 Generate 20 diverse queries covering:
@@ -46,7 +45,6 @@ Output format: JSON array
     "expected_tool": "python_code_interpreter | web_search | knowledge_graph"
   }
 ]""",
-
         "conversation": """You are simulating a multi-turn conversation between a data analyst and an AI assistant.
 
 Generate a 10-turn conversation that includes:
@@ -68,7 +66,6 @@ Output format: JSON array
 ]
 
 Make it realistic and coherent.""",
-
         "regression": """You are generating test variants for known bug scenarios.
 
 Based on this bug pattern: {bug_pattern}
@@ -86,7 +83,7 @@ Output format: JSON array
     "similarity_score": 0.8,
     "variation_type": "phrasing | edge_case | combination | extreme"
   }
-]"""
+]""",
     }
 
     def __init__(self, model: str = "qwen2.5:7b"):
@@ -104,13 +101,7 @@ Output format: JSON array
 
         try:
             response = ollama.generate(
-                model=self.model,
-                prompt=prompt,
-                options={
-                    "temperature": 0.8,
-                    "num_predict": 2000,
-                    "seed": None
-                }
+                model=self.model, prompt=prompt, options={"temperature": 0.8, "num_predict": 2000, "seed": None}
             )
 
             scenarios = self._parse_json_response(response["response"])
@@ -157,7 +148,7 @@ Output format: JSON array
         category = scenario.get("category", "general")
         expected_tool = scenario.get("expected_tool", "python_code_interpreter")
 
-        return f'''import pytest
+        return f"""import pytest
 from tests.e2e.scenarios.base_scenario import BaseScenario, ScenarioStep
 from typing import List
 
@@ -213,10 +204,10 @@ def test_{scenario_id}():
     scenario = {scenario_id.replace("_", " ").title().replace(" ", "")}Scenario()
     result = scenario.execute()
     assert result.passed, f"Scenario failed: {{result.errors}}"
-'''
+"""
 
     def _create_conversation_test(self, conversation: List[Dict[str, Any]], scenario_id: str) -> str:
-        return f'''import pytest
+        return f"""import pytest
 from tests.e2e.scenarios.base_scenario import BaseScenario, ScenarioStep
 from typing import List
 
@@ -278,7 +269,7 @@ def test_{scenario_id}():
     scenario = {scenario_id.replace("_", " ").title().replace(" ", "")}Scenario()
     result = scenario.execute()
     assert result.passed, f"Scenario failed: {{result.errors}}"
-'''
+"""
 
     def generate_batch(self, mode: str, count: int) -> List[Path]:
         scenarios = self.generate_scenarios(mode, count)

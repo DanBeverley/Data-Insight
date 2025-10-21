@@ -8,13 +8,14 @@ class WebSearchIntegrationScenario(BaseScenario):
     def __init__(self):
         super().__init__(
             name="Web Search Integration",
-            description="Tests agent's ability to use web search for domain knowledge augmentation"
+            description="Tests agent's ability to use web search for domain knowledge augmentation",
         )
         self.session_id = None
         self.search_used = False
 
     def setup(self) -> None:
         from src.api_utils.session_management import create_new_session
+
         self.session_id = create_new_session()["session_id"]
 
     def define_steps(self) -> List[ScenarioStep]:
@@ -23,20 +24,20 @@ class WebSearchIntegrationScenario(BaseScenario):
                 name="Query requiring domain knowledge",
                 action="ask_domain_question",
                 expected_outcome="search or external",
-                timeout=60
+                timeout=60,
             ),
             ScenarioStep(
                 name="Upload dataset and ask context-specific question",
                 action="upload_and_ask_context",
                 expected_outcome="analysis",
-                timeout=90
+                timeout=90,
             ),
             ScenarioStep(
                 name="Request comparison with external benchmark",
                 action="ask_benchmark_comparison",
                 expected_outcome="comparison",
-                timeout=60
-            )
+                timeout=60,
+            ),
         ]
 
     def _execute_step(self, step: ScenarioStep) -> bool:
@@ -54,9 +55,7 @@ class WebSearchIntegrationScenario(BaseScenario):
         try:
             response = ""
             for chunk in stream_agent_response(
-                "What are the key factors affecting housing prices in 2024?",
-                self.session_id,
-                web_search_enabled=True
+                "What are the key factors affecting housing prices in 2024?", self.session_id, web_search_enabled=True
             ):
                 if "content" in chunk:
                     response += chunk["content"]
@@ -83,9 +82,7 @@ class WebSearchIntegrationScenario(BaseScenario):
 
             response = ""
             for chunk in stream_agent_response(
-                "Analyze this housing dataset and explain the price trends",
-                self.session_id,
-                web_search_enabled=False
+                "Analyze this housing dataset and explain the price trends", self.session_id, web_search_enabled=False
             ):
                 if "content" in chunk:
                     response += chunk["content"]
@@ -103,7 +100,7 @@ class WebSearchIntegrationScenario(BaseScenario):
             for chunk in stream_agent_response(
                 "How does the average price in this dataset compare to national housing market averages?",
                 self.session_id,
-                web_search_enabled=True
+                web_search_enabled=True,
             ):
                 if "content" in chunk:
                     response += chunk["content"]
@@ -116,6 +113,7 @@ class WebSearchIntegrationScenario(BaseScenario):
     def teardown(self) -> None:
         if self.session_id:
             from src.api_utils.session_management import clear_session
+
             try:
                 clear_session(self.session_id)
             except:

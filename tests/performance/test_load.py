@@ -17,17 +17,13 @@ class DataInsightUser(HttpUser):
             "What is the correlation between price and area?",
             "Describe the dataset",
             "Find outliers in the price column",
-            "Show summary statistics"
+            "Show summary statistics",
         ]
 
         self.client.get(
             "/api/agent/chat-stream",
-            params={
-                "message": random.choice(queries),
-                "session_id": self.session_id,
-                "web_search_enabled": "false"
-            },
-            name="/api/agent/chat-stream"
+            params={"message": random.choice(queries), "session_id": self.session_id, "web_search_enabled": "false"},
+            name="/api/agent/chat-stream",
         )
 
     @task(1)
@@ -42,8 +38,4 @@ class DataInsightUser(HttpUser):
 250000,1200,2"""
 
         files = {"file": ("test.csv", csv_content, "text/csv")}
-        self.client.post(
-            "/api/upload",
-            files=files,
-            data={"session_id": self.session_id}
-        )
+        self.client.post("/api/upload", files=files, data={"session_id": self.session_id})

@@ -1,33 +1,52 @@
 """Tool definitions for agent system"""
+
 from pydantic import BaseModel, Field
 from langchain.tools import tool
 from typing import List, Optional
 
+
 class CodeInput(BaseModel):
     code: str = Field(description="Raw Python code to execute in the sandbox. Must be valid Python syntax.")
+
 
 class PatternInput(BaseModel):
     task_description: str = Field(description="Description of the data science task to retrieve patterns for")
 
+
 class GraphQueryInput(BaseModel):
-    query: str = Field(description="Natural language query about data relationships, feature lineage, or past analysis patterns")
+    query: str = Field(
+        description="Natural language query about data relationships, feature lineage, or past analysis patterns"
+    )
+
 
 class LearningDataInput(BaseModel):
-    query: str = Field(description="Query for execution history or patterns - e.g., 'show successful visualization code' or 'get recent analysis patterns'")
+    query: str = Field(
+        description="Query for execution history or patterns - e.g., 'show successful visualization code' or 'get recent analysis patterns'"
+    )
+
 
 class WebSearchInput(BaseModel):
     query: str = Field(description="Search query for external domain knowledge or current information")
+
 
 class ZipArtifactsInput(BaseModel):
     artifact_ids: List[str] = Field(description="List of artifact IDs to include in the zip file")
     description: Optional[str] = Field(default=None, description="Optional description for the zip archive")
 
+
 class CodingTask(BaseModel):
     task_description: str = Field(description="Clear description of the coding task for the specialized coding agent")
 
+
 class LoadModelInput(BaseModel):
-    model_type: Optional[str] = Field(default=None, description="Type of model to load (e.g., 'linear_regression', 'random_forest'). If not specified, loads most recent model.")
-    model_id: Optional[str] = Field(default=None, description="Specific model ID to load. Takes precedence over model_type.")
+    model_type: Optional[str] = Field(
+        default=None,
+        description="Type of model to load (e.g., 'linear_regression', 'random_forest'). If not specified, loads most recent model.",
+    )
+    model_id: Optional[str] = Field(
+        default=None, description="Specific model ID to load. Takes precedence over model_type."
+    )
+
 
 @tool(args_schema=CodeInput)
 def python_code_interpreter(code: str) -> str:
@@ -41,6 +60,7 @@ def python_code_interpreter(code: str) -> str:
     """
     return "This is a placeholder. Execution happens in the graph node."
 
+
 @tool(args_schema=PatternInput)
 def retrieve_historical_patterns(task_description: str) -> str:
     """
@@ -53,6 +73,7 @@ def retrieve_historical_patterns(task_description: str) -> str:
                          (e.g., 'visualization', 'correlation_analysis', 'ml_modeling')
     """
     return "This is a placeholder. Pattern retrieval happens in the graph node."
+
 
 @tool(args_schema=CodingTask)
 def delegate_coding_task(task_description: str) -> str:
@@ -68,6 +89,7 @@ def delegate_coding_task(task_description: str) -> str:
     - Explanations that don't require computation
     """
     return "Delegation confirmed. Coding agent will execute this task."
+
 
 @tool(args_schema=GraphQueryInput)
 def knowledge_graph_query(query: str) -> str:
@@ -85,6 +107,7 @@ def knowledge_graph_query(query: str) -> str:
     """
     return "This is a placeholder. Graph query happens in the graph node."
 
+
 @tool(args_schema=LearningDataInput)
 def access_learning_data(query: str) -> str:
     """
@@ -100,6 +123,7 @@ def access_learning_data(query: str) -> str:
         query: Description of specific learning patterns needed for current technical task
     """
     return "This is a placeholder. Learning data access happens in the graph node."
+
 
 @tool(args_schema=WebSearchInput)
 def web_search(query: str) -> str:
@@ -123,6 +147,7 @@ def web_search(query: str) -> str:
     """
     return "This is a placeholder. Web search happens in the graph node."
 
+
 @tool(args_schema=ZipArtifactsInput)
 def zip_artifacts(artifact_ids: List[str], description: Optional[str] = None) -> str:
     """
@@ -139,6 +164,7 @@ def zip_artifacts(artifact_ids: List[str], description: Optional[str] = None) ->
         description: Optional description for the zip archive
     """
     return "This is a placeholder. Zip creation happens in the graph node."
+
 
 @tool(args_schema=LoadModelInput)
 def load_trained_model(model_type: Optional[str] = None, model_id: Optional[str] = None) -> str:

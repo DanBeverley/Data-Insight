@@ -5,6 +5,7 @@ from fastapi import HTTPException
 def clean_checkpointer_state(session_id: str, operation: str = "new session") -> bool:
     try:
         from data_scientist_chatbot.app.core.graph_builder import memory
+
         if memory:
             memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
             memory.conn.commit()

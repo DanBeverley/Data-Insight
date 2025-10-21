@@ -73,7 +73,7 @@ huge_array = np.zeros((10000, 10000, 100))
         privilege_escalation_attempts = [
             "import ctypes; ctypes.CDLL('libc.so.6').setuid(0)",
             "os.setuid(0)",
-            "os.system('sudo su')"
+            "os.system('sudo su')",
         ]
 
         for code in privilege_escalation_attempts:
@@ -86,7 +86,7 @@ huge_array = np.zeros((10000, 10000, 100))
         dangerous_imports = [
             "import pickle; pickle.loads(b'malicious')",
             "import marshal; marshal.loads(b'malicious')",
-            "from ctypes import *"
+            "from ctypes import *",
         ]
 
         for code in dangerous_imports:

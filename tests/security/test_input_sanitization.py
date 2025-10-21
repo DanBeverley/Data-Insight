@@ -4,26 +4,16 @@ from typing import Dict, Any
 
 @pytest.mark.security
 class TestInputSanitization:
-    SQL_INJECTION_PAYLOADS = [
-        "'; DROP TABLE users; --",
-        "1' OR '1'='1",
-        "admin'--",
-        "' UNION SELECT NULL--"
-    ]
+    SQL_INJECTION_PAYLOADS = ["'; DROP TABLE users; --", "1' OR '1'='1", "admin'--", "' UNION SELECT NULL--"]
 
     XSS_PAYLOADS = [
         "<script>alert('XSS')</script>",
         "<img src=x onerror=alert('XSS')>",
         "javascript:alert('XSS')",
-        "<svg onload=alert('XSS')>"
+        "<svg onload=alert('XSS')>",
     ]
 
-    COMMAND_INJECTION_PAYLOADS = [
-        "; ls -la",
-        "| cat /etc/passwd",
-        "`whoami`",
-        "$(cat /etc/passwd)"
-    ]
+    COMMAND_INJECTION_PAYLOADS = ["; ls -la", "| cat /etc/passwd", "`whoami`", "$(cat /etc/passwd)"]
 
     def test_sql_injection_protection(self, sample_session_id: str):
         from src.api_utils.sanitizers import sanitize_input
@@ -59,7 +49,7 @@ class TestInputSanitization:
             "../../../etc/passwd",
             "..\\..\\..\\windows\\system32",
             "/etc/passwd",
-            "C:\\Windows\\System32\\config\\SAM"
+            "C:\\Windows\\System32\\config\\SAM",
         ]
 
         for path in dangerous_paths:
@@ -69,18 +59,9 @@ class TestInputSanitization:
     def test_session_id_validation(self):
         from src.api_utils.session_management import validate_session_id
 
-        valid_ids = [
-            "550e8400-e29b-41d4-a716-446655440000",
-            "test_session_123",
-            "session-2024-01-01"
-        ]
+        valid_ids = ["550e8400-e29b-41d4-a716-446655440000", "test_session_123", "session-2024-01-01"]
 
-        invalid_ids = [
-            "../../../etc/passwd",
-            "<script>alert(1)</script>",
-            "'; DROP TABLE sessions;--",
-            ""
-        ]
+        invalid_ids = ["../../../etc/passwd", "<script>alert(1)</script>", "'; DROP TABLE sessions;--", ""]
 
         for session_id in valid_ids:
             assert validate_session_id(session_id) is True
@@ -109,11 +90,7 @@ class TestInputSanitization:
     def test_no_code_execution_in_user_input(self, sample_session_id: str):
         from src.api_utils.sanitizers import sanitize_input
 
-        code_payloads = [
-            "exec('import os; os.system(\"rm -rf /\")')",
-            "eval('1+1')",
-            "__import__('os').system('ls')"
-        ]
+        code_payloads = ["exec('import os; os.system(\"rm -rf /\")')", "eval('1+1')", "__import__('os').system('ls')"]
 
         for payload in code_payloads:
             sanitized = sanitize_input(payload)

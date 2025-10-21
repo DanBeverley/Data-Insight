@@ -1,9 +1,14 @@
 """Prompt templates for all agents"""
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+
 def get_brain_prompt():
-    return ChatPromptTemplate.from_messages([
-        ("system", """You are Insight, a data science consultant helping users understand their data and make decisions.
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are Insight, a data science consultant helping users understand their data and make decisions.
 
                     {context}
 
@@ -76,14 +81,20 @@ def get_brain_prompt():
                     **MODEL TRAINING:**
                     When delegating model training, specify: preprocessing needs, evaluation metrics, request visualizations, and ask for model to be saved. After completion, inform users the model is in artifact storage.
 
-                    Be helpful, accurate, and conversational. Trust your technical specialist to handle code execution."""),
-                            MessagesPlaceholder(variable_name="messages")
-                        ])
+                    Be helpful, accurate, and conversational. Trust your technical specialist to handle code execution.""",
+            ),
+            MessagesPlaceholder(variable_name="messages"),
+        ]
+    )
+
 
 def get_hands_prompt():
     """Technical execution prompt for Hands agent"""
-    return ChatPromptTemplate.from_messages([
-        ("system", """You are an expert data scientist executing Python code for analysis, modeling, and visualization.
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are an expert data scientist executing Python code for analysis, modeling, and visualization.
 
                     {data_context}
 
@@ -125,14 +136,20 @@ def get_hands_prompt():
 
                     Without the PLOT_SAVED/MODEL_SAVED markers, artifacts will NOT be available to the user.
 
-                    Work through the request systematically, generating complete executable code."""),
-                            MessagesPlaceholder(variable_name="messages")
-                        ])
+                    Work through the request systematically, generating complete executable code.""",
+            ),
+            MessagesPlaceholder(variable_name="messages"),
+        ]
+    )
+
 
 def get_router_prompt():
     """Prompt for router agent"""
-    return ChatPromptTemplate.from_messages([
-        ("system", """You are a Context-Aware Task Classifier. Analyze the user's request along with session context to route intelligently.
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are a Context-Aware Task Classifier. Analyze the user's request along with session context to route intelligently.
                     **YOUR INPUTS:**
                     1. User's message
                     2. Current session state (dataset availability)
@@ -171,14 +188,18 @@ def get_router_prompt():
                     Session: "Dataset loaded: 500x10" + User: "zip those plots" → {{"routing_decision": "brain"}}
                     Session: "Dataset loaded: 500x10" + User: "bundle all artifacts" → {{"routing_decision": "brain"}}
                     Session: "Dataset loaded: 500x10" + User: "analyze correlations" → {{"routing_decision": "hands"}}
-                    Session: "Dataset loaded: 500x10" + User: "what does this mean?" → {{"routing_decision": "brain"}}"""),
-                    ("human", "Session context: {session_context}"),
-                    MessagesPlaceholder(variable_name="messages")
-                    ])
+                    Session: "Dataset loaded: 500x10" + User: "what does this mean?" → {{"routing_decision": "brain"}}""",
+            ),
+            ("human", "Session context: {session_context}"),
+            MessagesPlaceholder(variable_name="messages"),
+        ]
+    )
+
 
 def get_status_agent_prompt():
     """Prompt for the dedicated status generation agent"""
-    return ChatPromptTemplate.from_template("""Generate a discord-joke style status update in 5-10 words maximum
+    return ChatPromptTemplate.from_template(
+        """Generate a discord-joke style status update in 5-10 words maximum
                                             Agent: {current_agent}
                                             Task: {user_goal}
                                             Examples:
@@ -186,4 +207,5 @@ def get_status_agent_prompt():
                                             - "Baking a scatter cake..."
                                             - "Microbrew some local kombucha..."
                                             - "Painting a happy little tree..."
-                                            Output only the status message, nothing else.""")
+                                            Output only the status message, nothing else."""
+    )

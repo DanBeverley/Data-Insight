@@ -33,7 +33,7 @@ class ModelRegistryService:
         training_metrics: Optional[Dict] = None,
         user_id: Optional[str] = None,
         framework: Optional[str] = None,
-        dependencies: Optional[List[str]] = None
+        dependencies: Optional[List[str]] = None,
     ) -> str:
         """
         Register a trained model in the registry
@@ -59,9 +59,7 @@ class ModelRegistryService:
 
         # Check for existing model with same characteristics
         existing_version = self._get_latest_version(
-            session_id=session_id,
-            dataset_hash=dataset_hash,
-            model_type=model_type
+            session_id=session_id, dataset_hash=dataset_hash, model_type=model_type
         )
         version = (existing_version or 0) + 1
 
@@ -82,7 +80,7 @@ class ModelRegistryService:
             "dependencies": dependencies or [],
             "is_active": True,
             "created_at": datetime.utcnow(),
-            "access_count": 0
+            "access_count": 0,
         }
 
         self.db.insert_model_registry(model_data)
@@ -95,7 +93,7 @@ class ModelRegistryService:
         session_id: str,
         dataset_hash: Optional[str] = None,
         model_type: Optional[str] = None,
-        model_id: Optional[str] = None
+        model_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Find a model by criteria
@@ -113,10 +111,7 @@ class ModelRegistryService:
             return self.db.get_model_by_id(model_id)
 
         models = self.db.query_models(
-            session_id=session_id,
-            dataset_hash=dataset_hash,
-            model_type=model_type,
-            is_active=True
+            session_id=session_id, dataset_hash=dataset_hash, model_type=model_type, is_active=True
         )
 
         if not models:
@@ -154,7 +149,7 @@ class ModelRegistryService:
             "size_bytes": model["file_size_bytes"],
             "model_type": model["model_type"],
             "framework": model.get("framework"),
-            "dependencies": model.get("dependencies", [])
+            "dependencies": model.get("dependencies", []),
         }
 
     def list_session_models(self, session_id: str) -> List[Dict[str, Any]]:
@@ -175,18 +170,9 @@ class ModelRegistryService:
         self.db.update_model_status(model_id, is_active=False)
         logger.info(f"Deactivated model {model_id}")
 
-    def _get_latest_version(
-        self,
-        session_id: str,
-        dataset_hash: str,
-        model_type: str
-    ) -> Optional[int]:
+    def _get_latest_version(self, session_id: str, dataset_hash: str, model_type: str) -> Optional[int]:
         """Get latest version number for a model configuration"""
-        models = self.db.query_models(
-            session_id=session_id,
-            dataset_hash=dataset_hash,
-            model_type=model_type
-        )
+        models = self.db.query_models(session_id=session_id, dataset_hash=dataset_hash, model_type=model_type)
 
         if not models:
             return None

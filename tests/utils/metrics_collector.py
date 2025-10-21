@@ -16,18 +16,12 @@ class TestMetricsCollector:
             "categories": {},
             "failures": [],
             "flaky_tests": [],
-            "summary": {}
+            "summary": {},
         }
 
     def record_test(self, name: str, duration: float, status: str, category: str):
         if category not in self.metrics["categories"]:
-            self.metrics["categories"][category] = {
-                "total": 0,
-                "passed": 0,
-                "failed": 0,
-                "skipped": 0,
-                "durations": []
-            }
+            self.metrics["categories"][category] = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "durations": []}
 
         cat = self.metrics["categories"][category]
         cat["total"] += 1
@@ -37,11 +31,7 @@ class TestMetricsCollector:
             cat["passed"] += 1
         elif status == "failed":
             cat["failed"] += 1
-            self.metrics["failures"].append({
-                "name": name,
-                "category": category,
-                "duration": duration
-            })
+            self.metrics["failures"].append({"name": name, "category": category, "duration": duration})
         elif status == "skipped":
             cat["skipped"] += 1
 
@@ -57,11 +47,9 @@ class TestMetricsCollector:
                 flakiness_score = min(passed_count, failed_count) / len(outcomes)
 
                 if flakiness_score > 0.2:
-                    self.metrics["flaky_tests"].append({
-                        "name": test_name,
-                        "score": flakiness_score,
-                        "outcomes": outcomes
-                    })
+                    self.metrics["flaky_tests"].append(
+                        {"name": test_name, "score": flakiness_score, "outcomes": outcomes}
+                    )
 
     def calculate_summary(self):
         total_tests = sum(cat["total"] for cat in self.metrics["categories"].values())
@@ -81,7 +69,7 @@ class TestMetricsCollector:
             "avg_duration": mean(all_durations) if all_durations else 0,
             "median_duration": median(all_durations) if all_durations else 0,
             "p95_duration": self._percentile(all_durations, 0.95) if all_durations else 0,
-            "p99_duration": self._percentile(all_durations, 0.99) if all_durations else 0
+            "p99_duration": self._percentile(all_durations, 0.99) if all_durations else 0,
         }
 
     def _percentile(self, data: List[float], percentile: float) -> float:
@@ -99,7 +87,7 @@ class TestMetricsCollector:
         filename = f"test_run_{timestamp}.json"
 
         output_path = self.output_dir / filename
-        with open(output_path, 'w') as f:
+        with open(output_path, "w") as f:
             json.dump(self.metrics, f, indent=2)
 
         print(f"Metrics saved to {output_path}")
@@ -109,9 +97,9 @@ class TestMetricsCollector:
         self.calculate_summary()
 
         summary = self.metrics["summary"]
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("TEST EXECUTION SUMMARY")
-        print("="*60)
+        print("=" * 60)
         print(f"Total Tests:     {summary['total_tests']}")
         print(f"Passed:          {summary['passed']} ({summary['pass_rate']:.1f}%)")
         print(f"Failed:          {summary['failed']}")
@@ -130,7 +118,7 @@ class TestMetricsCollector:
             for flaky in self.metrics["flaky_tests"]:
                 print(f"  - {flaky['name']} (score: {flaky['score']:.2f})")
 
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
 
     def compare_with_baseline(self, baseline_path: str) -> Dict[str, Any]:
         if not Path(baseline_path).exists():
@@ -147,13 +135,15 @@ class TestMetricsCollector:
             "duration_change": current["total_duration"] - baseline["summary"]["total_duration"],
             "avg_duration_change": current["avg_duration"] - baseline["summary"]["avg_duration"],
             "new_failures": [
-                f for f in self.metrics["failures"]
+                f
+                for f in self.metrics["failures"]
                 if not any(bf["name"] == f["name"] for bf in baseline.get("failures", []))
             ],
             "resolved_failures": [
-                bf for bf in baseline.get("failures", [])
+                bf
+                for bf in baseline.get("failures", [])
                 if not any(f["name"] == bf["name"] for f in self.metrics["failures"])
-            ]
+            ],
         }
 
         return comparison
@@ -179,12 +169,7 @@ def pytest_runtest_logreport(report):
 
         status = "passed" if report.passed else "failed" if report.failed else "skipped"
 
-        collector.record_test(
-            name=report.nodeid,
-            duration=report.duration,
-            status=status,
-            category=category
-        )
+        collector.record_test(name=report.nodeid, duration=report.duration, status=status, category=category)
 
 
 def pytest_sessionfinish(session, exitstatus):

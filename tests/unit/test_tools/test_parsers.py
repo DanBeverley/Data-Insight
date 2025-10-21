@@ -22,9 +22,9 @@ class TestMessageToolCallParsing:
     def test_parse_json_with_markdown_backticks(self):
         message = Mock()
         message.tool_calls = None
-        message.content = '''```json
+        message.content = """```json
         {"name": "web_search", "arguments": {"query": "housing trends"}}
-        ```'''
+        ```"""
 
         result = parse_message_to_tool_call(message)
 

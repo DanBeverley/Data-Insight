@@ -2,6 +2,7 @@
 Smart GPU training wrapper with auto format detection
 Deployed to Azure ML and AWS SageMaker for intelligent model saving
 """
+
 import sys
 import pickle
 import json
@@ -14,22 +15,17 @@ class ModelFormatDetector:
 
     def __init__(self):
         self.format_map = {
-            'sklearn': ('.joblib', self._save_sklearn),
-            'torch': ('.pt', self._save_pytorch),
-            'tensorflow.python': ('.h5', self._save_tensorflow),
-            'tensorflow.keras': ('.h5', self._save_keras),
-            'keras': ('.h5', self._save_keras),
-            'xgboost': ('.json', self._save_xgboost),
-            'lightgbm': ('.txt', self._save_lightgbm),
-            'catboost': ('.cbm', self._save_catboost),
+            "sklearn": (".joblib", self._save_sklearn),
+            "torch": (".pt", self._save_pytorch),
+            "tensorflow.python": (".h5", self._save_tensorflow),
+            "tensorflow.keras": (".h5", self._save_keras),
+            "keras": (".h5", self._save_keras),
+            "xgboost": (".json", self._save_xgboost),
+            "lightgbm": (".txt", self._save_lightgbm),
+            "catboost": (".cbm", self._save_catboost),
         }
 
-    def detect_and_save(
-        self,
-        model: Any,
-        output_path: str,
-        user_format: Optional[str] = None
-    ) -> Tuple[str, str]:
+    def detect_and_save(self, model: Any, output_path: str, user_format: Optional[str] = None) -> Tuple[str, str]:
         """
         Detect model type and save with optimal format
 
@@ -66,7 +62,7 @@ class ModelFormatDetector:
 
         # Fallback to pickle
         print(f"[ModelDetector] Unknown model type, using pickle fallback")
-        ext = '.pkl'
+        ext = ".pkl"
         final_path = f"{output_path}{ext}"
         self._save_pickle(model, final_path)
         return final_path, ext
@@ -75,30 +71,32 @@ class ModelFormatDetector:
         """Parse natural language format specification"""
         format_lower = user_format.lower()
 
-        if 'onnx' in format_lower:
-            return ('.onnx', self._save_onnx)
-        elif 'joblib' in format_lower:
-            return ('.joblib', self._save_sklearn)
-        elif 'pickle' in format_lower or 'pkl' in format_lower:
-            return ('.pkl', self._save_pickle)
-        elif 'pytorch' in format_lower or '.pt' in format_lower:
-            return ('.pt', self._save_pytorch)
-        elif 'h5' in format_lower or 'hdf5' in format_lower:
-            return ('.h5', self._save_keras)
-        elif 'savedmodel' in format_lower:
-            return ('', self._save_tensorflow_savedmodel)
+        if "onnx" in format_lower:
+            return (".onnx", self._save_onnx)
+        elif "joblib" in format_lower:
+            return (".joblib", self._save_sklearn)
+        elif "pickle" in format_lower or "pkl" in format_lower:
+            return (".pkl", self._save_pickle)
+        elif "pytorch" in format_lower or ".pt" in format_lower:
+            return (".pt", self._save_pytorch)
+        elif "h5" in format_lower or "hdf5" in format_lower:
+            return (".h5", self._save_keras)
+        elif "savedmodel" in format_lower:
+            return ("", self._save_tensorflow_savedmodel)
 
         return None
 
     def _save_sklearn(self, model: Any, path: str):
         """Save sklearn model with joblib"""
         import joblib
+
         joblib.dump(model, path)
         print(f"[ModelDetector] Saved with joblib: {path}")
 
     def _save_pytorch(self, model: Any, path: str):
         """Save PyTorch model state dict"""
         import torch
+
         torch.save(model.state_dict(), path)
         print(f"[ModelDetector] Saved PyTorch state_dict: {path}")
 
@@ -129,7 +127,7 @@ class ModelFormatDetector:
 
     def _save_pickle(self, model: Any, path: str):
         """Fallback pickle save"""
-        with open(path, 'wb') as f:
+        with open(path, "wb") as f:
             pickle.dump(model, f)
         print(f"[ModelDetector] Saved with pickle: {path}")
 
@@ -142,18 +140,18 @@ class ModelFormatDetector:
             from skl2onnx.common.data_types import FloatTensorType
 
             # Attempt sklearn to ONNX conversion
-            initial_type = [('float_input', FloatTensorType([None, model.n_features_in_]))]
+            initial_type = [("float_input", FloatTensorType([None, model.n_features_in_]))]
             onnx_model = convert_sklearn(model, initial_types=initial_type)
-            with open(path, 'wb') as f:
+            with open(path, "wb") as f:
                 f.write(onnx_model.SerializeToString())
             print(f"[ModelDetector] Saved as ONNX: {path}")
         except Exception as e:
             print(f"[ModelDetector] ONNX conversion failed: {e}, falling back to pickle")
-            self._save_pickle(model, path.replace('.onnx', '.pkl'))
+            self._save_pickle(model, path.replace(".onnx", ".pkl"))
 
     def _save_tensorflow_savedmodel(self, model: Any, path: str):
         """Save TensorFlow SavedModel format"""
-        model.save(path, save_format='tf')
+        model.save(path, save_format="tf")
         print(f"[ModelDetector] Saved TensorFlow SavedModel: {path}")
 
 
@@ -162,24 +160,20 @@ def find_trained_model(exec_globals: dict) -> Optional[Any]:
     Find trained model in execution globals
     Tries common variable names
     """
-    common_names = ['model', 'trained_model', 'clf', 'classifier', 'regressor', 'estimator', 'pipeline']
+    common_names = ["model", "trained_model", "clf", "classifier", "regressor", "estimator", "pipeline"]
 
     for var_name in common_names:
         if var_name in exec_globals:
             obj = exec_globals[var_name]
             # Check if it has fit method (likely a model)
-            if hasattr(obj, 'fit') or hasattr(obj, 'predict'):
+            if hasattr(obj, "fit") or hasattr(obj, "predict"):
                 print(f"[Wrapper] Found model in variable: {var_name}")
                 return obj
 
     return None
 
 
-def train_wrapper(
-    user_code: str,
-    output_dir: str = '/opt/ml/model',
-    user_format: Optional[str] = None
-) -> dict:
+def train_wrapper(user_code: str, output_dir: str = "/opt/ml/model", user_format: Optional[str] = None) -> dict:
     """
     Execute user training code and save model with auto format detection
 
@@ -206,6 +200,7 @@ def train_wrapper(
     except Exception as e:
         print(f"[Wrapper] Training execution failed: {e}")
         import traceback
+
         traceback.print_exc()
         raise
 
@@ -219,34 +214,28 @@ def train_wrapper(
 
     detector = ModelFormatDetector()
     model_path, format_used = detector.detect_and_save(
-        model=model,
-        output_path=f"{output_dir}/model",
-        user_format=user_format
+        model=model, output_path=f"{output_dir}/model", user_format=user_format
     )
 
     model_module = type(model).__module__
     model_class = type(model).__name__
 
     metadata = {
-        'model_type': f'{model_module}.{model_class}',
-        'format': format_used,
-        'user_specified_format': user_format,
-        'model_path': model_path
+        "model_type": f"{model_module}.{model_class}",
+        "format": format_used,
+        "user_specified_format": user_format,
+        "model_path": model_path,
     }
 
     metadata_path = f"{output_dir}/metadata.json"
-    with open(metadata_path, 'w') as f:
+    with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
     print(f"[Wrapper] MODEL_SAVED:{model_path}")
     print(f"[Wrapper] MODEL_FORMAT:{format_used}")
     print(f"[Wrapper] METADATA_SAVED:{metadata_path}")
 
-    return {
-        'model_path': model_path,
-        'format': format_used,
-        'metadata': metadata
-    }
+    return {"model_path": model_path, "format": format_used, "metadata": metadata}
 
 
 if __name__ == "__main__":
@@ -258,25 +247,21 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--code-file', type=str, help='Path to training code file')
-    parser.add_argument('--format', type=str, default=None, help='Desired save format')
-    parser.add_argument('--output-dir', type=str, default='/opt/ml/model', help='Output directory')
+    parser.add_argument("--code-file", type=str, help="Path to training code file")
+    parser.add_argument("--format", type=str, default=None, help="Desired save format")
+    parser.add_argument("--output-dir", type=str, default="/opt/ml/model", help="Output directory")
 
     args = parser.parse_args()
 
     if args.code_file and os.path.exists(args.code_file):
-        with open(args.code_file, 'r') as f:
+        with open(args.code_file, "r") as f:
             training_code = f.read()
     else:
-        training_code = os.getenv('TRAINING_CODE')
+        training_code = os.getenv("TRAINING_CODE")
         if not training_code:
             raise ValueError("No training code provided via --code-file or TRAINING_CODE env var")
 
-    result = train_wrapper(
-        user_code=training_code,
-        output_dir=args.output_dir,
-        user_format=args.format
-    )
+    result = train_wrapper(user_code=training_code, output_dir=args.output_dir, user_format=args.format)
 
     print("[Wrapper] Training completed successfully")
     print(json.dumps(result, indent=2))

@@ -9,6 +9,7 @@ try:
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import sessionmaker, scoped_session
     from sqlalchemy.pool import StaticPool
+
     SQLALCHEMY_AVAILABLE = True
 except ImportError:
     SQLALCHEMY_AVAILABLE = False
@@ -21,13 +22,11 @@ class TestConcurrentWrites:
     @pytest.fixture
     def db_engine(self):
         engine = create_engine(
-            'sqlite:///:memory:',
-            connect_args={'check_same_thread': False, 'timeout': 30},
-            poolclass=StaticPool
+            "sqlite:///:memory:", connect_args={"check_same_thread": False, "timeout": 30}, poolclass=StaticPool
         )
         Base.metadata.create_all(engine)
         with engine.connect() as conn:
-            conn.execute(text('PRAGMA journal_mode=WAL'))
+            conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.commit()
         return engine
 
@@ -45,11 +44,11 @@ class TestConcurrentWrites:
                 try:
                     session_factory.close()
                     dataset = DatasetCharacteristics(
-                        dataset_hash=f'concurrent_ds_{idx}',
+                        dataset_hash=f"concurrent_ds_{idx}",
                         n_samples=100,
                         n_features=5,
-                        target_type='classification',
-                        domain='test'
+                        target_type="classification",
+                        domain="test",
                     )
                     session_factory.add(dataset)
                     session_factory.commit()
@@ -74,9 +73,7 @@ class TestConcurrentWrites:
                 try:
                     session_factory.close()
                     metric = SystemMetrics(
-                        metric_id=f'concurrent_metric_{idx}',
-                        metric_type='test',
-                        metric_value=idx * 1.0
+                        metric_id=f"concurrent_metric_{idx}", metric_type="test", metric_value=idx * 1.0
                     )
                     session_factory.add(metric)
                     session_factory.commit()
@@ -110,11 +107,7 @@ class TestConcurrentWrites:
 
     def test_concurrent_updates_same_record(self, session_factory):
         dataset = DatasetCharacteristics(
-            dataset_hash='update_race',
-            n_samples=100,
-            n_features=5,
-            target_type='classification',
-            domain='test'
+            dataset_hash="update_race", n_samples=100, n_features=5, target_type="classification", domain="test"
         )
         session_factory.add(dataset)
         session_factory.commit()
@@ -122,7 +115,7 @@ class TestConcurrentWrites:
 
         def update_record(new_value):
             try:
-                ds = session_factory.query(DatasetCharacteristics).filter_by(dataset_hash='update_race').first()
+                ds = session_factory.query(DatasetCharacteristics).filter_by(dataset_hash="update_race").first()
                 if ds:
                     ds.n_samples = new_value
                     session_factory.commit()
@@ -131,10 +124,7 @@ class TestConcurrentWrites:
             finally:
                 session_factory.remove()
 
-        threads = [
-            threading.Thread(target=update_record, args=(i * 100,))
-            for i in range(1, 6)
-        ]
+        threads = [threading.Thread(target=update_record, args=(i * 100,)) for i in range(1, 6)]
 
         for thread in threads:
             thread.start()
@@ -142,7 +132,7 @@ class TestConcurrentWrites:
         for thread in threads:
             thread.join()
 
-        final_ds = session_factory.query(DatasetCharacteristics).filter_by(dataset_hash='update_race').first()
+        final_ds = session_factory.query(DatasetCharacteristics).filter_by(dataset_hash="update_race").first()
         assert final_ds is not None
         assert final_ds.n_samples in [100, 200, 300, 400, 500]
         session_factory.remove()
@@ -150,11 +140,7 @@ class TestConcurrentWrites:
     def test_concurrent_reads_consistent(self, session_factory):
         for i in range(10):
             dataset = DatasetCharacteristics(
-                dataset_hash=f'read_test_{i}',
-                n_samples=100,
-                n_features=5,
-                target_type='classification',
-                domain='test'
+                dataset_hash=f"read_test_{i}", n_samples=100, n_features=5, target_type="classification", domain="test"
             )
             session_factory.add(dataset)
         session_factory.commit()
@@ -167,9 +153,11 @@ class TestConcurrentWrites:
             for attempt in range(max_retries):
                 try:
                     session_factory.close()
-                    count = session_factory.query(DatasetCharacteristics).filter(
-                        DatasetCharacteristics.dataset_hash.like('read_test_%')
-                    ).count()
+                    count = (
+                        session_factory.query(DatasetCharacteristics)
+                        .filter(DatasetCharacteristics.dataset_hash.like("read_test_%"))
+                        .count()
+                    )
                     read_counts.append(count)
                     break
                 except Exception as e:
@@ -197,11 +185,7 @@ class TestConcurrentWrites:
         def insert_with_delay(idx):
             try:
                 dataset = DatasetCharacteristics(
-                    dataset_hash=f'race_{idx}',
-                    n_samples=100,
-                    n_features=5,
-                    target_type='classification',
-                    domain='test'
+                    dataset_hash=f"race_{idx}", n_samples=100, n_features=5, target_type="classification", domain="test"
                 )
                 session_factory.add(dataset)
                 time.sleep(0.01)

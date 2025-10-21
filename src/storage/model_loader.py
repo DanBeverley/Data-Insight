@@ -13,12 +13,7 @@ class ModelLoader:
     Handles loading models from blob storage with local caching
     """
 
-    def __init__(
-        self,
-        blob_service,
-        registry_service,
-        cache_dir: Optional[Path] = None
-    ):
+    def __init__(self, blob_service, registry_service, cache_dir: Optional[Path] = None):
         """
         Args:
             blob_service: BlobStorageService instance
@@ -30,8 +25,9 @@ class ModelLoader:
 
         if cache_dir is None:
             from src.config import settings
-            storage_config = settings.get('object_storage', {})
-            cache_path = storage_config.get('cache_dir', 'data/model_cache')
+
+            storage_config = settings.get("object_storage", {})
+            cache_path = storage_config.get("cache_dir", "data/model_cache")
             self.cache_dir = Path(cache_path)
         else:
             self.cache_dir = Path(cache_dir)
@@ -39,10 +35,7 @@ class ModelLoader:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def load_model_for_session(
-        self,
-        session_id: str,
-        model_type: Optional[str] = None,
-        model_id: Optional[str] = None
+        self, session_id: str, model_type: Optional[str] = None, model_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Load model for a session, downloading from blob storage if needed
@@ -60,30 +53,27 @@ class ModelLoader:
             if model_id:
                 model_info = self.registry.get_model_download_info(model_id)
             else:
-                model = self.registry.find_model(
-                    session_id=session_id,
-                    model_type=model_type
-                )
+                model = self.registry.find_model(session_id=session_id, model_type=model_type)
                 if not model:
                     logger.warning(f"No model found for session {session_id}, type {model_type}")
                     return None
 
-                model_info = self.registry.get_model_download_info(model['model_id'])
+                model_info = self.registry.get_model_download_info(model["model_id"])
 
             # Check local cache
-            cached_path = self._get_cache_path(model_info['model_id'])
+            cached_path = self._get_cache_path(model_info["model_id"])
 
             if cached_path.exists():
                 # Verify checksum
                 actual_checksum = self.blob_service._compute_sha256(cached_path)
-                if actual_checksum == model_info['checksum']:
+                if actual_checksum == model_info["checksum"]:
                     logger.info(f"Using cached model: {model_info['model_id']}")
                     return {
                         "local_path": str(cached_path),
-                        "model_id": model_info['model_id'],
-                        "model_type": model_info['model_type'],
-                        "framework": model_info.get('framework'),
-                        "from_cache": True
+                        "model_id": model_info["model_id"],
+                        "model_type": model_info["model_type"],
+                        "framework": model_info.get("framework"),
+                        "from_cache": True,
                     }
                 else:
                     logger.warning(f"Cache checksum mismatch for {model_info['model_id']}, re-downloading")
@@ -92,20 +82,18 @@ class ModelLoader:
             # Download from blob storage
             logger.info(f"Downloading model from blob storage: {model_info['blob_path']}")
             download_result = self.blob_service.download_file(
-                blob_path=model_info['blob_path'],
-                local_path=cached_path,
-                verify_checksum=True
+                blob_path=model_info["blob_path"], local_path=cached_path, verify_checksum=True
             )
 
             logger.info(f"Model downloaded and verified: {model_info['model_id']}")
 
             return {
                 "local_path": str(cached_path),
-                "model_id": model_info['model_id'],
-                "model_type": model_info['model_type'],
-                "framework": model_info.get('framework'),
+                "model_id": model_info["model_id"],
+                "model_type": model_info["model_type"],
+                "framework": model_info.get("framework"),
                 "from_cache": False,
-                "size_bytes": download_result['size_bytes']
+                "size_bytes": download_result["size_bytes"],
             }
 
         except Exception as e:
@@ -118,7 +106,7 @@ class ModelLoader:
         session_id: str,
         model_type: Optional[str] = None,
         model_id: Optional[str] = None,
-        sandbox_path: Optional[str] = None
+        sandbox_path: Optional[str] = None,
     ) -> Optional[str]:
         """
         Load model and upload to E2B sandbox for use in code execution
@@ -135,17 +123,13 @@ class ModelLoader:
         """
         try:
             # Load model locally first
-            model_data = self.load_model_for_session(
-                session_id=session_id,
-                model_type=model_type,
-                model_id=model_id
-            )
+            model_data = self.load_model_for_session(session_id=session_id, model_type=model_type, model_id=model_id)
 
             if not model_data:
                 logger.error("Model not found for upload to sandbox")
                 return None
 
-            local_path = Path(model_data['local_path'])
+            local_path = Path(model_data["local_path"])
             filename = local_path.name
 
             # Determine sandbox path
@@ -153,7 +137,7 @@ class ModelLoader:
                 sandbox_path = f"/home/user/{filename}"
 
             # Read local file
-            with open(local_path, 'rb') as f:
+            with open(local_path, "rb") as f:
                 file_content = f.read()
 
             # Upload to sandbox
@@ -187,8 +171,9 @@ class ModelLoader:
         try:
             if max_size_mb is None:
                 from src.config import settings
-                storage_config = settings.get('object_storage', {})
-                max_size_mb = storage_config.get('cache_max_size_mb', 500)
+
+                storage_config = settings.get("object_storage", {})
+                max_size_mb = storage_config.get("cache_max_size_mb", 500)
 
             max_size_bytes = max_size_mb * 1024 * 1024
 
@@ -199,11 +184,7 @@ class ModelLoader:
             for file_path in self.cache_dir.rglob("*.model"):
                 if file_path.is_file():
                     stat = file_path.stat()
-                    cache_files.append({
-                        "path": file_path,
-                        "size": stat.st_size,
-                        "atime": stat.st_atime
-                    })
+                    cache_files.append({"path": file_path, "size": stat.st_size, "atime": stat.st_atime})
                     total_size += stat.st_size
 
             if total_size <= max_size_bytes:
@@ -211,7 +192,7 @@ class ModelLoader:
                 return 0
 
             # Sort by access time (oldest first)
-            cache_files.sort(key=lambda x: x['atime'])
+            cache_files.sort(key=lambda x: x["atime"])
 
             # Delete oldest files until within limit
             deleted_count = 0
@@ -219,8 +200,8 @@ class ModelLoader:
                 if total_size <= max_size_bytes:
                     break
 
-                file_info['path'].unlink()
-                total_size -= file_info['size']
+                file_info["path"].unlink()
+                total_size -= file_info["size"]
                 deleted_count += 1
                 logger.info(f"Deleted cached model: {file_info['path'].name}")
 

@@ -1,8 +1,10 @@
 """Progressive session memory that learns from successes and failures"""
+
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 import json
+
 
 @dataclass
 class Turn:
@@ -17,6 +19,7 @@ class Turn:
     self_corrected: bool = False
     attempts: int = 1
 
+
 @dataclass
 class SessionMemory:
     session_id: str
@@ -28,31 +31,35 @@ class SessionMemory:
         turn = Turn(
             turn_id=len(self.turns) + 1,
             timestamp=datetime.now().isoformat(),
-            user_request=turn_data.get('user_request', ''),
-            code_executed=turn_data.get('code', ''),
-            success=turn_data.get('success', False),
-            output=turn_data.get('output', ''),
-            error=turn_data.get('error', ''),
-            artifacts=turn_data.get('artifacts', []),
-            self_corrected=turn_data.get('self_corrected', False),
-            attempts=turn_data.get('attempts', 1)
+            user_request=turn_data.get("user_request", ""),
+            code_executed=turn_data.get("code", ""),
+            success=turn_data.get("success", False),
+            output=turn_data.get("output", ""),
+            error=turn_data.get("error", ""),
+            artifacts=turn_data.get("artifacts", []),
+            self_corrected=turn_data.get("self_corrected", False),
+            attempts=turn_data.get("attempts", 1),
         )
 
         self.turns.append(turn)
 
         if turn.success:
-            self.successful_patterns.append({
-                'request_type': self._categorize_request(turn.user_request),
-                'code': turn.code_executed,
-                'timestamp': turn.timestamp
-            })
+            self.successful_patterns.append(
+                {
+                    "request_type": self._categorize_request(turn.user_request),
+                    "code": turn.code_executed,
+                    "timestamp": turn.timestamp,
+                }
+            )
         else:
-            self.failed_patterns.append({
-                'request_type': self._categorize_request(turn.user_request),
-                'code': turn.code_executed,
-                'error': turn.error[:200],
-                'timestamp': turn.timestamp
-            })
+            self.failed_patterns.append(
+                {
+                    "request_type": self._categorize_request(turn.user_request),
+                    "code": turn.code_executed,
+                    "error": turn.error[:200],
+                    "timestamp": turn.timestamp,
+                }
+            )
 
     def get_learning_context(self) -> str:
         if not self.turns:
@@ -94,19 +101,21 @@ class SessionMemory:
     def _categorize_request(self, request: str) -> str:
         request_lower = request.lower()
 
-        if any(kw in request_lower for kw in ['train', 'model', 'fit', 'predict']):
-            return 'modeling'
-        elif any(kw in request_lower for kw in ['plot', 'visualiz', 'chart', 'graph']):
-            return 'visualization'
-        elif any(kw in request_lower for kw in ['correlat', 'statistic', 'distribut']):
-            return 'analysis'
+        if any(kw in request_lower for kw in ["train", "model", "fit", "predict"]):
+            return "modeling"
+        elif any(kw in request_lower for kw in ["plot", "visualiz", "chart", "graph"]):
+            return "visualization"
+        elif any(kw in request_lower for kw in ["correlat", "statistic", "distribut"]):
+            return "analysis"
         else:
-            return 'general'
+            return "general"
+
 
 class SessionMemoryStore:
     def __init__(self):
         import builtins
-        if not hasattr(builtins, '_session_memories'):
+
+        if not hasattr(builtins, "_session_memories"):
             builtins._session_memories = {}
         self.store = builtins._session_memories
 
@@ -119,10 +128,13 @@ class SessionMemoryStore:
         memory = self.get_memory(session_id)
         memory.add_turn(turn_data)
 
+
 memory_store = SessionMemoryStore()
+
 
 def get_session_memory(session_id: str) -> SessionMemory:
     return memory_store.get_memory(session_id)
+
 
 def record_execution(session_id: str, turn_data: Dict[str, Any]):
     memory_store.save_turn(session_id, turn_data)

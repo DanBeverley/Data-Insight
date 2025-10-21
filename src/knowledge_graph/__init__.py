@@ -9,9 +9,4 @@ data science intelligence.
 from .schema import GraphSchema, NodeType, RelationshipType
 from .service import KnowledgeGraphService
 
-__all__ = [
-    'GraphSchema',
-    'NodeType', 
-    'RelationshipType',
-    'KnowledgeGraphService'
-]
+__all__ = ["GraphSchema", "NodeType", "RelationshipType", "KnowledgeGraphService"]

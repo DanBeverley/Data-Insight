@@ -11,8 +11,10 @@ from langchain_core.messages.ai import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END, MessagesState, add_messages
 from typing_extensions import Annotated
+
 try:
     from langgraph.checkpoint.sqlite import SqliteSaver
+
     CHECKPOINTER_AVAILABLE = True
     db_path = "context.db"
     memory = SqliteSaver(conn=sqlite3.connect(db_path, check_same_thread=False))
@@ -23,6 +25,7 @@ except ImportError:
 
 import sys
 import os
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
@@ -30,11 +33,24 @@ try:
     from context_manager import ContextManager, ConversationContext
     from performance_monitor import PerformanceMonitor
     from core.model_manager import ModelManager
-    from core.agent_factory import create_brain_agent, create_hands_agent, create_router_agent, create_status_agent, create_hands_subgraph
+    from core.agent_factory import (
+        create_brain_agent,
+        create_hands_agent,
+        create_router_agent,
+        create_status_agent,
+        create_hands_subgraph,
+    )
     from tools.executor import execute_tool
     from tools.parsers import parse_message_to_tool_call
-    from tools.tool_definitions import (python_code_interpreter, retrieve_historical_patterns, delegate_coding_task,
-                                         knowledge_graph_query, access_learning_data, web_search, zip_artifacts)
+    from tools.tool_definitions import (
+        python_code_interpreter,
+        retrieve_historical_patterns,
+        delegate_coding_task,
+        knowledge_graph_query,
+        access_learning_data,
+        web_search,
+        zip_artifacts,
+    )
     from prompts import get_brain_prompt, get_hands_prompt, get_router_prompt, get_status_agent_prompt
     from utils.context import get_data_context, get_artifacts_context
     from utils.sanitizers import sanitize_output
@@ -46,11 +62,24 @@ except ImportError:
         from .context_manager import ContextManager, ConversationContext
         from .performance_monitor import PerformanceMonitor
         from .core.model_manager import ModelManager
-        from .core.agent_factory import create_brain_agent, create_hands_agent, create_router_agent, create_status_agent, create_hands_subgraph
+        from .core.agent_factory import (
+            create_brain_agent,
+            create_hands_agent,
+            create_router_agent,
+            create_status_agent,
+            create_hands_subgraph,
+        )
         from .tools.executor import execute_tool
         from .tools.parsers import parse_message_to_tool_call
-        from .tools.tool_definitions import (python_code_interpreter, retrieve_historical_patterns, delegate_coding_task,
-                                             knowledge_graph_query, access_learning_data, web_search, zip_artifacts)
+        from .tools.tool_definitions import (
+            python_code_interpreter,
+            retrieve_historical_patterns,
+            delegate_coding_task,
+            knowledge_graph_query,
+            access_learning_data,
+            web_search,
+            zip_artifacts,
+        )
         from .prompts import get_brain_prompt, get_hands_prompt, get_router_prompt, get_status_agent_prompt
         from .utils.context import get_data_context, get_artifacts_context
         from .utils.sanitizers import sanitize_output
@@ -69,6 +98,7 @@ project_root = Path(__file__).parent.parent.parent
 env_file = project_root / ".env"
 load_dotenv(env_file)
 model_manager = ModelManager()
+
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
@@ -89,6 +119,7 @@ class AgentState(TypedDict):
     complexity_reasoning: str
     route_strategy: str
 
+
 class HandsSubgraphState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     session_id: str
@@ -98,8 +129,10 @@ class HandsSubgraphState(TypedDict):
     learning_context: str
     retry_count: int
 
+
 performance_monitor = PerformanceMonitor()
 context_manager = ContextManager()
+
 
 def parse_tool_calls(state: AgentState):
     """Wrapper that delegates to centralized tool call parser"""
@@ -125,9 +158,9 @@ def execute_tools_node(state: AgentState) -> dict:
         session_id = state.get("session_id")
 
         if isinstance(tool_call, dict):
-            tool_name = tool_call['name']
-            tool_args = tool_call.get('args', tool_call.get('arguments', {}))
-            tool_id = tool_call.get('id', f"call_{tool_name}")
+            tool_name = tool_call["name"]
+            tool_args = tool_call.get("args", tool_call.get("arguments", {}))
+            tool_id = tool_call.get("id", f"call_{tool_name}")
         else:
             # Handle LangChain tool call objects
             tool_name = tool_call.name
@@ -139,7 +172,7 @@ def execute_tools_node(state: AgentState) -> dict:
             content = "Error: Session ID is missing."
         else:
             try:
-                if tool_name == 'python_code_interpreter':
+                if tool_name == "python_code_interpreter":
                     print(f"DEBUG: Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
 
                 content = execute_tool(tool_name, tool_args, session_id)
@@ -166,7 +199,7 @@ def execute_tools_node(state: AgentState) -> dict:
         "plan": state.get("plan"),
         "scratchpad": state.get("scratchpad", ""),
         "retry_count": 0,  # Reset after successful tool execution
-        "last_agent_sequence": state.get("last_agent_sequence", []) + ["action"]
+        "last_agent_sequence": state.get("last_agent_sequence", []) + ["action"],
     }
     print(f"DEBUG execute_tools_node: Python executions count: {python_executions}")
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
@@ -178,7 +211,7 @@ def run_router_agent(state: AgentState):
     session_id = state.get("session_id")
     last_user_message = None
     for msg in reversed(state["messages"]):
-        if hasattr(msg, 'type') and msg.type == "human":
+        if hasattr(msg, "type") and msg.type == "human":
             last_user_message = msg
             break
 
@@ -190,7 +223,7 @@ def run_router_agent(state: AgentState):
             "current_agent": "router",
             "complexity_score": 5,
             "complexity_reasoning": "No user message",
-            "route_strategy": "standard"
+            "route_strategy": "standard",
         }
 
     session_context = ""
@@ -199,16 +232,17 @@ def run_router_agent(state: AgentState):
 
     try:
         import builtins
+
         print(f"DEBUG: Router checking session_id: {session_id}")
-        if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+        if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
             session_data = builtins._session_store[session_id]
-            if 'dataframe' in session_data:
-                df = session_data['dataframe']
+            if "dataframe" in session_data:
+                df = session_data["dataframe"]
                 dataset_info = f"Dataset loaded: {df.shape[0]} rows x {df.shape[1]} columns"
                 session_context = f"Session state: {dataset_info}"
                 has_dataset = True
                 print(f"DEBUG: Router found dataset: {dataset_info}")
-            elif 'data_profile' in session_data:
+            elif "data_profile" in session_data:
                 session_context = "Session state: Dataset loaded"
                 has_dataset = True
             else:
@@ -227,19 +261,18 @@ def run_router_agent(state: AgentState):
         analyzer = create_complexity_analyzer(get_router_llm())
         complexity_assessment = analyzer.analyze(
             user_request=last_user_message.content,
-            session_context={'has_dataset': has_dataset, 'artifact_count': artifact_count}
+            session_context={"has_dataset": has_dataset, "artifact_count": artifact_count},
         )
-        print(f"DEBUG: Complexity - Score: {complexity_assessment.score}, Strategy: {complexity_assessment.route_strategy}")
+        print(
+            f"DEBUG: Complexity - Score: {complexity_assessment.score}, Strategy: {complexity_assessment.route_strategy}"
+        )
     except Exception as e:
         print(f"DEBUG: Complexity analysis failed: {e}")
 
     print(f"DEBUG: Router context: {session_context}")
     print(f"DEBUG: Router analyzing message: {str(last_user_message.content)[:100]}...")
 
-    contextual_router_state = {
-        "messages": [last_user_message],
-        "session_context": session_context
-    }
+    contextual_router_state = {"messages": [last_user_message], "session_context": session_context}
 
     llm = create_router_agent()
     prompt = get_router_prompt()
@@ -259,16 +292,16 @@ def run_router_agent(state: AgentState):
                 "current_agent": "router",
                 "complexity_score": complexity_assessment.score if complexity_assessment else 5,
                 "complexity_reasoning": complexity_assessment.reasoning if complexity_assessment else "Default",
-                "route_strategy": complexity_assessment.route_strategy if complexity_assessment else "standard"
+                "route_strategy": complexity_assessment.route_strategy if complexity_assessment else "standard",
             }
 
         json_str = json_match.group(0)
         router_data = json.loads(json_str)
-        decision = router_data.get('routing_decision', 'brain')
+        decision = router_data.get("routing_decision", "brain")
 
-        if complexity_assessment and complexity_assessment.route_strategy == 'direct' and decision == 'hands':
+        if complexity_assessment and complexity_assessment.route_strategy == "direct" and decision == "hands":
             print(f"DEBUG: Enforcing complexity-based routing: direct → hands (no brain summary)")
-        elif complexity_assessment and complexity_assessment.route_strategy == 'collaborative' and decision == 'brain':
+        elif complexity_assessment and complexity_assessment.route_strategy == "collaborative" and decision == "brain":
             print(f"DEBUG: Complexity-based routing: collaborative strategy approved for brain")
 
         print(f"DEBUG: Router decision: {decision}")
@@ -279,7 +312,7 @@ def run_router_agent(state: AgentState):
             "current_agent": "router",
             "complexity_score": complexity_assessment.score if complexity_assessment else 5,
             "complexity_reasoning": complexity_assessment.reasoning if complexity_assessment else "Standard task",
-            "route_strategy": complexity_assessment.route_strategy if complexity_assessment else "standard"
+            "route_strategy": complexity_assessment.route_strategy if complexity_assessment else "standard",
         }
         return result_state
 
@@ -293,25 +326,26 @@ def run_router_agent(state: AgentState):
             "current_agent": "router",
             "complexity_score": 5,
             "complexity_reasoning": "Error in routing",
-            "route_strategy": "standard"
+            "route_strategy": "standard",
         }
+
 
 def run_brain_agent(state: AgentState):
     session_id = state.get("session_id")
     enhanced_state = state.copy()
 
-    if 'plan' not in enhanced_state:
-        enhanced_state['plan'] = None
-    if 'scratchpad' not in enhanced_state:
-        enhanced_state['scratchpad'] = ""
-    if 'current_agent' not in enhanced_state:
-        enhanced_state['current_agent'] = "brain"
-    if 'business_context' not in enhanced_state:
-        enhanced_state['business_context'] = {}
-    if 'retry_count' not in enhanced_state:
-        enhanced_state['retry_count'] = 0
-    if 'last_agent_sequence' not in enhanced_state:
-        enhanced_state['last_agent_sequence'] = []
+    if "plan" not in enhanced_state:
+        enhanced_state["plan"] = None
+    if "scratchpad" not in enhanced_state:
+        enhanced_state["scratchpad"] = ""
+    if "current_agent" not in enhanced_state:
+        enhanced_state["current_agent"] = "brain"
+    if "business_context" not in enhanced_state:
+        enhanced_state["business_context"] = {}
+    if "retry_count" not in enhanced_state:
+        enhanced_state["retry_count"] = 0
+    if "last_agent_sequence" not in enhanced_state:
+        enhanced_state["last_agent_sequence"] = []
 
     last_sequence = enhanced_state.get("last_agent_sequence", [])
     enhanced_state["last_agent_sequence"] = last_sequence + ["brain"]
@@ -320,19 +354,19 @@ def run_brain_agent(state: AgentState):
     messages = enhanced_state.get("messages", [])
     print(f"DEBUG: Brain received {len(messages)} total messages in state")
     for i, msg in enumerate(messages):
-        if hasattr(msg, 'type'):
-            content_preview = str(msg.content)[:80] if hasattr(msg, 'content') else 'no content'
+        if hasattr(msg, "type"):
+            content_preview = str(msg.content)[:80] if hasattr(msg, "content") else "no content"
             print(f"DEBUG: Message {i}: type={msg.type}, content={content_preview}")
     if messages:
         for i in range(len(messages) - 1, max(-1, len(messages) - 3), -1):
             msg = messages[i]
-            if hasattr(msg, 'type') and msg.type == 'tool':
+            if hasattr(msg, "type") and msg.type == "tool":
                 content_str = str(msg.content)
-                if 'Generated' in content_str and 'visualization' in content_str:
+                if "Generated" in content_str and "visualization" in content_str:
                     recent_tool_result = msg.content
                     break
-                elif 'PLOT_SAVED' in content_str and 'plot_' in content_str:
-                    plot_match = re.search(r'PLOT_SAVED:([^\s]+\.png)', content_str)
+                elif "PLOT_SAVED" in content_str and "plot_" in content_str:
+                    plot_match = re.search(r"PLOT_SAVED:([^\s]+\.png)", content_str)
                     if plot_match:
                         recent_tool_result = f"Created visualization: {plot_match.group(1)}"
                         break
@@ -348,11 +382,11 @@ def run_brain_agent(state: AgentState):
     recent_messages = messages[-3:] if messages and len(messages) >= 3 else (messages if messages else [])
     history_parts = []
     for msg in recent_messages:
-        if hasattr(msg, 'type') and hasattr(msg, 'content'):
+        if hasattr(msg, "type") and hasattr(msg, "content"):
             content_preview = str(msg.content)[:50]
-            if msg.type == 'human':
+            if msg.type == "human":
                 history_parts.append(f"User: {content_preview}")
-            elif msg.type == 'ai':
+            elif msg.type == "ai":
                 history_parts.append(f"Assistant: {content_preview}")
     if history_parts:
         conversation_history = " | ".join(history_parts)
@@ -379,22 +413,28 @@ def run_brain_agent(state: AgentState):
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
     filtered_messages = []
-    brain_tool_names = {'delegate_coding_task', 'knowledge_graph_query', 'access_learning_data', 'web_search', 'zip_artifacts'}
+    brain_tool_names = {
+        "delegate_coding_task",
+        "knowledge_graph_query",
+        "access_learning_data",
+        "web_search",
+        "zip_artifacts",
+    }
 
     for msg in messages:
-        if hasattr(msg, 'type'):
-            if msg.type == 'human':
+        if hasattr(msg, "type"):
+            if msg.type == "human":
                 filtered_messages.append(msg)
-            elif msg.type == 'ai':
+            elif msg.type == "ai":
                 if has_tool_calls(msg):
-                    compatible_calls = [tc for tc in msg.tool_calls if tc.get('name') in brain_tool_names]
+                    compatible_calls = [tc for tc in msg.tool_calls if tc.get("name") in brain_tool_names]
                     if compatible_calls:
                         filtered_messages.append(msg)
                     elif msg.content:
                         filtered_messages.append(AIMessage(content=msg.content))
                 else:
                     filtered_messages.append(msg)
-            elif msg.type == 'tool':
+            elif msg.type == "tool":
                 filtered_messages.append(msg)
 
     # Add template variables to state
@@ -406,8 +446,8 @@ def run_brain_agent(state: AgentState):
     llm = create_brain_agent()
     brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search, zip_artifacts]
 
-    model_name = getattr(llm, 'model', '')
-    if 'phi3' in model_name.lower():
+    model_name = getattr(llm, "model", "")
+    if "phi3" in model_name.lower():
         llm_with_tools = llm
     else:
         llm_with_tools = llm.bind_tools(brain_tools)
@@ -416,7 +456,7 @@ def run_brain_agent(state: AgentState):
     agent_runnable = prompt | llm_with_tools
 
     try:
-        original_count = len(enhanced_state.get('messages', []))
+        original_count = len(enhanced_state.get("messages", []))
         filtered_count = len(filtered_messages)
         print(f"DEBUG: Brain agent filtered messages: {original_count} -> {filtered_count}")
         response = agent_runnable.invoke(enhanced_state_with_context)
@@ -428,22 +468,26 @@ def run_brain_agent(state: AgentState):
             "messages": [response],
             "current_agent": "brain",
             "last_agent_sequence": enhanced_state["last_agent_sequence"],
-            "retry_count": enhanced_state["retry_count"]
+            "retry_count": enhanced_state["retry_count"],
         }
 
         try:
             from core.session_memory import record_execution
-            last_user_msg = next((m.content for m in messages if hasattr(m, 'type') and m.type == 'human'), "")
-            record_execution(session_id, {
-                'user_request': last_user_msg,
-                'code': '',
-                'success': True,
-                'output': str(response.content)[:500],
-                'error': '',
-                'artifacts': [],
-                'self_corrected': False,
-                'attempts': 1
-            })
+
+            last_user_msg = next((m.content for m in messages if hasattr(m, "type") and m.type == "human"), "")
+            record_execution(
+                session_id,
+                {
+                    "user_request": last_user_msg,
+                    "code": "",
+                    "success": True,
+                    "output": str(response.content)[:500],
+                    "error": "",
+                    "artifacts": [],
+                    "self_corrected": False,
+                    "attempts": 1,
+                },
+            )
         except Exception as e:
             logger.debug(f"Session memory recording skipped: {e}")
 
@@ -452,6 +496,7 @@ def run_brain_agent(state: AgentState):
         print(f"DEBUG: Brain agent full error: {str(e)}")
         print(f"DEBUG: Brain agent error type: {type(e)}")
         return {"messages": [AIMessage(content=f"Brain agent error: {e}")]}
+
 
 def run_hands_agent(state: AgentState):
     session_id = state.get("session_id")
@@ -475,19 +520,21 @@ def run_hands_agent(state: AgentState):
 
     # Check if this is a delegation from brain or direct routing from router
     current_agent = enhanced_state.get("current_agent", "")
-    previous_agent = enhanced_state.get("last_agent_sequence", [])[-1] if enhanced_state.get("last_agent_sequence") else ""
+    previous_agent = (
+        enhanced_state.get("last_agent_sequence", [])[-1] if enhanced_state.get("last_agent_sequence") else ""
+    )
 
     if previous_agent == "router":
         # Direct routing from router - use original user message
-        user_messages = [msg for msg in state["messages"] if hasattr(msg, 'type') and msg.type == 'human']
+        user_messages = [msg for msg in state["messages"] if hasattr(msg, "type") and msg.type == "human"]
         if user_messages:
             task_description = user_messages[-1].content
             print(f"DEBUG: Direct router->hands task: {task_description}")
     elif last_message and has_tool_calls(last_message):
         # Delegation from brain
         tool_call = last_message.tool_calls[0]
-        if tool_call.get('name') == 'delegate_coding_task':
-            task_description = tool_call.get('args', {}).get('task_description', task_description)
+        if tool_call.get("name") == "delegate_coding_task":
+            task_description = tool_call.get("args", {}).get("task_description", task_description)
             print(f"DEBUG: Brain delegation task: {task_description}")
 
     # Get dataset and artifacts context for Hands agent
@@ -497,12 +544,12 @@ def run_hands_agent(state: AgentState):
     logger.debug(f"Artifacts context length: {len(artifacts_context) if artifacts_context else 0} chars")
     logger.debug(f"Hands agent starting with session_id: {session_id}")
 
-    # Check if task_description was already set by Brain delegation 
+    # Check if task_description was already set by Brain delegation
     # If so, don't overwrite it with router decision logic
     if task_description == "Perform data analysis task":
         router_decision = state.get("router_decision")
         if router_decision == "hands":
-            user_messages = [msg for msg in state["messages"] if hasattr(msg, 'type') and msg.type == 'human']
+            user_messages = [msg for msg in state["messages"] if hasattr(msg, "type") and msg.type == "human"]
             if user_messages:
                 task_description = user_messages[-1].content
                 print(f"DEBUG: Direct router->hands task: {task_description}")
@@ -512,9 +559,10 @@ def run_hands_agent(state: AgentState):
     print(f"DEBUG: Using subgraph for hands execution: {task_description}")
 
     # Detect if this is a training task and predict execution environment
-    is_training_task = any(keyword in task_description.lower() for keyword in [
-        'train', 'model', 'fit', 'predict', 'classify', 'regression', 'cluster'
-    ])
+    is_training_task = any(
+        keyword in task_description.lower()
+        for keyword in ["train", "model", "fit", "predict", "classify", "regression", "cluster"]
+    )
 
     execution_environment = "cpu"
     environment_context = ""
@@ -523,11 +571,12 @@ def run_hands_agent(state: AgentState):
         # Get dataset info for decision
         try:
             import builtins
+
             dataset_rows, feature_count = 1000, 10  # defaults
 
-            if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+            if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
                 session_data = builtins._session_store[session_id]
-                df = session_data.get('dataframe')
+                df = session_data.get("dataframe")
                 if df is not None:
                     dataset_rows, feature_count = len(df), len(df.columns)
                     print(f"DEBUG: Dataset size: {dataset_rows} rows × {feature_count} features")
@@ -539,10 +588,7 @@ def run_hands_agent(state: AgentState):
             from .core.training_decision import TrainingDecisionEngine
         decision_engine = TrainingDecisionEngine()
         decision = decision_engine.decide(
-            dataset_rows=dataset_rows,
-            feature_count=feature_count,
-            model_type="",
-            code=None
+            dataset_rows=dataset_rows, feature_count=feature_count, model_type="", code=None
         )
         execution_environment = decision.environment
         print(f"DEBUG: Training decision - {decision.environment.upper()} ({decision.reasoning})")
@@ -591,15 +637,15 @@ def run_hands_agent(state: AgentState):
     format_context = ""
     if detected_format:
         format_hints = {
-            'onnx': 'Use torch.onnx.export() or skl2onnx for ONNX format',
-            'joblib': 'Use joblib.dump() for saving',
-            'pickle': 'Use pickle.dump() for saving',
-            'pytorch': 'Use torch.save() for PyTorch .pt/.pth format',
-            'h5': 'Use model.save() for Keras .h5 format',
-            'savedmodel': 'Use tf.saved_model.save() for TensorFlow SavedModel',
-            'json': 'Use model.save_model() with format="json" for XGBoost'
+            "onnx": "Use torch.onnx.export() or skl2onnx for ONNX format",
+            "joblib": "Use joblib.dump() for saving",
+            "pickle": "Use pickle.dump() for saving",
+            "pytorch": "Use torch.save() for PyTorch .pt/.pth format",
+            "h5": "Use model.save() for Keras .h5 format",
+            "savedmodel": "Use tf.saved_model.save() for TensorFlow SavedModel",
+            "json": 'Use model.save_model() with format="json" for XGBoost',
         }
-        format_hint = format_hints.get(detected_format, f'Save in {detected_format} format')
+        format_hint = format_hints.get(detected_format, f"Save in {detected_format} format")
         format_context = f"\n\n**USER REQUESTED FORMAT:** {detected_format.upper()}\n{format_hint}"
         print(f"DEBUG: Detected model format preference: {detected_format}")
 
@@ -615,14 +661,17 @@ def run_hands_agent(state: AgentState):
     # Store execution environment decision in session for later use
     if is_training_task:
         import builtins
-        if hasattr(builtins, '_session_store') and session_id in builtins._session_store:
-            builtins._session_store[session_id]['training_environment'] = execution_environment
-            builtins._session_store[session_id]['training_decision'] = {
-                'environment': decision.environment,
-                'reasoning': decision.reasoning,
-                'confidence': decision.confidence
+
+        if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+            builtins._session_store[session_id]["training_environment"] = execution_environment
+            builtins._session_store[session_id]["training_decision"] = {
+                "environment": decision.environment,
+                "reasoning": decision.reasoning,
+                "confidence": decision.confidence,
             }
-            print(f"DEBUG: Stored training decision: {execution_environment.upper()} (confidence: {decision.confidence:.2f})")
+            print(
+                f"DEBUG: Stored training decision: {execution_environment.upper()} (confidence: {decision.confidence:.2f})"
+            )
 
     # Create subgraph state with task as user message
     subgraph_state = {
@@ -632,7 +681,7 @@ def run_hands_agent(state: AgentState):
         "data_context": enhanced_data_context,
         "pattern_context": "",
         "learning_context": "",
-        "retry_count": state.get("retry_count", 0)
+        "retry_count": state.get("retry_count", 0),
     }
 
     # Execute hands subgraph to isolate execution
@@ -641,7 +690,7 @@ def run_hands_agent(state: AgentState):
         result = hands_subgraph.invoke(subgraph_state)
         if result and "messages" in result and result["messages"]:
             final_message = result["messages"][-1]
-            if hasattr(final_message, 'content'):
+            if hasattr(final_message, "content"):
                 summary_content = final_message.content
             else:
                 summary_content = str(final_message)
@@ -652,12 +701,14 @@ def run_hands_agent(state: AgentState):
         complexity_score = state.get("complexity_score", 5)
 
         last_message = state.get("messages", [])[-1] if state.get("messages") else None
-        is_delegation = (last_message and
-                        has_tool_calls(last_message) and
-                        last_message.tool_calls[0].get('name') == 'delegate_coding_task')
+        is_delegation = (
+            last_message
+            and has_tool_calls(last_message)
+            and last_message.tool_calls[0].get("name") == "delegate_coding_task"
+        )
 
         if is_delegation:
-            tool_call_id = last_message.tool_calls[0].get('id', 'unknown')
+            tool_call_id = last_message.tool_calls[0].get("id", "unknown")
             summary_response = ToolMessage(content=summary_content, tool_call_id=tool_call_id)
         elif complexity_score <= 3:
             print(f"DEBUG: Simple task (complexity={complexity_score}), skipping Brain summary")
@@ -669,7 +720,7 @@ def run_hands_agent(state: AgentState):
             "messages": [summary_response],
             "current_agent": "hands",
             "last_agent_sequence": enhanced_state.get("last_agent_sequence", []),
-            "retry_count": enhanced_state.get("retry_count", 0)
+            "retry_count": enhanced_state.get("retry_count", 0),
         }
         return result_state
 
@@ -677,49 +728,65 @@ def run_hands_agent(state: AgentState):
         print(f"DEBUG: Hands subgraph execution failed: {e}")
         return {"messages": [AIMessage(content=f"Hands execution failed: {e}")]}
 
+
 async def warmup_models_parallel():
     """Warm up models in parallel for faster startup"""
     import asyncio
+
     async def warmup_brain():
         try:
             brain_agent = create_brain_agent()
             brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search, zip_artifacts]
 
-            model_name = getattr(brain_agent, 'model', '')
-            if 'phi3' in model_name.lower():
+            model_name = getattr(brain_agent, "model", "")
+            if "phi3" in model_name.lower():
                 brain_with_tools = brain_agent
             else:
                 brain_with_tools = brain_agent.bind_tools(brain_tools)
 
-            await (get_brain_prompt() | brain_with_tools).ainvoke({
-                "messages": [("human", "warmup")],
-                "context": "Ready to help analyze data. Need dataset upload first.",
-                "role": "data consultant"
-            })
-        except: pass
+            await (get_brain_prompt() | brain_with_tools).ainvoke(
+                {
+                    "messages": [("human", "warmup")],
+                    "context": "Ready to help analyze data. Need dataset upload first.",
+                    "role": "data consultant",
+                }
+            )
+        except:
+            pass
+
     async def warmup_hands():
         try:
             hands_agent = create_hands_agent()
-            await (get_hands_prompt() | hands_agent).ainvoke({
-                "messages": [("human", "warmup")],
-                "data_context": "",
-                "pattern_context": "",
-                "learning_context": ""
-            })
-        except: pass
+            await (get_hands_prompt() | hands_agent).ainvoke(
+                {"messages": [("human", "warmup")], "data_context": "", "pattern_context": "", "learning_context": ""}
+            )
+        except:
+            pass
+
     async def warmup_router():
         try:
             router_agent = create_router_agent()
             await (get_router_prompt() | router_agent).ainvoke({"messages": [("human", "warmup")]})
-        except: pass
+        except:
+            pass
+
     async def warmup_status():
         try:
             status_agent = create_status_agent()
-            await (get_status_agent_prompt() | status_agent).ainvoke({"agent_name": "system", "user_goal": "startup", "dataset_context": "", "tool_name": "", "tool_details": ""})
-        except: pass
+            await (get_status_agent_prompt() | status_agent).ainvoke(
+                {
+                    "agent_name": "system",
+                    "user_goal": "startup",
+                    "dataset_context": "",
+                    "tool_name": "",
+                    "tool_details": "",
+                }
+            )
+        except:
+            pass
+
     try:
         await asyncio.gather(warmup_brain(), warmup_hands(), warmup_router(), warmup_status())
         print("🚀 All models warmed in parallel")
     except Exception as e:
         print(f"⚠️ Parallel warmup error: {e}")
-

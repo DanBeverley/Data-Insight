@@ -9,52 +9,32 @@ class ErrorEdgeCasesScenario(BaseScenario):
     def __init__(self):
         super().__init__(
             name="Error Handling & Edge Cases",
-            description="Tests system resilience against malformed inputs, timeouts, and edge cases"
+            description="Tests system resilience against malformed inputs, timeouts, and edge cases",
         )
         self.session_id = None
 
     def setup(self) -> None:
         from src.api_utils.session_management import create_new_session
+
         self.session_id = create_new_session()["session_id"]
 
     def define_steps(self) -> List[ScenarioStep]:
         return [
+            ScenarioStep(name="Upload malformed CSV", action="upload_malformed", expected_outcome="error", timeout=30),
             ScenarioStep(
-                name="Upload malformed CSV",
-                action="upload_malformed",
-                expected_outcome="error",
-                timeout=30
+                name="Query without dataset", action="query_no_dataset", expected_outcome="no dataset", timeout=30
             ),
+            ScenarioStep(name="Upload valid dataset", action="upload_valid", expected_outcome="success", timeout=30),
             ScenarioStep(
-                name="Query without dataset",
-                action="query_no_dataset",
-                expected_outcome="no dataset",
-                timeout=30
-            ),
-            ScenarioStep(
-                name="Upload valid dataset",
-                action="upload_valid",
-                expected_outcome="success",
-                timeout=30
-            ),
-            ScenarioStep(
-                name="Ambiguous query",
-                action="ambiguous_query",
-                expected_outcome="clarification",
-                timeout=45
+                name="Ambiguous query", action="ambiguous_query", expected_outcome="clarification", timeout=45
             ),
             ScenarioStep(
                 name="Request non-existent column",
                 action="invalid_column",
                 expected_outcome="error or not found",
-                timeout=30
+                timeout=30,
             ),
-            ScenarioStep(
-                name="Empty message",
-                action="empty_message",
-                expected_outcome="error",
-                timeout=15
-            )
+            ScenarioStep(name="Empty message", action="empty_message", expected_outcome="error", timeout=15),
         ]
 
     def _execute_step(self, step: ScenarioStep) -> bool:
@@ -76,11 +56,13 @@ class ErrorEdgeCasesScenario(BaseScenario):
         from src.api_utils.upload_handler import handle_upload
 
         try:
-            malformed_df = pd.DataFrame({
-                "col1": [1, 2, None, None, None],
-                "col2": ["", "", "", "", ""],
-                "col3": [float('inf'), float('-inf'), float('nan'), 0, 0]
-            })
+            malformed_df = pd.DataFrame(
+                {
+                    "col1": [1, 2, None, None, None],
+                    "col2": ["", "", "", "", ""],
+                    "col3": [float("inf"), float("-inf"), float("nan"), 0, 0],
+                }
+            )
 
             result = handle_upload(malformed_df, self.session_id)
             has_warning = result.get("status") != "success" or "warning" in str(result).lower()
@@ -132,11 +114,15 @@ class ErrorEdgeCasesScenario(BaseScenario):
 
         try:
             response = ""
-            for chunk in stream_agent_response("Show correlation between price and nonexistent_column", self.session_id, False):
+            for chunk in stream_agent_response(
+                "Show correlation between price and nonexistent_column", self.session_id, False
+            ):
                 if "content" in chunk:
                     response += chunk["content"]
 
-            has_error_handling = any(word in response.lower() for word in ["not found", "doesn't exist", "error", "invalid"])
+            has_error_handling = any(
+                word in response.lower() for word in ["not found", "doesn't exist", "error", "invalid"]
+            )
             return has_error_handling
         except Exception:
             return True
@@ -156,6 +142,7 @@ class ErrorEdgeCasesScenario(BaseScenario):
     def teardown(self) -> None:
         if self.session_id:
             from src.api_utils.session_management import clear_session
+
             try:
                 clear_session(self.session_id)
             except:
