@@ -6,20 +6,35 @@ from .helpers import convert_pandas_output_to_html
 
 def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str, response_data: Dict[str, Any]) -> None:
     try:
-        from intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+        from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
         data_profile = generate_dataset_profile_for_agent(df, context={'filename': filename, 'upload_session': session_id})
 
         pii_findings = data_profile.profile_metadata.get('pii_detection')
-        if pii_findings and pii_findings.privacy_score < 0.7:
-            response_data["pii_detection"] = {
-                "pii_detected": True,
-                "risk_level": pii_findings.risk_level,
-                "privacy_score": round(pii_findings.privacy_score, 2),
-                "reidentification_risk": round(pii_findings.reidentification_risk, 2),
-                "recommendations": pii_findings.recommendations,
-                "requires_consent": True,
-                "message": f"Privacy concerns detected (Risk Level: {pii_findings.risk_level}). Would you like to apply privacy protection before analysis?"
-            }
+        if pii_findings and pii_findings.detected_columns:
+            num_sensitive_cols = len(pii_findings.detected_columns)
+            max_sensitivity = max(pii_findings.detected_columns.values()) if pii_findings.detected_columns else 0
+            avg_sensitivity = sum(pii_findings.detected_columns.values()) / len(pii_findings.detected_columns) if pii_findings.detected_columns else 0
+
+            privacy_concern = (
+                pii_findings.privacy_score < 0.7 or
+                pii_findings.reidentification_risk > 0.3 or
+                max_sensitivity > 0.5 or
+                (avg_sensitivity > 0.4 and num_sensitive_cols >= 3) or
+                pii_findings.risk_level in ['high', 'critical']
+            )
+
+            if privacy_concern:
+                response_data["pii_detection"] = {
+                    "pii_detected": True,
+                    "risk_level": pii_findings.risk_level,
+                    "privacy_score": round(pii_findings.privacy_score, 2),
+                    "reidentification_risk": round(pii_findings.reidentification_risk, 2),
+                    "recommendations": pii_findings.recommendations,
+                    "detected_columns": pii_findings.detected_columns,
+                    "detected_types": pii_findings.detected_types or [],
+                    "requires_consent": True,
+                    "message": f"Sensitive data detected in {len(pii_findings.detected_columns)} column(s). Apply privacy protection?"
+                }
 
         response_data["profiling_summary"] = {
             "quality_score": round(data_profile.quality_assessment.get('overall_score', 0), 1) if data_profile.quality_assessment.get('overall_score') else None,
@@ -44,7 +59,7 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
 
 def store_in_knowledge_graph(session_id: str, filename: str, df: pd.DataFrame, data_profile) -> None:
     try:
-        from knowledge_graph.service import SessionDataStorage
+        from src.knowledge_graph.service import SessionDataStorage
         storage = SessionDataStorage()
         storage.add_session(session_id, {
             'dataset_info': {
@@ -90,9 +105,7 @@ print("Dataset loaded successfully!")
         load_result = execute_python_in_sandbox(load_code, session_id)
 
         if load_result["success"]:
-            enhanced_message = "Dataset uploaded and ready for analysis. You can now ask questions about your data."
-
-            response_data["agent_analysis"] = enhanced_message
+            response_data["agent_analysis"] = None
             response_data["agent_session_id"] = session_id
 
             save_code = """
