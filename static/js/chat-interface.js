@@ -1,13 +1,34 @@
+marked.setOptions({
+    gfm:true,
+    breaks:true,
+    heaerIds:false,
+    langPrefix:'language-'
+});
+
 class ChatInterface {
     constructor() {
         this.app = null;
         this.loadingMessageElement = null;
         this.selectedFile = null;
         this.attachmentBadge = null;
+        this.emojiConverter = new EmojiConvertor();
+        this.emojiConverter.replace_mode = 'unified';
     }
 
     setApp(app) {
         this.app = app;
+    }
+
+    closeSettingsPanel() {
+        const settingsPanel = document.getElementById('settingsPanel');
+        const settingsToggleBtn = document.getElementById('settingsToggleBtn');
+        if (settingsPanel && settingsToggleBtn && settingsPanel.classList.contains('open')) {
+            settingsPanel.classList.remove('open');
+            const arrow = settingsToggleBtn.querySelector('.settings-arrow');
+            if (arrow) {
+                arrow.classList.remove('rotated');
+            }
+        }
     }
 
     setupHeroChatInterface() {
@@ -89,6 +110,11 @@ class ChatInterface {
                 e.target.value = '';
             });
         }
+        document.addEventListener('click', (e)=>{
+            if (!settingsPanel || !settingsPanel.classList.contains('open')){return;}
+            const isClickInside = settingsPanel.contains(e.target) || settingsToggleBtn.contains(e.target);
+            if (!isClickInside){this.closeSettingsPanel();}
+        });
     }
 
     streamAgentResponse(message) {
@@ -189,14 +215,6 @@ class ChatInterface {
         existingLines.forEach(line => {
             line.classList.remove('active');
             line.classList.add('completed');
-            const spinner = line.querySelector('.status-spinner');
-            const statusText = line.querySelector('.status-text');
-            if (spinner) {
-                spinner.style.opacity = '0';
-            }
-            if (statusText) {
-                statusText.style.animation = 'none';
-            }
         });
 
         const cleanedText = newStatusText.replace(/^Processing:\s*/i, '').trim();
@@ -204,7 +222,7 @@ class ChatInterface {
         const statusLine = document.createElement('div');
         statusLine.className = `status-line ${statusType === 'active' ? 'active' : statusType}`;
         statusLine.innerHTML = `
-            <div class="status-spinner"></div>
+            <div class="status-dot"></div>
             <div class="status-text">${cleanedText}</div>
         `;
 
@@ -213,10 +231,6 @@ class ChatInterface {
         if (statusType === 'completed') {
             statusLine.classList.remove('active');
             statusLine.classList.add('completed');
-            const spinner = statusLine.querySelector('.status-spinner');
-            if (spinner) {
-                spinner.style.opacity = '0';
-            }
         } else if (statusType === 'active') {
             statusLine.classList.add('active');
         }
@@ -224,13 +238,14 @@ class ChatInterface {
         this.updateTaskProgress(wrapper, statusType);
 
         const allLines = wrapper.querySelectorAll('.status-line');
-        if (allLines.length > 5) {
-            const pastLines = wrapper.querySelectorAll('.status-line.completed');
-            if (pastLines.length > 8) {
-                for (let i = 0; i < pastLines.length - 6; i++) {
-                    pastLines[i].remove();
+        if (allLines.length > 2) {
+            allLines.forEach((line, index) => {
+                if (index < allLines.length - 2) {
+                    line.classList.add('elevated');
+                } else {
+                    line.classList.remove('elevated');
                 }
-            }
+            });
         }
     }
 
@@ -301,79 +316,92 @@ class ChatInterface {
             attachmentDiv.className = 'message-attachment';
             attachmentDiv.innerHTML = `
                 <i class="fa-solid fa-file"></i>
-                <span>${attachmentFileName}</span>
-            `;
+                <span>${attachmentFileName}</span>`;
             contentWrapper.appendChild(attachmentDiv);
         }
+        const content = document.createElement('div');
+        content.className = 'message-content';
 
+        let messageText = '';
         if (typeof responseData === 'string') {
-            const content = document.createElement('div');
-            content.className = 'message-content';
-            // Only format bot messages, not user messages
-            if (sender === 'bot') {
-                content.innerHTML = responseData; // Already formatted by backend
-            } else {
-                // User messages: convert markdown but no table detection
-                content.innerHTML = `<p>${this.convertMarkdownToHtml(responseData)}</p>`;
-            }
-            contentWrapper.appendChild(content);
+            messageText = responseData;
         } else if (responseData && typeof responseData === 'object' && responseData.content) {
-            // Handle structured response data
-            responseData.content.forEach(item => {
-                const content = document.createElement('div');
-                content.className = 'message-content';
-
-                switch (item.type) {
-                    case 'text':
-                        if (sender === 'bot') {
-                            content.innerHTML = item.text; // Already formatted by backend
-                        } else {
-                            content.innerHTML = `<p>${this.convertMarkdownToHtml(item.text)}</p>`;
-                        }
-                        break;
-                    case 'code':
-                        content.innerHTML = `<pre><code class="${item.language || ''}">${item.code}</code></pre>`;
-                        break;
-                    case 'table':
-                        content.innerHTML = this.formatTableContent(item.data);
-                        break;
-                    default:
-                        content.innerHTML = `<p>${this.convertMarkdownToHtml(JSON.stringify(item))}</p>`;
-                }
-
-                contentWrapper.appendChild(content);
-            });
+            // Handle structured response data by joining text parts
+            messageText = responseData.content
+                .filter(item => item.type === 'text')
+                .map(item => item.text)
+                .join('\n\n');
         }
 
-        // Handle plots if provided
+        // Use the markdown converter for the entire message content
+        content.innerHTML = this.convertMarkdownToHtml(messageText);
+        contentWrapper.appendChild(content);
+        
         if (plots && Array.isArray(plots) && plots.length > 0) {
             plots.forEach(plotUrl => {
                 const plotDiv = document.createElement('div');
                 plotDiv.className = 'plot-container';
-
                 if (plotUrl.endsWith('.html')) {
                     plotDiv.innerHTML = `
                         <iframe src="${plotUrl}" width="100%" height="400" frameborder="0">
                             Your browser does not support iframes.
-                        </iframe>
-                    `;
+                        </iframe>`;
                 } else {
                     plotDiv.innerHTML = `
-                        <img src="${plotUrl}" alt="Generated Plot" style="max-width: 100%; height: auto;" />
-                    `;
+                        <img src="${plotUrl}" alt="Generated Plot" style="max-width: 100%; height: auto;" />`;
                 }
-
                 contentWrapper.appendChild(plotDiv);
             });
         }
 
         messageDiv.appendChild(contentWrapper);
+        // Find all elements that should become collapsible headers (e.g., h4 tags)
+        const headers = messageDiv.querySelectorAll('h4');
+        headers.forEach(header => {
+        // Check if it's already a header, if so, skip
+        if (header.closest('.collapsible-header')) return;
+
+        const section = document.createElement('div');
+        section.className = 'collapsible-section open'; // Start open by default
+
+        // Wrap the header
+        const newHeader = document.createElement('div');
+        newHeader.className = 'collapsible-header';
+        newHeader.innerHTML = `<h4>${header.innerHTML}</h4><i class="fa-solid fa-chevron-down collapsible-toggle"></i>`;
+        
+        const content = document.createElement('div');
+        content.className = 'collapsible-content';
+
+        // Move all sibling elements until the next h4 into the content div
+        let currentElement = header.nextElementSibling;
+        while (currentElement && currentElement.tagName !== 'H4') {
+            content.appendChild(currentElement);
+            currentElement = header.nextElementSibling; // Re-evaluate next sibling
+        }
+
+        // Replace the original header with the new collapsible section
+        header.parentNode.replaceChild(section, header);
+        section.appendChild(newHeader);
+        section.appendChild(content);
+
+        // Add the click listener to the new header
+        newHeader.addEventListener('click', () => {
+            section.classList.toggle('open');
+            });
+        });
         heroChatMessages.appendChild(messageDiv);
 
         if (window.MathJax && window.MathJax.typesetPromise) {
             window.MathJax.typesetPromise([messageDiv]).catch(err => console.warn('MathJax error:', err));
         }
-
+        if (sender === "bot"){
+            const codeBlocks = messageDiv.querySelectorAll("pre code");
+            codeBlocks.forEach((block)=>{
+                if (window.Prism){
+                    Prism.highlightElement(block);
+                }
+            });
+        }
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
     }
 
@@ -454,13 +482,77 @@ class ChatInterface {
                (message.includes('showing') && message.includes('rows'));
     }
 
-    convertMarkdownToHtml(message) {
-        return message
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`(.*?)`/g, '<code>$1</code>')
-            .replace(/\n/g, '<br>');
+    formatBotResponse(message) {
+        const analysisPattern = /ANALYSIS_RESULTS:\{.*?\}\n/gs;
+        const plotPattern = /📊 Generated (\d+) visualization\(s\): \[(.*?)\]/;
+        const imagePattern = /!\[.*?\]\((.*?)\)/g;
+
+        let cleanMessage = message;
+        let analysisData = null;
+        let plotUrls = [];
+
+        const analysisMatch = message.match(analysisPattern);
+        if (analysisMatch) {
+            cleanMessage = cleanMessage.replace(analysisPattern, '');
+            try {
+                const jsonStr = analysisMatch[0].replace('ANALYSIS_RESULTS:', '').trim();
+                analysisData = JSON.parse(jsonStr);
+            } catch (e) {
+                console.warn('Failed to parse analysis data');
+            }
+        }
+
+        const plotMatch = message.match(plotPattern);
+        if (plotMatch) {
+            cleanMessage = cleanMessage.replace(plotPattern, '');
+        }
+
+        cleanMessage = cleanMessage.replace(imagePattern, (match, url) => {
+            plotUrls.push(url);
+            return '';
+        });
+
+        cleanMessage = cleanMessage.replace(/```[\s\S]*?```/g, '').trim();
+
+        let formatted = '';
+
+        if (plotUrls.length > 0) {
+            formatted += '<div class="response-section">';
+            formatted += '<div class="section-header"><i class="fa-solid fa-chart-line"></i> Visualization</div>';
+            plotUrls.forEach(url => {
+                formatted += `<div class="visualization-container"><img src="${url}" alt="Visualization" style="max-width: 100%; border-radius: 4px; margin: 0.5rem 0;" /></div>`;
+            });
+            formatted += '</div>';
+        }
+
+        const commentaryMatch = cleanMessage.match(/\*\*Commentary\*\*([\s\S]*?)$/);
+        let commentary = '';
+        if (commentaryMatch) {
+            commentary = commentaryMatch[1].trim();
+            cleanMessage = cleanMessage.replace(/\*\*Commentary\*\*[\s\S]*$/, '').trim();
+        }
+
+        if (cleanMessage && cleanMessage.length > 10) {
+            formatted += `<div>${this.convertMarkdownToHtml(cleanMessage)}</div>`;
+        }
+
+        if (commentary) {
+            formatted += `<div>${this.convertMarkdownToHtml(commentary)}</div>`;
+        }
+
+        return formatted || this.convertMarkdownToHtml(message);
     }
+
+    convertMarkdownToHtml(markdown) {
+        const dirty = marked.parse(markdown);
+        const clean = DOMPurify.sanitize(dirty, {
+          ADD_TAGS: ['iframe'],
+          ADD_ATTR: ['allowfullscreen','src']
+        });
+        const withEmojis = this.emojiConverter.replace_colons(clean);
+        return withEmojis.replace(/<table>/g,'<div class="table-wrapper"><table>')
+                         .replace(/<\/table>/g,'</table></div>');
+      }
 
     convertMarkdownTableToHtml(message) {
         const lines = message.split('\n');
@@ -594,38 +686,68 @@ class ChatInterface {
     }
 
     showPIIConsentDialog(piiData) {
-        const dialog = document.createElement('div');
-        dialog.className = 'pii-consent-dialog';
-        const detectedTypes = piiData.detected_types && Array.isArray(piiData.detected_types)
-            ? piiData.detected_types.map(type => `<li>${type}</li>`).join('')
-            : '<li>Sensitive data detected</li>';
+        const heroChatMessages = document.getElementById('heroChatMessages');
+        if (!heroChatMessages) return;
 
-        dialog.innerHTML = `
-            <div class="dialog-content">
-                <h3>🔒 Privacy Notice</h3>
-                <p>We detected potentially sensitive information in your dataset:</p>
-                <ul>
-                    ${detectedTypes}
-                </ul>
-                <p>Would you like us to apply privacy protection before analysis?</p>
-                <div class="dialog-buttons">
-                    <button id="applyProtection" class="btn-primary">Apply Protection</button>
-                    <button id="continueWithoutProtection" class="btn-secondary">Continue Without Protection</button>
-                </div>
+        const noticeDiv = document.createElement('div');
+        noticeDiv.className = 'pii-consent-notice';
+
+        const detectedColumns = piiData.detected_columns || {};
+        const columnCount = Object.keys(detectedColumns).length;
+
+        const sortedColumns = Object.entries(detectedColumns)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 5);
+
+        let columnsHtml = '';
+        if (sortedColumns.length > 0) {
+            columnsHtml = '<div class="pii-columns-list">';
+            sortedColumns.forEach(([colName, sensitivity]) => {
+                const percentage = Math.round(sensitivity * 100);
+                const barColor = sensitivity > 0.8 ? '#ff6b6b' : sensitivity > 0.6 ? '#ffa500' : '#4caf50';
+                columnsHtml += `
+                    <div class="pii-column-item">
+                        <div class="pii-column-header">
+                            <span class="pii-column-name">${colName}</span>
+                            <span class="pii-sensitivity-value">${percentage}%</span>
+                        </div>
+                        <div class="pii-sensitivity-bar">
+                            <div class="pii-sensitivity-fill" style="width: ${percentage}%; background-color: ${barColor};"></div>
+                        </div>
+                    </div>
+                `;
+            });
+            if (columnCount > 5) {
+                columnsHtml += `<p class="pii-more-columns">... and ${columnCount - 5} more column(s)</p>`;
+            }
+            columnsHtml += '</div>';
+        }
+
+        noticeDiv.innerHTML = `
+            <h4><i class="fa-solid fa-shield-halved"></i> Privacy Notice</h4>
+            <p>Detected ${columnCount} column(s) with sensitive data. Review sensitivity scores below:</p>
+            ${columnsHtml}
+            <div class="pii-notice-buttons">
+                <button id="applyProtection">Apply Protection</button>
+                <button id="continueWithoutProtection">Continue Without</button>
             </div>
         `;
 
-        document.body.appendChild(dialog);
+        heroChatMessages.appendChild(noticeDiv);
+        heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
 
-        document.getElementById('applyProtection').addEventListener('click', () => {
+        const applyBtn = noticeDiv.querySelector('#applyProtection');
+        const continueBtn = noticeDiv.querySelector('#continueWithoutProtection');
+
+        applyBtn.addEventListener('click', () => {
             this.handlePIIConsent(true);
-            dialog.remove();
-        });
+            noticeDiv.innerHTML = `<p>✅ Privacy protection will be applied.</p>`;
+        }, { once: true });
 
-        document.getElementById('continueWithoutProtection').addEventListener('click', () => {
+        continueBtn.addEventListener('click', () => {
             this.handlePIIConsent(false);
-            dialog.remove();
-        });
+            noticeDiv.innerHTML = `<p>ℹ️ Continuing analysis without privacy protection.</p>`;
+        }, { once: true });
     }
 
     async handlePIIConsent(applyProtection) {
@@ -712,28 +834,8 @@ class ChatInterface {
                 this.app.currentSessionId = data.session_id;
                 this.app.agentSessionId = data.agent_session_id || data.session_id;
 
-                if (data.agent_analysis) {
-                    this.addChatMessage('bot', data.agent_analysis);
-                } else {
-                    const profileSummary = data.profiling_summary || {};
-                    let botMessage = data.shape && data.shape.length >= 2
-                        ? `Dataset uploaded successfully! Shape: ${data.shape[0]} rows x ${data.shape[1]} columns.`
-                        : `Dataset uploaded successfully!`;
-
-                    if (profileSummary.quality_score) {
-                        botMessage += ` Quality Score: ${profileSummary.quality_score}/100.`;
-                    }
-                    if (profileSummary.anomalies_detected) {
-                        botMessage += ` Detected ${profileSummary.anomalies_detected} anomalies.`;
-                    }
-                    if (profileSummary.profiling_time) {
-                        botMessage += ` Analysis completed in ${profileSummary.profiling_time}s.`;
-                    }
-                    if (data.intelligence_summary && data.intelligence_summary.profiling_completed) {
-                        botMessage += ` Domain: ${data.intelligence_summary.primary_domain}.`;
-                    }
-                    botMessage += ` You can now ask me questions about your data.`;
-                    this.addChatMessage('bot', botMessage);
+                if (window.artifactStorage) {
+                    window.artifactStorage.setSessionId(this.app.agentSessionId);
                 }
 
                 if (data.pii_detection && data.pii_detection.requires_consent) {
