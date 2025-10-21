@@ -37,6 +37,7 @@ pytest-mock>=3.10.0
 pytest-cov>=4.1.0
 pytest-timeout>=2.2.0
 pytest-asyncio>=0.23.0
+locust>=2.0.0
 
 featuretools>=1.26.0
 

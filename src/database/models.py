@@ -6,8 +6,7 @@ import json
 
 try:
     from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, ForeignKey, Index
-    from sqlalchemy.ext.declarative import declarative_base
-    from sqlalchemy.orm import relationship
+    from sqlalchemy.orm import declarative_base, relationship
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.types import TypeDecorator, VARCHAR
 
