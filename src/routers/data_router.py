@@ -1,7 +1,12 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from datetime import datetime
 from typing import Optional
 import pandas as pd
+from pathlib import Path
+import zipfile
+import tempfile
+import os
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -86,6 +91,66 @@ async def download_artifact(session_id: str, artifact_type: str):
 
     session_data = session_store[session_id]
     return handle_artifact_download(session_data, session_id, artifact_type)
+
+
+@router.get("/{session_id}/profile")
+async def get_intelligence_profile(session_id: str):
+    from ..api import session_store, data_profiler
+    import builtins
+
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        df = session_store[session_id]["dataframe"]
+
+        if "intelligence_profile" in session_store[session_id]:
+            intelligence_profile = session_store[session_id]["intelligence_profile"]
+        elif hasattr(builtins, '_session_store') and session_id in builtins._session_store:
+            session_data = builtins._session_store[session_id]
+            if 'data_profile' in session_data:
+                data_profile = session_data['data_profile']
+                column_profiles = {}
+                if hasattr(data_profile, 'column_profiles'):
+                    column_profiles = data_profile.column_profiles
+
+                return {
+                    "status": "success",
+                    "column_profiles": column_profiles,
+                    "dataset_summary": {
+                        "shape": df.shape,
+                        "columns": df.columns.tolist()
+                    }
+                }
+
+        intelligence_profile = data_profiler.profile_dataset(df)
+        session_store[session_id]["intelligence_profile"] = intelligence_profile
+
+        response_data = {}
+        column_profiles = intelligence_profile.get('column_profiles', {})
+        response_data['column_profiles'] = {
+            col: {
+                'semantic_type': profile.semantic_type.value,
+                'confidence': profile.confidence,
+                'evidence': profile.evidence,
+                'recommendations': profile.recommendations
+            }
+            for col, profile in column_profiles.items()
+        }
+
+        response_data['dataset_summary'] = {
+            'shape': df.shape,
+            'columns': df.columns.tolist()
+        }
+
+        return {
+            "status": "success",
+            "column_profiles": response_data['column_profiles'],
+            "dataset_summary": response_data['dataset_summary']
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Profiling error: {str(e)}")
 
 
 @router.post("/{session_id}/profile")
@@ -330,3 +395,201 @@ async def get_relationship_graph(session_id: str):
 
     except Exception as e:
         return {"status": "error", "detail": f"Relationship graph error: {str(e)}"}
+
+
+@router.get("/{session_id}/artifacts")
+async def get_session_artifacts(session_id: str, category: Optional[str] = None):
+    from ..api_utils.artifact_tracker import artifact_tracker, ArtifactCategory
+
+    try:
+        cat_filter = None
+        if category:
+            try:
+                cat_filter = ArtifactCategory(category)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
+
+        artifacts_data = artifact_tracker.get_session_artifacts(session_id, cat_filter)
+
+        return {
+            "status": "success",
+            **artifacts_data
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching artifacts: {str(e)}")
+
+
+@router.get("/{session_id}/artifacts/new")
+async def get_new_artifacts(session_id: str, since: str):
+    from ..api_utils.artifact_tracker import artifact_tracker
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.debug(f"Fetching new artifacts for session {session_id} since {since}")
+        new_artifacts = artifact_tracker.get_new_artifacts(session_id, since)
+
+        if new_artifacts is None:
+            new_artifacts = []
+
+        result = {
+            "status": "success",
+            "new_artifacts": new_artifacts,
+            "count": len(new_artifacts)
+        }
+        if len(new_artifacts) > 0:
+            logger.info(f"Successfully fetched {len(new_artifacts)} new artifacts")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error in get_new_artifacts endpoint: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "new_artifacts": [],
+            "count": 0,
+            "error": str(e)
+        }
+
+
+@router.get("/{session_id}/artifacts/download/{artifact_id}")
+async def download_artifact_file(session_id: str, artifact_id: str):
+    from ..api_utils.artifact_tracker import artifact_tracker
+
+    artifacts_data = artifact_tracker.get_session_artifacts(session_id)
+    artifact = next((a for a in artifacts_data['artifacts'] if a['artifact_id'] == artifact_id), None)
+
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    web_url = artifact['file_path']
+    if web_url.startswith('/static/'):
+        relative_path = web_url[1:]
+    else:
+        relative_path = web_url
+
+    file_path = Path(relative_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    media_type_map = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.csv': 'text/csv',
+        '.json': 'application/json',
+        '.pkl': 'application/octet-stream',
+        '.joblib': 'application/octet-stream',
+        '.h5': 'application/octet-stream',
+        '.pt': 'application/octet-stream',
+        '.pth': 'application/octet-stream',
+        '.zip': 'application/zip',
+        '.html': 'text/html',
+        '.pdf': 'application/pdf',
+    }
+
+    media_type = media_type_map.get(file_path.suffix.lower(), 'application/octet-stream')
+
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=artifact['filename'],
+        headers={"Content-Disposition": f"attachment; filename={artifact['filename']}"}
+    )
+
+
+@router.post("/{session_id}/artifacts/zip")
+async def zip_selected_artifacts(session_id: str, request: dict):
+    from ..api_utils.artifact_tracker import artifact_tracker
+
+    artifact_ids = request.get('artifact_ids', [])
+    description = request.get('description')
+
+    if not artifact_ids:
+        raise HTTPException(status_code=400, detail="No artifact IDs provided")
+
+    artifacts_data = artifact_tracker.get_session_artifacts(session_id)
+    all_artifacts = artifacts_data.get('artifacts', [])
+
+    selected_artifacts = [a for a in all_artifacts if a['artifact_id'] in artifact_ids]
+
+    if not selected_artifacts:
+        raise HTTPException(status_code=404, detail="None of the specified artifacts were found")
+
+    temp_dir = tempfile.mkdtemp()
+    zip_filename = f"artifacts_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    zip_path = Path(temp_dir) / zip_filename
+
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for artifact in selected_artifacts:
+                file_path = Path(artifact['file_path'])
+
+                if file_path.exists():
+                    arcname = f"{artifact['category']}/{artifact['filename']}"
+                    zipf.write(file_path, arcname=arcname)
+
+        if not zip_path.exists() or zip_path.stat().st_size == 0:
+            raise HTTPException(status_code=500, detail="Failed to create zip file")
+
+        return FileResponse(
+            zip_path,
+            media_type='application/zip',
+            filename=zip_filename,
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"},
+            background=lambda: (os.unlink(zip_path) if os.path.exists(zip_path) else None,
+                              os.rmdir(temp_dir) if os.path.exists(temp_dir) else None)
+        )
+
+    except Exception as e:
+        if zip_path.exists():
+            os.unlink(zip_path)
+        if os.path.exists(temp_dir):
+            os.rmdir(temp_dir)
+        raise HTTPException(status_code=500, detail=f"Error creating zip file: {str(e)}")
+
+
+@router.delete("/{session_id}/artifacts/{artifact_id}")
+async def delete_artifact(session_id: str, artifact_id: str):
+    from ..api_utils.artifact_tracker import artifact_tracker
+
+    try:
+        success = artifact_tracker.remove_artifact(session_id, artifact_id)
+
+        if success:
+            return {"status": "success", "message": "Artifact removed"}
+        else:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error removing artifact: {str(e)}")
+
+
+@router.get("/quota/status")
+async def get_quota_status():
+    """Get GPU quota status for AWS and Azure"""
+    try:
+        import sys
+        from pathlib import Path
+
+        app_path = Path(__file__).resolve().parent.parent.parent / "data_scientist_chatbot" / "app" / "core"
+        sys.path.insert(0, str(app_path))
+
+        from quota_tracker import quota_tracker
+
+        status = quota_tracker.get_quota_status()
+
+        return {
+            "status": "success",
+            "quotas": status,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Failed to fetch quota: {str(e)}",
+            "quotas": {},
+            "timestamp": datetime.now().isoformat()
+        }
