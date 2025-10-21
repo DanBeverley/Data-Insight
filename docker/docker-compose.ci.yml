@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   app:
     build:
@@ -10,6 +8,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    env_file:
+      - ../.env
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - DATABASE_URL=postgresql://test:testpass@postgres:5432/testdb
@@ -60,9 +60,12 @@ services:
     command: pytest tests/integration/ -v --junit-xml=reports/junit.xml
     volumes:
       - ../reports:/app/reports
+    env_file:
+      - ../.env
     environment:
       - OLLAMA_HOST=http://ollama:11434
       - DATABASE_URL=postgresql://test:testpass@postgres:5432/testdb
+      - ENVIRONMENT=test
       - PYTHONPATH=/app
 
 volumes:
