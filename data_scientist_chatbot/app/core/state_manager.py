@@ -1,17 +1,15 @@
 """State management and context building utilities"""
-
 from typing import Dict, Any
-
+import logging
+logger = logging.getLogger(__name__)
 
 def create_workflow_status_context(workflow_context: Dict[str, Any], current_event: Dict[str, Any]) -> Dict[str, Any]:
     """Creates rich, session-aware context for the Status Agent"""
-
     current_agent = workflow_context.get("current_agent", "unknown")
     current_action = workflow_context.get("current_action", "processing")
     user_goal = workflow_context.get("user_goal", "processing request")
     tool_calls = workflow_context.get("tool_calls", [])
     execution_progress = workflow_context.get("execution_progress", {})
-
     session_id = workflow_context.get("session_id", "")
     session_context = "No session info"
     try:
@@ -25,7 +23,6 @@ def create_workflow_status_context(workflow_context: Dict[str, Any], current_eve
             session_context = "No dataset uploaded yet"
     except:
         session_context = "No dataset available"
-
     workflow_stage = f"{current_agent} working"
 
     if session_context.startswith("No dataset"):
@@ -63,18 +60,15 @@ def create_workflow_status_context(workflow_context: Dict[str, Any], current_eve
         "event_type": current_event.get("event", ""),
         "session_state": session_context
     }
-
     return context
-
 
 def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> Dict[str, Any]:
     """Assembles concise, just-in-time context for the Status Agent"""
-
     user_goal = "Analyzing data..."
     messages = state.get("messages", [])
     if messages is None:
         messages = []
-    print(f"DEBUG: Status context - found {len(messages)} messages")
+    logger.debug(Status context - found {len(messages)} messages)
 
     for msg in reversed(messages):
         msg_type = getattr(msg, 'type', None)
@@ -88,11 +82,11 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
     for i, msg in enumerate(reversed(messages)):
         msg_type = getattr(msg, 'type', 'no_type')
         msg_content = getattr(msg, 'content', 'no_content')
-        print(f"DEBUG: Message {i}: type={msg_type}, content={str(msg_content)[:50]}...")
+        logger.debug(Message {i}: type={msg_type}, content={str(msg_content)[:50]}...)
 
         if hasattr(msg, 'type') and msg.type == 'human':
             user_goal = str(msg.content)[:100]
-            print(f"DEBUG: Found user message: {user_goal}")
+            logger.debug(Found user message: {user_goal})
             break
 
     dataset_context = "No dataset loaded."
@@ -110,7 +104,6 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
                 dataset_context = f"Dataset with columns: {', '.join(columns)}"
     except:
         pass
-
     tool_name = "N/A"
     tool_details = "N/A"
     if node_name == "action":
@@ -126,7 +119,6 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
                 if tool_name == 'python_code_interpreter':
                     code = tool_args.get('code', '')[:50]
                     tool_details = f"Running: {code}..."
-
     return {
         "agent_name": node_name,
         "user_goal": user_goal,
@@ -135,13 +127,11 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
         "tool_details": tool_details
     }
 
-
 def create_lean_hands_context(state, task_description: str, session_id: str) -> Dict[str, Any]:
     messages = state.get("messages", [])
     if messages is None:
         messages = []
     essential_messages = []
-
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if hasattr(msg, 'type') and msg.type == 'human':
@@ -150,17 +140,14 @@ def create_lean_hands_context(state, task_description: str, session_id: str) -> 
         elif isinstance(msg, tuple) and len(msg) == 2 and msg[0] == 'user':
             essential_messages.insert(0, msg)
             break
-
     brain_context = ""
     for i in range(len(messages) - 1, max(-1, len(messages) - 3), -1):
         msg = messages[i]
         if hasattr(msg, 'content') and hasattr(msg, 'type') and msg.type == 'ai':
             brain_context = f"Context: {str(msg.content)[:200]}..."
             break
-
     task_message = f"{brain_context}\n\nExecute this technical task: {task_description}" if brain_context else f"Execute this technical task: {task_description}"
     essential_messages.append(("user", task_message))
-
     lean_state = {
         "messages": essential_messages,
         "session_id": session_id,
@@ -169,11 +156,9 @@ def create_lean_hands_context(state, task_description: str, session_id: str) -> 
         "last_agent_sequence": state.get("last_agent_sequence", []),
         "retry_count": state.get("retry_count", 0)
     }
-
     original_msg_count = len(messages)
     lean_msg_count = len(lean_state["messages"])
     reduction = ((original_msg_count - lean_msg_count) / original_msg_count * 100) if original_msg_count > 0 else 0
-
-    print(f"DEBUG: Context pruning - Original: {original_msg_count} messages, Pruned: {lean_msg_count} messages ({reduction:.1f}% reduction)")
+    logger.debug(Context pruning - Original: {original_msg_count} messages, Pruned: {lean_msg_count} messages ({reduction:.1f}% reduction))
 
     return lean_state

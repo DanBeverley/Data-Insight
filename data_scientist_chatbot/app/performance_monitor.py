@@ -2,7 +2,6 @@
 Performance Monitoring and Optimization System
 Provides real-time metrics, caching, and performance analytics
 """
-
 import time
 import json
 import sqlite3
@@ -16,6 +15,8 @@ from functools import wraps
 import psutil
 import pickle
 import os
+import logging
+logger = logging.getLogger(__name__)
 
 @dataclass
 class PerformanceMetric:
@@ -30,7 +31,6 @@ class IntelligentCache:
     """
     Intelligent caching system with TTL and usage-based eviction
     """
-    
     def __init__(self, max_size: int = 1000, default_ttl: int = 3600):
         self.cache = {}
         self.access_times = {}
@@ -50,20 +50,16 @@ class IntelligentCache:
         with self.lock:
             if key not in self.cache:
                 return None
-            
             item, expiry = self.cache[key]
-            
             # Check if expired
             if expiry and datetime.now() > expiry:
                 del self.cache[key]
                 self.access_times.pop(key, None)
                 self.access_counts.pop(key, None)
                 return None
-            
             # Update access statistics
             self.access_times[key] = datetime.now()
             self.access_counts[key] = self.access_counts.get(key, 0) + 1
-            
             return item
     
     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
@@ -72,11 +68,9 @@ class IntelligentCache:
             # Calculate expiry
             ttl = ttl or self.default_ttl
             expiry = datetime.now() + timedelta(seconds=ttl) if ttl > 0 else None
-            
             # Evict if cache is full
             if len(self.cache) >= self.max_size and key not in self.cache:
                 self._evict_lru()
-            
             self.cache[key] = (value, expiry)
             self.access_times[key] = datetime.now()
             self.access_counts[key] = 1
@@ -84,8 +78,7 @@ class IntelligentCache:
     def _evict_lru(self) -> None:
         """Evict least recently used item"""
         if not self.access_times:
-            return
-        
+            return       
         # Find least recently used key
         lru_key = min(self.access_times.keys(), key=lambda k: self.access_times[k])
         
@@ -103,23 +96,20 @@ class IntelligentCache:
                 self.cache.clear()
                 self.access_times.clear()
                 self.access_counts.clear()
-                return count
-            
+                return count       
             # Pattern-based invalidation
             keys_to_remove = [key for key in self.cache.keys() if pattern in key]
             for key in keys_to_remove:
                 del self.cache[key]
                 self.access_times.pop(key, None)
-                self.access_counts.pop(key, None)
-            
+                self.access_counts.pop(key, None)            
             return len(keys_to_remove)
     
     def get_stats(self) -> Dict[str, Any]:
         """Get cache statistics"""
         with self.lock:
             total_accesses = sum(self.access_counts.values())
-            avg_accesses = total_accesses / len(self.access_counts) if self.access_counts else 0
-            
+            avg_accesses = total_accesses / len(self.access_counts) if self.access_counts else 0           
             return {
                 'size': len(self.cache),
                 'max_size': self.max_size,
@@ -132,24 +122,21 @@ class IntelligentCache:
 class PerformanceMonitor:
     """
     Comprehensive performance monitoring system
-    """
-    
+    """  
     def __init__(self, db_path: str = "data_scientist_chatbot/memory/performance.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.cache = IntelligentCache(max_size=500, default_ttl=1800) 
         self.metrics_buffer = []
         self.buffer_lock = threading.Lock()
-        self._init_database()
-        
+        self._init_database()       
         # Start background metrics flushing
         self._start_metrics_flush_thread()
     
     def _init_database(self):
         """Initialize performance metrics database"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
+        cursor = conn.cursor()       
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS performance_metrics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,8 +147,7 @@ class PerformanceMonitor:
                 context TEXT, -- JSON
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        
+        """)       
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS system_metrics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,13 +158,11 @@ class PerformanceMonitor:
                 cache_hit_rate REAL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        
+        """)      
         # Create indexes for performance
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_session ON performance_metrics(session_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_timestamp ON performance_metrics(timestamp)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_metric ON performance_metrics(metric_name)")
-        
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_metric ON performance_metrics(metric_name)")       
         conn.commit()
         conn.close()
     
@@ -194,8 +178,7 @@ class PerformanceMonitor:
         )
         
         with self.buffer_lock:
-            self.metrics_buffer.append(metric)
-            
+            self.metrics_buffer.append(metric)          
             # Flush if buffer is full
             if len(self.metrics_buffer) >= 100:
                 self._flush_metrics()
@@ -203,11 +186,9 @@ class PerformanceMonitor:
     def _flush_metrics(self) -> None:
         """Flush metrics buffer to database"""
         if not self.metrics_buffer:
-            return
-        
+            return   
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
+        cursor = conn.cursor()      
         for metric in self.metrics_buffer:
             cursor.execute("""
                 INSERT INTO performance_metrics 
@@ -219,11 +200,9 @@ class PerformanceMonitor:
                 metric.value,
                 metric.timestamp,
                 json.dumps(metric.context)
-            ))
-        
+            )) 
         conn.commit()
         conn.close()
-        
         self.metrics_buffer.clear()
     
     def _start_metrics_flush_thread(self) -> None:
@@ -236,7 +215,7 @@ class PerformanceMonitor:
                         try:
                             self._flush_metrics()
                         except Exception as e:
-                            print(f"Error flushing metrics: {e}")
+                            logger.debug(f"Error flushing metrics: {e}")
         
         thread = threading.Thread(target=flush_periodically, daemon=True)
         thread.start()
@@ -284,12 +263,10 @@ class PerformanceMonitor:
             def wrapper(*args, **kwargs):
                 # Generate cache key
                 cache_key = f"{key_prefix}:{func.__name__}:" + self.cache._generate_key(*args, **kwargs)
-                
                 # Try to get from cache
                 cached_result = self.cache.get(cache_key)
                 if cached_result is not None:
-                    return cached_result
-                
+                    return cached_result  
                 # Execute function and cache result
                 result = func(*args, **kwargs)
                 self.cache.set(cache_key, result, ttl=ttl)
@@ -303,11 +280,9 @@ class PerformanceMonitor:
         try:
             cpu_percent = psutil.cpu_percent(interval=1)
             memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            
+            disk = psutil.disk_usage('/')  
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
+            cursor = conn.cursor()   
             cursor.execute("""
                 INSERT INTO system_metrics 
                 (cpu_percent, memory_percent, disk_usage_percent, active_sessions, cache_hit_rate)
@@ -318,22 +293,18 @@ class PerformanceMonitor:
                 disk.percent,
                 0,  
                 0.0  
-            ))
-            
+            ))     
             conn.commit()
-            conn.close()
-            
+            conn.close()         
         except Exception as e:
-            print(f"Error recording system metrics: {e}")
+            logger.debug(f"Error recording system metrics: {e}")
     
     def get_performance_summary(self, session_id: Optional[str] = None, 
                               hours: int = 24) -> Dict[str, Any]:
         """Get performance summary for analysis"""
-        cutoff_time = datetime.now() - timedelta(hours=hours)
-        
+        cutoff_time = datetime.now() - timedelta(hours=hours)      
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
+        cursor = conn.cursor()      
         # Base query
         base_query = """
             SELECT metric_name, AVG(metric_value) as avg_value, 
@@ -342,16 +313,12 @@ class PerformanceMonitor:
             FROM performance_metrics
             WHERE timestamp > ?
         """
-        params = [cutoff_time]
-        
+        params = [cutoff_time]       
         if session_id:
             base_query += " AND session_id = ?"
-            params.append(session_id)
-        
-        base_query += " GROUP BY metric_name ORDER BY avg_value DESC"
-        
-        cursor.execute(base_query, params)
-        
+            params.append(session_id)       
+        base_query += " GROUP BY metric_name ORDER BY avg_value DESC"       
+        cursor.execute(base_query, params)   
         metrics_summary = {}
         for row in cursor.fetchall():
             metrics_summary[row[0]] = {
@@ -359,22 +326,17 @@ class PerformanceMonitor:
                 'count': row[2],
                 'min': round(row[3], 4),
                 'max': round(row[4], 4)
-            }
-        
+            }    
         # Get cache statistics
-        cache_stats = self.cache.get_stats()
-        
+        cache_stats = self.cache.get_stats() 
         # Get recent system metrics
         cursor.execute("""
             SELECT AVG(cpu_percent), AVG(memory_percent), AVG(disk_usage_percent)
             FROM system_metrics
             WHERE timestamp > ?
-        """, (cutoff_time,))
-        
+        """, (cutoff_time,)) 
         system_avg = cursor.fetchone()
-        
         conn.close()
-        
         return {
             'metrics_summary': metrics_summary,
             'cache_stats': cache_stats,
@@ -392,7 +354,6 @@ class PerformanceMonitor:
         """Get slowest operations for optimization"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
         cursor.execute("""
             SELECT session_id, metric_name, metric_value, timestamp, context
             FROM performance_metrics
@@ -400,7 +361,6 @@ class PerformanceMonitor:
             ORDER BY metric_value DESC
             LIMIT ?
         """, (threshold_seconds, limit))
-        
         slow_ops = []
         for row in cursor.fetchall():
             context = json.loads(row[4]) if row[4] else {}
@@ -411,27 +371,22 @@ class PerformanceMonitor:
                 'timestamp': row[3],
                 'context': context
             })
-        
         conn.close()
         return slow_ops
     
     def optimize_cache(self) -> Dict[str, Any]:
         """Analyze and optimize cache performance"""
         stats = self.cache.get_stats()
-        
         recommendations = []
-        
         # Check cache utilization
         utilization = stats['size'] / stats['max_size']
         if utilization > 0.9:
             recommendations.append("Consider increasing cache size - high utilization detected")
         elif utilization < 0.3:
             recommendations.append("Cache may be undersized - low utilization detected")
-        
         # Check for frequent access patterns
         if stats['avg_accesses_per_key'] > 10:
             recommendations.append("High cache hit patterns - consider increasing TTL")
-        
         return {
             'cache_stats': stats,
             'utilization': round(utilization, 2),
@@ -441,22 +396,16 @@ class PerformanceMonitor:
     def cleanup_old_metrics(self, days_old: int = 7) -> int:
         """Clean up old performance metrics"""
         cutoff_date = datetime.now() - timedelta(days=days_old)
-        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
         cursor.execute("""
             DELETE FROM performance_metrics WHERE timestamp < ?
         """, (cutoff_date,))
-        
         deleted_count = cursor.rowcount
-        
         cursor.execute("""
             DELETE FROM system_metrics WHERE timestamp < ?
         """, (cutoff_date,))
-        
         deleted_count += cursor.rowcount
-        
         conn.commit()
         conn.close()
         

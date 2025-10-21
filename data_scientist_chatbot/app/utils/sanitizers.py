@@ -1,14 +1,11 @@
 """Output sanitization utilities"""
-
 import re
 from difflib import SequenceMatcher
-
 
 def sanitize_output(content: str) -> str:
     """Semantic output sanitization using similarity-based filtering to remove technical debug artifacts"""
     if not content or not isinstance(content, str):
         return content
-
     technical_patterns = [
         "PLOT_SAVED:",
         "Checking for figures to save",
@@ -73,32 +70,26 @@ def sanitize_output(content: str) -> str:
 
     lines = content.split('\n')
     filtered_lines = []
-
     for line in lines:
         line_stripped = line.strip()
-
         if not line_stripped:
             filtered_lines.append(line)
             continue
-
         is_technical = False
         for pattern in technical_patterns:
             if pattern.lower() in line_stripped.lower():
                 is_technical = True
                 break
-
             similarity_ratio = SequenceMatcher(None, pattern.lower(), line_stripped.lower()).ratio()
             if similarity_ratio > 0.6:
                 is_technical = True
                 break
-
             debug_prefixes = ['[', '(', '<', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'TRACE']
             for prefix in debug_prefixes:
                 if line_stripped.startswith(prefix) and len(line_stripped) > 20:
                     if any(keyword in line_stripped.lower() for keyword in ['error', 'exception', 'traceback', 'debug', 'info', 'warning']):
                         is_technical = True
                         break
-
         technical_regexes = [
             r'^\s*File ".*", line \d+',
             r'^\s*\d+:\d+:\d+',
@@ -127,12 +118,9 @@ def sanitize_output(content: str) -> str:
                     filtered_lines.append(parts[-1].strip())
                 else:
                     filtered_lines.append(line)
-
     filtered_content = '\n'.join(filtered_lines)
     filtered_content = re.sub(r'\n\s*\n\s*\n', '\n\n', filtered_content)
     filtered_content = filtered_content.strip()
-
     if len(filtered_content) < len(content) * 0.3:
         return content
-
     return filtered_content if filtered_content else content

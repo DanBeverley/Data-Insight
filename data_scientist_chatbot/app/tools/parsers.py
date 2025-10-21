@@ -1,11 +1,9 @@
 """Message parsing utilities for tool calls"""
-
 import json
 import re
 
-
 def parse_message_to_tool_call(message, tool_id_prefix="call"):
-    """Shared parser logic to extract tool calls from message content"""
+    """Extract tool calls from message content"""
     if hasattr(message, 'tool_calls') and message.tool_calls:
         return True
     content_str = str(message.content).strip()
@@ -23,8 +21,6 @@ def parse_message_to_tool_call(message, tool_id_prefix="call"):
         if 'name' in tool_data and 'arguments' in tool_data:
             tool_name = tool_data['name']
             tool_args = tool_data['arguments']
-
-            print(f"Parser: Extracted tool_name={tool_name}, args keys={list(tool_args.keys()) if isinstance(tool_args, dict) else 'not dict'}")
 
             message.tool_calls = [{
                 "name": tool_name,
