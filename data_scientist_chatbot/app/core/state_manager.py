@@ -68,7 +68,7 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
     messages = state.get("messages", [])
     if messages is None:
         messages = []
-    logger.debug(Status context - found {len(messages)} messages)
+    logger.debug(f"Status context - found {len(messages)} messages")
 
     for msg in reversed(messages):
         msg_type = getattr(msg, 'type', None)
@@ -82,11 +82,11 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
     for i, msg in enumerate(reversed(messages)):
         msg_type = getattr(msg, 'type', 'no_type')
         msg_content = getattr(msg, 'content', 'no_content')
-        logger.debug(Message {i}: type={msg_type}, content={str(msg_content)[:50]}...)
+        logger.debug(f"Message {i}: type={msg_type}, content={str(msg_content)[:50]}...")
 
         if hasattr(msg, 'type') and msg.type == 'human':
             user_goal = str(msg.content)[:100]
-            logger.debug(Found user message: {user_goal})
+            logger.debug(f"Found user message: {user_goal}")
             break
 
     dataset_context = "No dataset loaded."
@@ -159,6 +159,6 @@ def create_lean_hands_context(state, task_description: str, session_id: str) -> 
     original_msg_count = len(messages)
     lean_msg_count = len(lean_state["messages"])
     reduction = ((original_msg_count - lean_msg_count) / original_msg_count * 100) if original_msg_count > 0 else 0
-    logger.debug(Context pruning - Original: {original_msg_count} messages, Pruned: {lean_msg_count} messages ({reduction:.1f}% reduction))
+    logger.debug(f"Context pruning - Original: {original_msg_count} messages, Pruned: {lean_msg_count} messages ({reduction:.1f}% reduction)")
 
     return lean_state
