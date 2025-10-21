@@ -97,6 +97,17 @@ class ArtifactTracker:
                         return ArtifactCategory.MODEL
                 return category
 
+        if description:
+            description_lower = description.lower()
+            if 'trained model' in description_lower or 'model file' in description_lower or 'machine learning model' in description_lower:
+                return ArtifactCategory.MODEL
+            elif 'plot' in description_lower or 'chart' in description_lower or 'visualization' in description_lower or 'graph' in description_lower:
+                return ArtifactCategory.VISUALIZATION
+            elif 'dataset' in description_lower or 'data file' in description_lower:
+                return ArtifactCategory.DATASET
+            elif 'report' in description_lower or 'analysis' in description_lower:
+                return ArtifactCategory.REPORT
+
         return ArtifactCategory.OTHER
 
     def add_artifact(
