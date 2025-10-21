@@ -77,7 +77,6 @@ class AdaptiveConfig:
 
 
 class AdaptiveLearningSystem:
-
     def __init__(
         self, config: Optional[AdaptiveConfig] = None, enable_persistence: bool = True, db_path: Optional[str] = None
     ):
@@ -155,7 +154,6 @@ class AdaptiveLearningSystem:
     def monitor_and_adapt(
         self, current_model, X_new: pd.DataFrame, y_new: pd.Series, task_type: TaskType, algorithm_name: str = ""
     ) -> Dict[str, Any]:
-
         adaptation_results = {
             "triggers_detected": [],
             "adaptations_applied": [],
@@ -187,7 +185,6 @@ class AdaptiveLearningSystem:
         return adaptation_results
 
     def _evaluate_triggers(self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType) -> List[AdaptationTrigger]:
-
         triggers = []
 
         performance_trigger = self._evaluate_performance_trigger(model, X, y, task_type)
@@ -204,7 +201,6 @@ class AdaptiveLearningSystem:
     def _evaluate_performance_trigger(
         self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType
     ) -> AdaptationTrigger:
-
         try:
             current_performance = self._measure_performance(model, X, y, task_type)
 
@@ -243,7 +239,6 @@ class AdaptiveLearningSystem:
             )
 
     def _evaluate_drift_trigger(self, X: pd.DataFrame) -> AdaptationTrigger:
-
         try:
             if not hasattr(self, "_reference_data") or self._reference_data is None:
                 self._reference_data = X.copy()
@@ -291,7 +286,6 @@ class AdaptiveLearningSystem:
             )
 
     def _evaluate_time_trigger(self) -> AdaptationTrigger:
-
         current_time = time.time()
 
         if not hasattr(self, "_last_adaptation_time"):
@@ -325,7 +319,6 @@ class AdaptiveLearningSystem:
         task_type: TaskType,
         algorithm_name: str,
     ) -> Dict[str, Any]:
-
         if len(X) < self.config.min_samples_for_adaptation:
             return {"adaptation_type": "reactive", "success": False, "reason": "insufficient_data", "improvement": 0.0}
 
@@ -359,7 +352,6 @@ class AdaptiveLearningSystem:
     def _apply_proactive_adaptation(
         self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType, algorithm_name: str
     ) -> Dict[str, Any]:
-
         if len(X) < self.config.min_samples_for_adaptation:
             return {"adaptation_type": "proactive", "success": False, "reason": "insufficient_data", "improvement": 0.0}
 
@@ -410,7 +402,6 @@ class AdaptiveLearningSystem:
             }
 
     def _incremental_learning_adaptation(self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType):
-
         if hasattr(model, "partial_fit"):
             adapted_model = clone(model)
             adapted_model.partial_fit(X, y)
@@ -421,7 +412,6 @@ class AdaptiveLearningSystem:
             return adapted_model
 
     def _hyperparameter_adaptation(self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType):
-
         adapted_model = clone(model)
         current_params = model.get_params()
 
@@ -437,7 +427,6 @@ class AdaptiveLearningSystem:
         return adapted_model
 
     def _ensemble_adaptation(self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType):
-
         if len(self.model_history) == 0:
             return clone(model)
 
@@ -489,7 +478,6 @@ class AdaptiveLearningSystem:
         return EnsembleWrapper(recent_models, task_type)
 
     def _measure_performance(self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType) -> float:
-
         try:
             if len(X) < 20:
                 return 0.0
@@ -512,7 +500,6 @@ class AdaptiveLearningSystem:
             return 0.0
 
     def _store_model_version(self, model, performance: float, algorithm_name: str):
-
         model_info = {
             "model": model,
             "performance": performance,
@@ -529,7 +516,6 @@ class AdaptiveLearningSystem:
             self.performance_history.pop(0)
 
     def _update_learning_history(self, adaptation_results: Dict[str, Any], triggers: List[AdaptationTrigger]):
-
         event = LearningEvent(
             event_id=f"adapt_{len(self.learning_events)}_{int(time.time())}",
             trigger=triggers[0] if triggers else None,
@@ -549,7 +535,6 @@ class AdaptiveLearningSystem:
         self._last_adaptation_time = time.time()
 
     def get_learning_insights(self) -> Dict[str, Any]:
-
         if not self.learning_events:
             return {"status": "no_learning_events"}
 
@@ -581,7 +566,6 @@ class AdaptiveLearningSystem:
         }
 
     def _calculate_learning_trend(self) -> str:
-
         if len(self.performance_history) < 3:
             return "insufficient_data"
 
@@ -595,7 +579,6 @@ class AdaptiveLearningSystem:
             return "stable"
 
     def rollback_to_best_model(self) -> Optional[Any]:
-
         if not self.model_history:
             return None
 

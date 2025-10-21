@@ -14,7 +14,6 @@ from src.knowledge_graph.schema import Relationship
 
 @pytest.mark.integration
 class TestKnowledgeGraphOperations:
-
     @pytest.fixture
     def mock_database(self):
         db = Mock(spec=GraphDatabaseInterface)

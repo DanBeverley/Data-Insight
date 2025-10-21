@@ -328,7 +328,6 @@ class ComplianceManager:
                 and datetime.now() > subject.data_retention_date
                 and not subject.deletion_requested
             ):
-
                 violations.append(
                     ComplianceViolation(
                         violation_id=str(uuid.uuid4()),
@@ -506,7 +505,6 @@ class ComplianceManager:
     def process_regulatory_request(
         self, request_type: str, subject_id: str, additional_params: Dict[str, Any] = None
     ) -> Dict[str, Any]:
-
         if request_type == "access_request":
             return self.export_subject_data(subject_id)
 

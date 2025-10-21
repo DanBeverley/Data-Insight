@@ -22,7 +22,6 @@ except ImportError:
 @pytest.mark.skipif(not SQLALCHEMY_AVAILABLE, reason="SQLAlchemy not available")
 @pytest.mark.unit
 class TestSQLAlchemyModels:
-
     @pytest.fixture
     def db_session(self):
         engine = create_engine("sqlite:///:memory:")

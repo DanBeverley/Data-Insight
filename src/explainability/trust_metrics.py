@@ -49,7 +49,6 @@ class TrustMetricsCalculator:
         y_pred_proba: Optional[np.ndarray] = None,
         explanation_engine=None,
     ) -> TrustScore:
-
         reliability_score = self._calculate_reliability(model, X, y_true, y_pred)
         consistency_score = self._calculate_consistency(model, X, y_pred_proba, explanation_engine)
         robustness_score = self._calculate_robustness(model, X, y_pred)
@@ -340,7 +339,6 @@ class TrustMetricsCalculator:
     def calculate_reliability_metrics(
         self, model, X: pd.DataFrame, y_true: np.ndarray, explanation_engine=None
     ) -> ReliabilityMetrics:
-
         prediction_consistency = self._calculate_prediction_consistency(model, X, None)
 
         try:
@@ -420,7 +418,6 @@ class TrustMetricsCalculator:
         y_pred_proba: Optional[np.ndarray] = None,
         explanation_engine=None,
     ) -> Dict[str, Any]:
-
         trust_score = self.calculate_trust_score(model, X, y_true, y_pred, y_pred_proba, explanation_engine)
         reliability_metrics = self.calculate_reliability_metrics(model, X, y_true, explanation_engine)
 

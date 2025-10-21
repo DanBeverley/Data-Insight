@@ -18,7 +18,6 @@ except ImportError:
 @pytest.mark.skipif(not SQLALCHEMY_AVAILABLE, reason="SQLAlchemy not available")
 @pytest.mark.integration
 class TestConcurrentWrites:
-
     @pytest.fixture
     def db_engine(self):
         engine = create_engine(

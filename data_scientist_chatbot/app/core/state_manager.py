@@ -106,7 +106,6 @@ def gather_status_context(state, node_name: str, node_data: Dict[str, Any]) -> D
             and session_id in builtins._session_store
             and "data_profile" in builtins._session_store[session_id]
         ):
-
             data_profile = builtins._session_store[session_id]["data_profile"]
             column_context = data_profile.ai_agent_context["column_details"]
             columns = list(column_context.keys())[:5]

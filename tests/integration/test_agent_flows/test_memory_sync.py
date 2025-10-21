@@ -31,7 +31,6 @@ def checkpointer_with_temp_db(temp_checkpointer_db):
 
 @pytest.mark.integration
 class TestMemorySynchronization:
-
     def test_checkpointer_persists_conversation_state(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
 

@@ -5,7 +5,6 @@ import requests
 
 @pytest.mark.chaos
 class TestOllamaFailures:
-
     def test_ollama_connection_timeout(self, sample_session_id: str):
         from src.api_utils.agent_response import stream_agent_response
 

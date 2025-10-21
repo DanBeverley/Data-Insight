@@ -97,7 +97,6 @@ class PerformanceMonitor:
     def record_metric(
         self, deployment_id: str, metric_type: MetricType, value: float, metadata: Optional[Dict[str, Any]] = None
     ):
-
         key = f"{deployment_id}_{metric_type.value}"
         timestamp = datetime.now().isoformat()
 
@@ -147,7 +146,6 @@ class PerformanceMonitor:
         current_value: float,
         threshold_value: float,
     ):
-
         alert_id = f"{deployment_id}_{metric_type.value}_{int(time.time())}"
 
         message = f"{metric_type.value} threshold exceeded for {deployment_id}: {current_value} > {threshold_value}"
@@ -221,7 +219,6 @@ class PerformanceMonitor:
     def get_metrics(
         self, deployment_id: str, metric_type: Optional[MetricType] = None, hours_back: int = 24
     ) -> Dict[str, List[MetricPoint]]:
-
         cutoff_time = datetime.now() - timedelta(hours=hours_back)
         results = {}
 
@@ -239,7 +236,6 @@ class PerformanceMonitor:
     def get_alerts(
         self, deployment_id: Optional[str] = None, severity: Optional[AlertSeverity] = None, hours_back: int = 24
     ) -> List[Alert]:
-
         cutoff_time = datetime.now() - timedelta(hours=hours_back)
         filtered_alerts = []
 

@@ -51,7 +51,6 @@ class BiasDetector:
     def detect_bias(
         self, model, X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, y_pred_proba: Optional[np.ndarray] = None
     ) -> List[BiasResult]:
-
         bias_results = []
 
         for attribute in self.sensitive_attributes:
@@ -72,7 +71,6 @@ class BiasDetector:
         y_pred_proba: Optional[np.ndarray],
         attribute: str,
     ) -> List[BiasResult]:
-
         results = []
         unique_groups = X[attribute].unique()
 
@@ -98,7 +96,6 @@ class BiasDetector:
         y_pred_proba: Optional[np.ndarray],
         attribute: str,
     ) -> Dict[str, Dict[str, float]]:
-
         stats = {}
 
         for group in X[attribute].unique():
@@ -170,7 +167,6 @@ class BiasDetector:
     def _check_demographic_parity(
         self, group_stats: Dict[str, Dict[str, float]], attribute: str
     ) -> Optional[BiasResult]:
-
         positive_rates = [stats["positive_rate"] for stats in group_stats.values()]
 
         if len(positive_rates) < 2:
@@ -201,7 +197,6 @@ class BiasDetector:
     def _check_equalized_opportunity(
         self, group_stats: Dict[str, Dict[str, float]], attribute: str
     ) -> Optional[BiasResult]:
-
         tpr_rates = [stats["true_positive_rate"] for stats in group_stats.values()]
 
         if len(tpr_rates) < 2:
@@ -230,7 +225,6 @@ class BiasDetector:
         )
 
     def _check_equalized_odds(self, group_stats: Dict[str, Dict[str, float]], attribute: str) -> Optional[BiasResult]:
-
         tpr_rates = [stats["true_positive_rate"] for stats in group_stats.values()]
         fpr_rates = [stats["false_positive_rate"] for stats in group_stats.values()]
 
@@ -265,7 +259,6 @@ class BiasDetector:
         )
 
     def _check_calibration(self, group_stats: Dict[str, Dict[str, float]], attribute: str) -> Optional[BiasResult]:
-
         calibration_errors = [stats.get("calibration_error", 0) for stats in group_stats.values()]
 
         if not calibration_errors or max(calibration_errors) == 0:
@@ -306,7 +299,6 @@ class BiasDetector:
     def calculate_fairness_metrics(
         self, model, X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, y_pred_proba: Optional[np.ndarray] = None
     ) -> FairnessMetrics:
-
         all_bias_results = self.detect_bias(model, X, y_true, y_pred, y_pred_proba)
 
         bias_by_type = {}
@@ -387,7 +379,6 @@ class BiasDetector:
     def generate_bias_report(
         self, model, X: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarray, y_pred_proba: Optional[np.ndarray] = None
     ) -> Dict[str, Any]:
-
         bias_results = self.detect_bias(model, X, y_true, y_pred, y_pred_proba)
         fairness_metrics = self.calculate_fairness_metrics(model, X, y_true, y_pred, y_pred_proba)
         mitigation_strategies = self.suggest_mitigation_strategies(bias_results)

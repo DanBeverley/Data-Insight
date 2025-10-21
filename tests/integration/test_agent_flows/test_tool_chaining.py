@@ -5,7 +5,6 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 @pytest.mark.integration
 class TestToolChaining:
-
     def test_sequential_tool_execution(self):
         from data_scientist_chatbot.app.agent import execute_tools_node
 

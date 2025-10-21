@@ -184,7 +184,9 @@ class BusinessTranslator:
         readiness_level = (
             "production_ready"
             if readiness_score > 0.85
-            else "pilot_ready" if readiness_score > 0.7 else "development_stage"
+            else "pilot_ready"
+            if readiness_score > 0.7
+            else "development_stage"
         )
 
         return BusinessMetric(

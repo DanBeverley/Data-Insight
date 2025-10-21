@@ -5,7 +5,6 @@ from data_scientist_chatbot.app.tools.parsers import parse_message_to_tool_call
 
 @pytest.mark.unit
 class TestMessageToolCallParsing:
-
     def test_parse_clean_json_format(self):
         message = Mock()
         message.tool_calls = None

@@ -8,7 +8,6 @@ from src.data_quality.drift_monitor import ComprehensiveDriftMonitor, DriftType,
 
 @pytest.mark.unit
 class TestComprehensiveDriftMonitor:
-
     @pytest.fixture
     def monitor(self):
         return ComprehensiveDriftMonitor()

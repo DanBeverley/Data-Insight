@@ -4,7 +4,6 @@ from data_scientist_chatbot.app.utils.sanitizers import sanitize_output
 
 @pytest.mark.unit
 class TestOutputSanitization:
-
     def test_sanitize_removes_debug_messages_with_content(self):
         output = """DEBUG: Processing data
         The correlation between price and area is 0.75

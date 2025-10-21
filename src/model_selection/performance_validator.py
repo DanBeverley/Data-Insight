@@ -80,14 +80,12 @@ class ValidationConfig:
 
 
 class ProductionModelValidator:
-
     def __init__(self, config: Optional[ValidationConfig] = None):
         self.config = config or ValidationConfig()
 
     def validate_model(
         self, model, X: pd.DataFrame, y: pd.Series, task_type: TaskType, algorithm_name: str = ""
     ) -> ModelPerformance:
-
         validation_strategy = self._select_validation_strategy(X, y, task_type)
         scoring_metrics = self._get_scoring_metrics(task_type)
 
@@ -113,7 +111,6 @@ class ProductionModelValidator:
         )
 
     def _select_validation_strategy(self, X: pd.DataFrame, y: pd.Series, task_type: TaskType) -> ValidationStrategy:
-
         if self.config.strategy != ValidationStrategy.ADAPTIVE:
             return self.config.strategy
 
@@ -164,7 +161,6 @@ class ProductionModelValidator:
         metrics: List[str],
         task_type: TaskType,
     ) -> ValidationMetrics:
-
         if strategy == ValidationStrategy.CROSS_VALIDATION:
             return self._cross_validation(model, X, y, metrics, task_type)
         elif strategy == ValidationStrategy.HOLDOUT:
@@ -179,7 +175,6 @@ class ProductionModelValidator:
     def _cross_validation(
         self, model, X: pd.DataFrame, y: pd.Series, metrics: List[str], task_type: TaskType
     ) -> ValidationMetrics:
-
         if task_type == TaskType.CLASSIFICATION and len(y.unique()) > 1:
             cv = StratifiedKFold(n_splits=self.config.cv_folds, shuffle=True, random_state=self.config.random_state)
         else:
@@ -219,7 +214,6 @@ class ProductionModelValidator:
     def _holdout_validation(
         self, model, X: pd.DataFrame, y: pd.Series, metrics: List[str], task_type: TaskType
     ) -> ValidationMetrics:
-
         X_train, X_test, y_train, y_test = train_test_split(
             X,
             y,
@@ -257,7 +251,6 @@ class ProductionModelValidator:
     def _time_series_validation(
         self, model, X: pd.DataFrame, y: pd.Series, metrics: List[str], task_type: TaskType
     ) -> ValidationMetrics:
-
         cv = TimeSeriesSplit(n_splits=min(5, len(X) // 100))
         cv_results = cross_validate(model, X, y, cv=cv, scoring=metrics, return_train_score=False, n_jobs=1)
 
@@ -266,7 +259,6 @@ class ProductionModelValidator:
     def _bootstrap_validation(
         self, model, X: pd.DataFrame, y: pd.Series, metrics: List[str], task_type: TaskType
     ) -> ValidationMetrics:
-
         n_bootstrap = min(self.config.cv_folds, 20)
         bootstrap_scores = {metric: [] for metric in metrics}
 
@@ -495,7 +487,6 @@ class ProductionModelValidator:
         return tests
 
     def _generate_recommendation(self, performances: List[ModelPerformance], ranking: List[Tuple[str, float]]) -> str:
-
         if not performances:
             return "No models to evaluate"
 
@@ -547,6 +538,5 @@ def validate_model_performance(
     algorithm_name: str = "",
     config: Optional[ValidationConfig] = None,
 ) -> ModelPerformance:
-
     validator = ProductionModelValidator(config)
     return validator.validate_model(model, X, y, task_type, algorithm_name)

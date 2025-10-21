@@ -8,7 +8,6 @@ from src.data_quality.anomaly_detector import MultiLayerAnomalyDetector, Anomaly
 
 @pytest.mark.unit
 class TestMultiLayerAnomalyDetector:
-
     @pytest.fixture
     def detector(self):
         return MultiLayerAnomalyDetector()

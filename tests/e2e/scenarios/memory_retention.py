@@ -72,7 +72,6 @@ class MemoryRetentionScenario(BaseScenario):
 
 @pytest.mark.e2e
 class TestMemoryRetention:
-
     @pytest.fixture
     def api_client(self):
         from fastapi.testclient import TestClient
@@ -136,7 +135,6 @@ class TestMemoryRetention:
 
 @pytest.mark.e2e
 class TestCrossSessionIsolation:
-
     @pytest.fixture
     def api_client(self):
         from fastapi.testclient import TestClient

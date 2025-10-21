@@ -5,7 +5,6 @@ import psycopg2
 
 @pytest.mark.chaos
 class TestDatabaseFailures:
-
     def test_database_connection_loss(self, sample_session_id: str):
         from src.database.connection import get_db_connection
 

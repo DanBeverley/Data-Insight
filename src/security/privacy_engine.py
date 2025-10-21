@@ -59,7 +59,6 @@ class PrivacyEngine:
     def assess_privacy_risk(
         self, df: pd.DataFrame, quasi_identifiers: List[str] = None, sensitive_attributes: List[str] = None
     ) -> PrivacyAssessment:
-
         quasi_identifiers = quasi_identifiers or self._auto_detect_quasi_identifiers(df)
         sensitive_attributes = sensitive_attributes or self._auto_detect_sensitive_attributes(df)
 
@@ -169,7 +168,6 @@ class PrivacyEngine:
     def _calculate_privacy_score(
         self, df: pd.DataFrame, quasi_identifiers: List[str], sensitive_attributes: List[str]
     ) -> float:
-
         score_components = []
 
         if quasi_identifiers:
@@ -310,7 +308,6 @@ class PrivacyEngine:
     def apply_k_anonymity(
         self, df: pd.DataFrame, quasi_identifiers: List[str], k: Optional[int] = None
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-
         k = k or self.config.k_value
         anonymized_df = df.copy()
         transformations = {}
@@ -381,7 +378,6 @@ class PrivacyEngine:
     def apply_differential_privacy(
         self, df: pd.DataFrame, epsilon: Optional[float] = None, numeric_columns: List[str] = None
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-
         epsilon = epsilon or self.config.epsilon
         private_df = df.copy()
 
@@ -413,7 +409,6 @@ class PrivacyEngine:
     def apply_l_diversity(
         self, df: pd.DataFrame, quasi_identifiers: List[str], sensitive_attribute: str, l: Optional[int] = None
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-
         l = l or self.config.l_value
 
         if sensitive_attribute not in df.columns:
@@ -452,7 +447,6 @@ class PrivacyEngine:
     def _calculate_utility_preservation(
         self, original_df: pd.DataFrame, private_df: pd.DataFrame, affected_columns: List[str]
     ) -> float:
-
         if len(affected_columns) == 0:
             return 1.0
 
@@ -532,7 +526,6 @@ class PrivacyEngine:
     def apply_comprehensive_privacy_protection(
         self, df: pd.DataFrame, quasi_identifiers: List[str] = None, sensitive_attributes: List[str] = None
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-
         quasi_identifiers = quasi_identifiers or self._auto_detect_quasi_identifiers(df)
         sensitive_attributes = sensitive_attributes or self._auto_detect_sensitive_attributes(df)
 
@@ -571,7 +564,6 @@ class PrivacyEngine:
     def evaluate_privacy_utility_tradeoff(
         self, original_df: pd.DataFrame, protected_df: pd.DataFrame
     ) -> Dict[str, Any]:
-
         utility_preservation = self._calculate_utility_preservation(
             original_df, protected_df, list(original_df.columns)
         )

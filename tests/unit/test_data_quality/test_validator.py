@@ -7,7 +7,6 @@ from src.data_quality.validator import DataQualityValidator, ValidationReport, V
 
 @pytest.mark.unit
 class TestDataQualityValidator:
-
     @pytest.fixture
     def clean_df(self):
         return pd.DataFrame(

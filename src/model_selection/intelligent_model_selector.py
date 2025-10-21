@@ -40,7 +40,6 @@ class AutoMLConfig:
 
 
 class IntelligentAutoMLSystem:
-
     def __init__(self, config: Optional[AutoMLConfig] = None):
         self.config = config or AutoMLConfig()
         self.algorithm_portfolio = IntelligentAlgorithmPortfolio()
@@ -53,7 +52,6 @@ class IntelligentAutoMLSystem:
             self.adaptive_system = None
 
     def select_best_model(self, X: pd.DataFrame, y: pd.Series, task_type: Optional[TaskType] = None) -> AutoMLResult:
-
         start_time = time.time()
 
         if task_type is None:
@@ -117,7 +115,6 @@ class IntelligentAutoMLSystem:
         task_type: TaskType,
         data_characteristics,
     ) -> Dict[str, Any]:
-
         model = self.algorithm_portfolio.create_model_instance(recommendation)
         algorithm_name = recommendation.algorithm_name
 
@@ -160,7 +157,6 @@ class IntelligentAutoMLSystem:
     def _create_ensemble(
         self, algorithm_results: List[Dict[str, Any]], X: pd.DataFrame, y: pd.Series, task_type: TaskType
     ) -> Dict[str, Any]:
-
         top_models = sorted(algorithm_results, key=lambda x: x["final_score"], reverse=True)[:3]
 
         models = [result["optimized_model"] for result in top_models]
@@ -188,7 +184,6 @@ class IntelligentAutoMLSystem:
     def _generate_recommendation(
         self, best_algorithm: str, best_score: float, all_results: List[Dict[str, Any]]
     ) -> str:
-
         if not all_results:
             return "No models could be evaluated successfully"
 
@@ -218,7 +213,6 @@ class IntelligentAutoMLSystem:
         return recommendation
 
     def _compile_performance_details(self, all_results: List[Dict[str, Any]], best_algorithm: str) -> Dict[str, Any]:
-
         if not all_results:
             return {}
 
@@ -262,7 +256,6 @@ class IntelligentAutoMLSystem:
     def continuous_learning(
         self, current_model, X_new: pd.DataFrame, y_new: pd.Series, algorithm_name: str, task_type: TaskType
     ) -> Dict[str, Any]:
-
         if not self.adaptive_system:
             return {"status": "adaptive_learning_disabled"}
 
@@ -280,7 +273,6 @@ class IntelligentAutoMLSystem:
         return adaptation_results
 
     def get_model_insights(self, model, X: pd.DataFrame, algorithm_name: str) -> Dict[str, Any]:
-
         insights = {
             "algorithm_name": algorithm_name,
             "feature_count": len(X.columns),
@@ -304,7 +296,6 @@ class IntelligentAutoMLSystem:
         return insights
 
     def _assess_model_complexity(self, model, algorithm_name: str) -> str:
-
         if algorithm_name in ["linear_regression", "logistic_regression"]:
             return "low"
         elif algorithm_name in ["decision_tree", "naive_bayes"]:
@@ -317,7 +308,6 @@ class IntelligentAutoMLSystem:
             return "medium"
 
     def _assess_prediction_complexity(self, model, algorithm_name: str) -> str:
-
         if algorithm_name in ["linear_regression", "logistic_regression"]:
             return "O(n)"
         elif algorithm_name in ["decision_tree"]:
@@ -330,7 +320,6 @@ class IntelligentAutoMLSystem:
             return "O(n)"
 
     def _estimate_model_size(self, model) -> float:
-
         try:
             import sys
 
@@ -339,7 +328,6 @@ class IntelligentAutoMLSystem:
             return 0.0
 
     def export_model_config(self, automl_result: AutoMLResult) -> Dict[str, Any]:
-
         return {
             "model_selection": {
                 "best_algorithm": automl_result.best_algorithm,
@@ -364,7 +352,6 @@ class IntelligentAutoMLSystem:
 
 
 class VotingEnsemble:
-
     def __init__(self, models: List, model_names: List[str], task_type: TaskType):
         self.models = models
         self.model_names = model_names
@@ -401,6 +388,5 @@ class VotingEnsemble:
 def run_automl(
     X: pd.DataFrame, y: pd.Series, task_type: Optional[TaskType] = None, config: Optional[AutoMLConfig] = None
 ) -> AutoMLResult:
-
     automl = IntelligentAutoMLSystem(config)
     return automl.select_best_model(X, y, task_type)

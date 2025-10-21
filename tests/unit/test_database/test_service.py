@@ -15,7 +15,6 @@ except ImportError:
 @pytest.mark.skipif(not SQLALCHEMY_AVAILABLE, reason="SQLAlchemy not available")
 @pytest.mark.unit
 class TestOptimizedDatabaseService:
-
     @pytest.fixture
     def mock_db_manager(self):
         manager = Mock(spec=DatabaseManager)

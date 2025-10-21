@@ -8,7 +8,6 @@ from src.explainability.bias_detector import BiasDetector, BiasType, SeverityLev
 
 @pytest.mark.unit
 class TestBiasDetector:
-
     @pytest.fixture
     def balanced_data(self):
         np.random.seed(42)

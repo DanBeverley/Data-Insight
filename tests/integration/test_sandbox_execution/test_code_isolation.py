@@ -4,7 +4,6 @@ from unittest.mock import patch, MagicMock
 
 @pytest.mark.integration
 class TestSandboxCodeIsolation:
-
     def test_sandbox_prevents_file_system_access(self):
         from data_scientist_chatbot.app.tools.executor import execute_tool
 

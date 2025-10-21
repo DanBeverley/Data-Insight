@@ -37,7 +37,6 @@ def brain_agent_state():
 
 @pytest.mark.integration
 class TestBrainAgentRouting:
-
     def test_brain_delegates_to_hands_for_technical_work(self, mock_ollama):
         from data_scientist_chatbot.app.agent import AgentState
         from data_scientist_chatbot.app.core.router import route_from_brain

@@ -5,7 +5,6 @@ from src.intelligence.data_profiler import IntelligentDataProfiler, SemanticType
 
 @pytest.mark.unit
 class TestIntelligentDataProfiler:
-
     def test_profiler_initialization(self):
         profiler = IntelligentDataProfiler()
         assert profiler is not None

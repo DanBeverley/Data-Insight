@@ -121,7 +121,6 @@ class DataAnalysisFlowScenario(BaseScenario):
 
 @pytest.mark.e2e
 class TestDataAnalysisFlow:
-
     @pytest.fixture
     def api_client(self):
         from fastapi.testclient import TestClient

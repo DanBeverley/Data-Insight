@@ -14,7 +14,6 @@ def api_client():
 
 @pytest.mark.e2e
 class TestAPIContracts:
-
     def test_session_create_endpoint_contract(self, api_client):
         response = api_client.post("/api/sessions/new")
 
@@ -123,7 +122,6 @@ class TestAPIContracts:
 
 @pytest.mark.e2e
 class TestAPIValidation:
-
     def test_upload_requires_session_id(self, api_client):
         csv_buffer = io.StringIO()
         pd.DataFrame({"a": [1, 2, 3]}).to_csv(csv_buffer, index=False)
