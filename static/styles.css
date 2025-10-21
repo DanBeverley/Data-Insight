@@ -1297,17 +1297,17 @@ body[data-theme='light'] .settings-upload-icon {
 @keyframes artifactPulse {
     0%, 100% {
         transform: scale(1);
-        box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
+        box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
     }
     50% {
         transform: scale(1.05);
-        box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+        box-shadow: 0 0 0 10px rgba(255, 255, 255, 0);
     }
 }
 
 .btn-artifact-storage.artifact-pulse {
     animation: artifactPulse 1s ease-in-out 2;
-    border-color: #4caf50;
+    border-color: rgba(255, 255, 255, 0.8);
 }
 
 /* Artifact Dropdown */
@@ -1315,7 +1315,8 @@ body[data-theme='light'] .settings-upload-icon {
     position: absolute;
     top: calc(100% + 10px);
     right: 0;
-    width: 420px;
+    min-width:320px;
+    max-width:500px;
     max-height: 600px;
     background-color: var(--color-dark);
     border: 1px solid var(--color-border);
@@ -1416,6 +1417,7 @@ body[data-theme='light'] .settings-upload-icon {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
+    /*align-items: flex-start;*/
 }
 
 .artifact-categories.hidden {
@@ -1492,10 +1494,9 @@ body[data-theme='light'] .settings-upload-icon {
 }
 
 .artifact-category-content {
-    max-height: 500px;
-    overflow-y: auto;
-    overflow-x: visible;
+    max-height: none;
     transition: max-height 0.4s ease, opacity 0.3s ease, padding 0.3s ease;
+    overflow: visible;
 }
 
 .artifact-category.collapsed .artifact-category-content {
@@ -1523,43 +1524,7 @@ body[data-theme='light'] .settings-upload-icon {
     background-color: rgba(255, 255, 255, 0.05);
 }
 
-.artifact-item[data-preview]::after {
-    content: '';
-    position: absolute;
-    right: calc(100% + 10px);
-    top: 50%;
-    transform: translateY(-50%);
-    width: 250px;
-    height: 250px;
-    background-image: var(--preview-url);
-    background-size: contain;
-    background-repeat: no-repeat;
-    background-position: center;
-    border: 2px solid var(--color-border);
-    border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s ease;
-    z-index: 10000;
-    background-color: var(--color-bg);
-}
-
-.artifact-item[data-preview]:hover::after {
-    opacity: 1;
-}
-
-.artifact-item[data-preview="model"]::after {
-    content: attr(data-model-info);
-    width: 200px;
-    height: auto;
-    padding: 1rem;
-    background-image: none;
-    white-space: pre-line;
-    font-size: 0.85rem;
-    color: var(--color-light);
-    line-height: 1.5;
-}
+/* Preview tooltip is now handled by JavaScript - see artifact-storage.js */
 
 .artifact-info {
     flex: 1;
@@ -1625,9 +1590,9 @@ body[data-theme='light'] .settings-upload-icon {
 }
 
 .btn-artifact-download:hover {
-    background-color: rgba(76, 175, 80, 0.2);
-    border-color: #4caf50;
-    color: #4caf50;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.8);
+    color: var(--color-light);
     transform: translateY(-2px);
 }
 
