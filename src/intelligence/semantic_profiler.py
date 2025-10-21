@@ -62,7 +62,7 @@ class ColumnProfile:
 
 
 @dataclass
-class DatasetIntelligence:
+class DatasetProfile:
     column_profiles: Dict[str, ColumnProfile]
     recommended_tasks: List[Tuple[TaskRecommendation, float]]
     target_recommendations: List[Tuple[str, TaskRecommendation, float]]
@@ -107,22 +107,22 @@ class SemanticColumnProfiler:
             'hr': ['employee', 'salary', 'department', 'position', 'performance']
         }
     
-    def profile_dataset(self, df: pd.DataFrame) -> DatasetIntelligence:
+    def analyze_semantic_types(self, df: pd.DataFrame) -> DatasetProfile:
         try:
             logger.info(f"Profiling dataset with shape {df.shape}")
-            
+
             column_profiles = {}
             for col in df.columns:
                 column_profiles[col] = self._profile_column(df, col)
-            
+
             business_domain = self._detect_business_domain(df, column_profiles)
             task_recommendations = self._recommend_tasks(df, column_profiles)
             target_recommendations = self._recommend_targets(column_profiles, task_recommendations)
             feature_recommendations = self._recommend_features(column_profiles)
             data_quality = np.mean([profile.data_quality for profile in column_profiles.values()])
             complexity = self._assess_complexity(df, column_profiles)
-            
-            intelligence = DatasetIntelligence(
+
+            profile = DatasetProfile(
                 column_profiles=column_profiles,
                 recommended_tasks=task_recommendations,
                 target_recommendations=target_recommendations,
@@ -131,13 +131,13 @@ class SemanticColumnProfiler:
                 business_domain=business_domain,
                 complexity_level=complexity
             )
-            
-            logger.info(f"Dataset intelligence generated: domain={business_domain}, complexity={complexity}")
-            return intelligence
-            
+
+            logger.info(f"Dataset profile generated: domain={business_domain}, complexity={complexity}")
+            return profile
+
         except Exception as e:
             logger.error(f"Dataset profiling failed: {e}")
-            return DatasetIntelligence(
+            return DatasetProfile(
                 column_profiles={},
                 recommended_tasks=[(TaskRecommendation.REGRESSION, 0.5)],
                 target_recommendations=[],

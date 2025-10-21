@@ -127,8 +127,8 @@ class HybridDataProfiler:
             logging.warning(f"Dataset has fewer than {self.config['min_samples_for_full_profile']} samples. Profile may be limited.")
         
         try:
-            # 1. Basic Intelligent Profiling (Semantic Analysis)
-            logging.info("Phase 1: Intelligent semantic profiling...")
+            # 1. Basic Intelligent Profiling
+            logging.info("Phase 1: Intelligent data profiling...")
             semantic_profile = self.intelligent_profiler.profile_dataset(df)
             
             # 2. Data Quality Assessment
