@@ -41,6 +41,8 @@ class PrivacyAssessment:
     utility_preservation: float
     reidentification_risk: float
     recommendations: List[str]
+    detected_columns: Dict[str, float] = None
+    detected_types: List[str] = None
 
 class PrivacyEngine:
     def __init__(self, config: Optional[PrivacyConfiguration] = None):
@@ -48,28 +50,33 @@ class PrivacyEngine:
         self.privacy_transformations = {}
         self.utility_metrics = {}
         
-    def assess_privacy_risk(self, df: pd.DataFrame, 
+    def assess_privacy_risk(self, df: pd.DataFrame,
                            quasi_identifiers: List[str] = None,
                            sensitive_attributes: List[str] = None) -> PrivacyAssessment:
-        
+
         quasi_identifiers = quasi_identifiers or self._auto_detect_quasi_identifiers(df)
         sensitive_attributes = sensitive_attributes or self._auto_detect_sensitive_attributes(df)
-        
+
         reidentification_risk = self._calculate_reidentification_risk(df, quasi_identifiers)
         privacy_score = self._calculate_privacy_score(df, quasi_identifiers, sensitive_attributes)
         risk_level = self._determine_risk_level(reidentification_risk, privacy_score)
-        
+
         recommendations = self._generate_privacy_recommendations(
             reidentification_risk, privacy_score, quasi_identifiers, sensitive_attributes
         )
-        
+
+        detected_columns = self._calculate_column_sensitivity(df, quasi_identifiers, sensitive_attributes)
+        detected_types = list(set([self._categorize_column_type(col) for col in detected_columns.keys()]))
+
         return PrivacyAssessment(
             privacy_score=privacy_score,
             risk_level=risk_level,
             techniques_applied=[],
             utility_preservation=1.0,
             reidentification_risk=reidentification_risk,
-            recommendations=recommendations
+            recommendations=recommendations,
+            detected_columns=detected_columns,
+            detected_types=detected_types
         )
     
     def _auto_detect_quasi_identifiers(self, df: pd.DataFrame) -> List[str]:
@@ -225,9 +232,54 @@ class PrivacyEngine:
         
         if privacy_score < 0.5:
             recommendations.append("Consider differential privacy for strong theoretical guarantees")
-        
+
         return recommendations
-    
+
+    def _calculate_column_sensitivity(self, df: pd.DataFrame,
+                                     quasi_identifiers: List[str],
+                                     sensitive_attributes: List[str]) -> Dict[str, float]:
+        column_sensitivity = {}
+
+        for col in quasi_identifiers:
+            if col not in df.columns:
+                continue
+
+            uniqueness = df[col].nunique() / len(df) if len(df) > 0 else 0
+            entropy = self._calculate_entropy(df[col])
+            cardinality_factor = min(1.0, df[col].nunique() / 1000)
+
+            base_sensitivity = 0.3
+            uniqueness_contribution = uniqueness * 0.4
+            entropy_contribution = (entropy / 10) * 0.2
+            cardinality_contribution = cardinality_factor * 0.1
+
+            sensitivity = base_sensitivity + uniqueness_contribution + entropy_contribution + cardinality_contribution
+            column_sensitivity[col] = round(min(0.95, sensitivity), 2)
+
+        for col in sensitive_attributes:
+            if col not in df.columns:
+                continue
+
+            uniqueness = df[col].nunique() / len(df) if len(df) > 0 else 0
+            entropy = self._calculate_entropy(df[col])
+
+            base_sensitivity = 0.7
+            uniqueness_penalty = (1 - uniqueness) * 0.15
+            entropy_contribution = (entropy / 10) * 0.1
+
+            sensitivity = base_sensitivity + uniqueness_penalty + entropy_contribution
+            column_sensitivity[col] = round(min(0.99, sensitivity), 2)
+
+        return column_sensitivity
+
+    def _calculate_entropy(self, series: pd.Series) -> float:
+        value_counts = series.value_counts(normalize=True)
+        entropy = -np.sum(value_counts * np.log2(value_counts + 1e-10))
+        return entropy
+
+    def _categorize_column_type(self, column: str) -> str:
+        return 'Sensitive Data'
+
     def apply_k_anonymity(self, df: pd.DataFrame, quasi_identifiers: List[str], 
                          k: Optional[int] = None) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         
