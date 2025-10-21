@@ -218,9 +218,12 @@ async def chat_endpoint(chat_request: ChatMessage):
         raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
 
 @app.post("/api/upload")
-async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True), session_id: str = Form(None)):
+async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True), session_id: str = Form(...)):
     """Upload and validate dataset with intelligent profiling."""
     try:
+        if not session_id or not session_id.strip():
+            raise HTTPException(status_code=400, detail="session_id is required")
+
         contents = await file.read()
         df = ingest_data(io.BytesIO(contents), filename=file.filename)
 
@@ -416,13 +419,13 @@ async def agent_chat_stream(message: str, session_id: str, web_search_enabled: b
     if not AGENT_AVAILABLE:
         raise HTTPException(status_code=503, detail="Agent service not available")
 
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found. Please create a session first using /api/sessions/new")
+
     from fastapi.responses import StreamingResponse
 
     async def generate_events():
         global status_agent_runnable
-
-        if session_id not in session_store:
-            session_store[session_id] = {"session_id": session_id, "created_at": datetime.now()}
 
         session_store[session_id]["web_search_enabled"] = web_search_enabled
 

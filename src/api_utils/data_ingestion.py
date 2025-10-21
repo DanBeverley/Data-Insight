@@ -64,8 +64,11 @@ def process_dataframe_ingestion(
     response_data = {
         "session_id": session_id,
         "status": "success",
+        "message": f"Dataset uploaded successfully with {df.shape[0]} rows and {df.shape[1]} columns",
+        "rows": df.shape[0],
+        "columns": df.shape[1],
         "shape": df.shape,
-        "columns": df.columns.tolist(),
+        "column_names": df.columns.tolist(),
         "data_types": df.dtypes.astype(str).to_dict(),
         "validation": {
             "is_valid": validation_report.is_valid,
