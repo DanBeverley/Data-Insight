@@ -23,23 +23,43 @@ class SessionManager {
     async loadSessions() {
         try {
             const sessions = await this.app.apiClient.loadSessions();
+            console.log('[SessionManager] Loaded sessions from database:', sessions.length);
 
-            // If no sessions exist or no current session set, create a new one
-            if (sessions.length === 0 || !this.app.currentSessionId) {
+            if (sessions.length === 0) {
+                console.log('[SessionManager] No sessions found, creating new session');
                 await this.createNewSession();
                 return;
             }
 
             this.displaySessions(sessions);
 
-            // Ensure agentSessionId is synced with currentSessionId
-            if (this.app.currentSessionId && !this.app.agentSessionId) {
-                this.app.agentSessionId = this.app.currentSessionId;
+            const lastActiveSessionId = localStorage.getItem('lastActiveSessionId');
+            const sessionExists = sessions.some(s => s.id === lastActiveSessionId);
+
+            if (lastActiveSessionId && sessionExists) {
+                console.log('[SessionManager] Restoring last active session:', lastActiveSessionId);
+                this.app.currentSessionId = lastActiveSessionId;
+                this.app.agentSessionId = lastActiveSessionId;
+                await this.loadSessionMessages(lastActiveSessionId);
+            } else if (!this.app.currentSessionId) {
+                const mostRecentSession = sessions[0];
+                console.log('[SessionManager] No active session, using most recent:', mostRecentSession.id);
+                this.app.currentSessionId = mostRecentSession.id;
+                this.app.agentSessionId = mostRecentSession.id;
+                localStorage.setItem('lastActiveSessionId', mostRecentSession.id);
+                await this.loadSessionMessages(mostRecentSession.id);
+            } else {
+                console.log('[SessionManager] Using existing currentSessionId:', this.app.currentSessionId);
+                if (this.app.currentSessionId && !this.app.agentSessionId) {
+                    this.app.agentSessionId = this.app.currentSessionId;
+                }
+            }
+
+            if (window.artifactStorage && this.app.currentSessionId) {
+                window.artifactStorage.setSessionId(this.app.currentSessionId);
             }
         } catch (error) {
             console.error('Failed to load sessions:', error);
-            // Create a new session as fallback
-            await this.createNewSession();
         }
     }
 
@@ -127,11 +147,16 @@ class SessionManager {
             const data = await this.app.apiClient.createNewSession();
             this.app.currentSessionId = data.session_id;
             this.app.agentSessionId = data.session_id;
+            localStorage.setItem('lastActiveSessionId', data.session_id);
             this.clearChatMessages();
 
             localStorage.removeItem('hasFirstMessage');
             if (this.app.blackHole) {
                 this.app.blackHole.resetBlackHole();
+            }
+
+            if (window.artifactStorage) {
+                window.artifactStorage.setSessionId(data.session_id);
             }
 
             this.loadSessions();
@@ -156,7 +181,12 @@ class SessionManager {
 
     async switchToSession(sessionId) {
         this.app.currentSessionId = sessionId;
-        this.app.agentSessionId = sessionId; // Sync agent session ID
+        this.app.agentSessionId = sessionId;
+        localStorage.setItem('lastActiveSessionId', sessionId);
+
+        if (window.artifactStorage) {
+            window.artifactStorage.setSessionId(sessionId);
+        }
 
         await this.loadSessionMessages(sessionId);
         this.loadSessions();
@@ -164,7 +194,9 @@ class SessionManager {
 
     async loadSessionMessages(sessionId) {
         try {
+            console.log('[SessionManager] Loading messages for session:', sessionId);
             const messages = await this.app.apiClient.loadSessionMessages(sessionId);
+            console.log('[SessionManager] Loaded messages:', messages.length);
             this.displaySessionMessages(messages);
         } catch (error) {
             console.error('Failed to load session messages:', error);
