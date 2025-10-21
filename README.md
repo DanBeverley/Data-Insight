@@ -4,7 +4,7 @@ Multi-agent AI system for conversational data analysis with self-learning capabi
 
 ## Demo
 <p align = "center">
-<video src="https://cdn.jsdelivr.net/gh/DanBeverley/Data-Insight@initial-setup/data_insight_demo.mp4" controls width="720"></video>
+<video src="https://github.com/user-attachments/assets/209b6418-e65f-4893-b568-5bba87fedf6a" controls width="720"></video>
 </p>
 
 ## Core Capabilities
