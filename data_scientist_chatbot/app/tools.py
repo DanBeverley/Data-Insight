@@ -9,12 +9,15 @@ from e2b_code_interpreter import Sandbox
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
-from azureml.core import Workspace, Experiment, ScriptRunConfig
-from azure.storage.blob import BlobServiceClient
-from langchain.tools import tool
-import boto3
-from sagemaker import Session
-from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
+
+try:
+    from langchain.tools import tool
+except ImportError:
+    logger.warning("langchain.tools not available - tool decorator will be disabled")
+
+    def tool(func):
+        return func
+
 
 project_root = Path(__file__).parent.parent.parent
 env_file = project_root / ".env"
@@ -630,6 +633,9 @@ def azure_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
         user_format: Optional user-specified save format (e.g., "onnx", "joblib")
     """
     try:
+        from azureml.core import Workspace, Experiment, ScriptRunConfig
+        from azure.storage.blob import BlobServiceClient
+
         ws = Workspace.from_config()
 
         # Read gpu_wrapper.py for bundling
@@ -744,6 +750,10 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
         user_format: Optional user-specified save format (e.g., "onnx", "joblib")
     """
     try:
+        import boto3
+        from sagemaker import Session
+        from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
+
         s3_bucket = os.getenv("S3_BUCKET")
         sagemaker_role = os.getenv("SAGEMAKER_ROLE")
         s3 = boto3.client("s3")
