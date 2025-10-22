@@ -206,7 +206,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest==7.4.3 pytest-html==4.1.1
+          pip install pytest==7.4.3 pytest-html==4.1.1 pytest-asyncio==0.23.8
 
       - name: Run E2E scenario - ${{ matrix.scenario }}
         run: |
