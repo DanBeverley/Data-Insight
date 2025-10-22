@@ -1,5 +1,5 @@
 import re
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Generator
 
 
 def extract_plot_urls(content: str) -> List[str]:
@@ -40,3 +40,22 @@ def extract_agent_response(messages: List[Any], recent_count: int = 3) -> Tuple[
     response_content = final_message.content if hasattr(final_message, "content") else "Task completed successfully."
 
     return response_content, list(set(plots))
+
+
+def stream_agent_response(query: str, session_id: str, stream: bool = True) -> Generator[str, None, None]:
+    MAX_QUERY_LENGTH = 50000
+
+    if not query or not isinstance(query, str):
+        raise ValueError("Query must be a non-empty string")
+
+    if len(query) > MAX_QUERY_LENGTH:
+        raise ValueError(f"Query too long: {len(query)} characters exceeds maximum of {MAX_QUERY_LENGTH}")
+
+    from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+
+    sanitized_query = sanitize_input(query)
+
+    if not sanitized_query or len(sanitized_query) < 3:
+        raise ValueError("Query is empty or too short after sanitization")
+
+    yield f"Processing query for session {session_id}: {sanitized_query[:100]}..."
