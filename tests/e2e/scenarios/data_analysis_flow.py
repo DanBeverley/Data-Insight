@@ -3,6 +3,10 @@ import pandas as pd
 import io
 from typing import Dict, Any
 from .base_scenario import BaseScenario, ScenarioStep
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class DataAnalysisFlowScenario(BaseScenario):
@@ -56,12 +60,14 @@ class DataAnalysisFlowScenario(BaseScenario):
 
     def _create_session(self) -> bool:
         try:
-            response = self.api_client.post("/api/sessions/create")
+            response = self.api_client.post("/api/sessions/new")
+            logger.info(f"DEBUG: Create session response:status={response.status_code}, text={response.text}")
             if response.status_code == 200:
                 data = response.json()
                 self.session_id = data.get("session_id")
                 return self.session_id is not None
         except Exception as e:
+            logger.info(f"DEBUG: Create session exception: {str(e)}")
             self.errors.append(f"Create session failed: {str(e)}")
         return False
 
@@ -70,22 +76,24 @@ class DataAnalysisFlowScenario(BaseScenario):
             files = {"file": ("test_data.csv", self.csv_data, "text/csv")}
             data = {"session_id": self.session_id}
             response = self.api_client.post("/api/upload", files=files, data=data)
-
+            logger.info(f"DEBUG: Upload response: status={response.status_code}, text={response.text}")
             if response.status_code == 200:
                 result = response.json()
                 return result.get("status") == "success"
         except Exception as e:
+            logger.info(f"DEBUG: Upload exception: {str(e)}")
             self.errors.append(f"Upload failed: {str(e)}")
         return False
 
     def _profile_data(self) -> bool:
         try:
             response = self.api_client.get(f"/api/data/{self.session_id}/profile")
-
+            logger.info(f"DEBUG: Profile response: status={response.status_code}, text={response.text}")
             if response.status_code == 200:
                 self.profile_result = response.json()
                 return "column_profiles" in self.profile_result
         except Exception as e:
+            logger.info(f"DEBUG: Profile exception: {str(e)}")
             self.errors.append(f"Profile failed: {str(e)}")
         return False
 
@@ -149,5 +157,7 @@ class TestDataAnalysisFlow:
 
         scenario.steps = steps
         steps_passed = sum(1 for step in steps if scenario._execute_step(step))
-
+        logger.info(f"DEBUG: Steps passed: {steps_passed}")
+        if scenario.errors:
+            logger.info("DEBUG: Scenario errors:\n" + "\n".join(scenario.errors))
         assert steps_passed >= 2
