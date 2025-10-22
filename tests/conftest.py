@@ -7,7 +7,18 @@ from typing import Dict, Any
 
 @pytest.fixture
 def sample_session_id() -> str:
-    return "test_session_123"
+    session_id = "test_session_123"
+    yield session_id
+
+    import builtins
+
+    if hasattr(builtins, "_persistent_sandboxes") and session_id in builtins._persistent_sandboxes:
+        try:
+            sandbox = builtins._persistent_sandboxes[session_id]
+            sandbox.close()
+            del builtins._persistent_sandboxes[session_id]
+        except Exception as e:
+            pass
 
 
 @pytest.fixture
@@ -156,3 +167,24 @@ def vcr_cassette_dir(fixtures_dir: Path) -> Path:
     cassette_dir = fixtures_dir / "vcr_cassettes"
     cassette_dir.mkdir(exist_ok=True)
     return cassette_dir
+
+
+@pytest.fixture(scope="function", autouse=True)
+def cleanup_sandboxes():
+    import builtins
+
+    initial_sandboxes = set()
+    if hasattr(builtins, "_persistent_sandboxes"):
+        initial_sandboxes = set(builtins._persistent_sandboxes.keys())
+
+    yield
+
+    if hasattr(builtins, "_persistent_sandboxes"):
+        new_sandboxes = set(builtins._persistent_sandboxes.keys()) - initial_sandboxes
+        for session_id in new_sandboxes:
+            try:
+                sandbox = builtins._persistent_sandboxes[session_id]
+                sandbox.close()
+                del builtins._persistent_sandboxes[session_id]
+            except Exception:
+                pass
