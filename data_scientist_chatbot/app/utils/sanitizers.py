@@ -1,6 +1,7 @@
-"""Output sanitization utilities"""
+"""Input and output sanitization utilities"""
 
 import re
+from pathlib import Path
 from difflib import SequenceMatcher
 
 
@@ -129,3 +130,69 @@ def sanitize_output(content: str) -> str:
     if len(filtered_content) < len(content) * 0.3:
         return content
     return filtered_content if filtered_content else content
+
+
+def sanitize_input(user_input: str) -> str:
+    """Sanitize user input to prevent injection attacks"""
+    if not user_input or not isinstance(user_input, str):
+        return user_input
+
+    sanitized = user_input
+
+    sql_patterns = [
+        r"('\s*(OR|AND)\s*'?\d*'?\s*=\s*'?\d*)",
+        r"(--)",
+        r"(;.*DROP)",
+        r"(UNION\s+SELECT)",
+        r"(/\*.*\*/)",
+    ]
+    for pattern in sql_patterns:
+        sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+
+    xss_patterns = [
+        r"<script[^>]*>.*?</script>",
+        r"javascript:",
+        r"onerror\s*=",
+        r"onload\s*=",
+        r"<iframe",
+        r"<embed",
+        r"<object",
+    ]
+    for pattern in xss_patterns:
+        sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+
+    cmd_patterns = [r"`", r"\$\(", r"\|\s*\w+"]
+    for pattern in cmd_patterns:
+        sanitized = re.sub(pattern, "", sanitized)
+
+    code_patterns = [r"exec\s*\(", r"eval\s*\(", r"__import__"]
+    for pattern in code_patterns:
+        sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+
+    return sanitized
+
+
+def sanitize_file_path(file_path: str) -> str:
+    """Validate and sanitize file paths to prevent path traversal"""
+    if not file_path:
+        raise ValueError("File path cannot be empty")
+
+    dangerous_patterns = ["..", "~", "/etc/", "\\windows\\", "\\system32\\", "C:\\", "/root/"]
+
+    for pattern in dangerous_patterns:
+        if pattern.lower() in file_path.lower():
+            raise ValueError(f"Invalid file path: contains forbidden pattern '{pattern}'")
+
+    try:
+        path = Path(file_path)
+        if path.is_absolute():
+            raise ValueError("Absolute paths are not allowed")
+
+        resolved = path.resolve()
+        if ".." in str(resolved):
+            raise ValueError("Path traversal detected")
+
+    except Exception as e:
+        raise ValueError(f"Invalid file path: {str(e)}")
+
+    return file_path
