@@ -323,3 +323,7 @@ jobs:
           cat tests/e2e/scenarios/tool_delegation.py | grep "@pytest.mark.tool_delegation" || echo "Marker not found"
           # Debug: Run with collect-only to list selected items
           pytest tests/e2e/ -m "tool_delegation" --collect-only -v --html=reports/tool_delegation.html
+      - name: Debug markers
+        run: |
+          cat tests/e2e/scenarios/tool_delegation.py | grep "@pytest.mark.tool_delegation" || echo "Marker not found"
+          pytest --markers
