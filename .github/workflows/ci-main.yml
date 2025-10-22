@@ -314,6 +314,12 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-html pytest-asyncio
       - name: Run tests
-        run: pytest tests/e2e/ -m "tool_delegation" --collect-only -v --html=reports/tool_delegation.html
+        run: | 
+          # Debug: Check if marker is in the file
+          cat tests/e2e/scenarios/tool_delegation.py | grep "@pytest.mark.tool_delegation" || echo "Marker not found"
+          # Debug: Run with collect-only to list selected items
+          pytest tests/e2e/ -m "tool_delegation" --collect-only -v --html=reports/tool_delegation.html
