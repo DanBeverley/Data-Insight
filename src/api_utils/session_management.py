@@ -1,3 +1,4 @@
+import re
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
 
@@ -28,3 +29,18 @@ def validate_session(session_id: str, session_store: Dict[str, Any]) -> Dict[str
     if session_id not in session_store:
         raise HTTPException(status_code=404, detail="Session not found")
     return session_store[session_id]
+
+
+def validate_session_id(session_id: str) -> bool:
+    if not session_id or not isinstance(session_id, str):
+        return False
+
+    if len(session_id) > 128:
+        return False
+
+    pattern = r"^[a-zA-Z0-9_-]+$"
+    if not re.match(pattern, session_id):
+        return False
+
+    dangerous_patterns = ["..", "/", "\\", "<", ">", "DROP", "UNION", "script", "SELECT", "INSERT", "DELETE", "UPDATE"]
+    return not any(pattern.lower() in session_id.lower() for pattern in dangerous_patterns)
