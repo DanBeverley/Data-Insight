@@ -126,6 +126,7 @@ class ToolDelegationScenario(BaseScenario):
                 pass
 
 
+@pytest.mark.tool_delegation
 def test_tool_delegation_scenario():
     scenario = ToolDelegationScenario()
     result = scenario.execute()

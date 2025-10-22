@@ -120,6 +120,7 @@ class WebSearchIntegrationScenario(BaseScenario):
                 pass
 
 
+@pytest.mark.web_search_integration
 def test_web_search_integration_scenario():
     scenario = WebSearchIntegrationScenario()
     result = scenario.execute()

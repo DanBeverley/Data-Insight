@@ -149,6 +149,7 @@ class ErrorEdgeCasesScenario(BaseScenario):
                 pass
 
 
+@pytest.mark.error_edge_cases
 def test_error_edge_cases_scenario():
     scenario = ErrorEdgeCasesScenario()
     result = scenario.execute()

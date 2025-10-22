@@ -120,6 +120,7 @@ class DataAnalysisFlowScenario(BaseScenario):
 
 
 @pytest.mark.e2e
+@pytest.mark.data_analysis_flow
 class TestDataAnalysisFlow:
     @pytest.fixture
     def api_client(self):

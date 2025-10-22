@@ -71,6 +71,7 @@ class MemoryRetentionScenario(BaseScenario):
 
 
 @pytest.mark.e2e
+@pytest.mark.memory_retention
 class TestMemoryRetention:
     @pytest.fixture
     def api_client(self):
@@ -134,6 +135,7 @@ class TestMemoryRetention:
 
 
 @pytest.mark.e2e
+@pytest.mark.memory_retention
 class TestCrossSessionIsolation:
     @pytest.fixture
     def api_client(self):
