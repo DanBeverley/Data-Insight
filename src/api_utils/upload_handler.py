@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, BinaryIO
 import pandas as pd
 from .helpers import convert_pandas_output_to_html
 
@@ -136,3 +136,31 @@ print("Dataset saved as dataset.csv, data.csv, and ds.csv")
     except Exception as agent_e:
         logging.warning(f"Agent data loading failed: {agent_e}")
         response_data["agent_analysis"] = None
+
+
+def validate_file_upload(file_content: BinaryIO, filename: str) -> bool:
+    if not filename or not isinstance(filename, str):
+        return False
+
+    allowed_extensions = [".csv", ".xlsx", ".xls", ".json", ".parquet", ".txt"]
+    file_ext = "." + filename.split(".")[-1].lower() if "." in filename else ""
+
+    if file_ext not in allowed_extensions:
+        return False
+
+    dangerous_extensions = [".php", ".exe", ".sh", ".bat", ".cmd", ".ps1", ".py", ".js", ".html", ".htm"]
+    if any(ext in filename.lower() for ext in dangerous_extensions):
+        return False
+
+    try:
+        content_sample = file_content.read(1024)
+        file_content.seek(0)
+
+        malicious_signatures = [b"<?php", b"<script", b"#!/bin/", b"#!python", b"MZ\x90\x00"]
+        if any(sig in content_sample for sig in malicious_signatures):
+            return False
+
+    except Exception:
+        return False
+
+    return True
