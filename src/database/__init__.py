@@ -5,12 +5,12 @@ from .models import Base, DatasetCharacteristics, ProjectConfig, PipelineExecuti
 from .migrations import run_migrations
 
 __all__ = [
-    'DatabaseManager',
-    'get_database_manager', 
-    'Base',
-    'DatasetCharacteristics',
-    'ProjectConfig', 
-    'PipelineExecution',
-    'LearningPattern',
-    'run_migrations'
+    "DatabaseManager",
+    "get_database_manager",
+    "Base",
+    "DatasetCharacteristics",
+    "ProjectConfig",
+    "PipelineExecution",
+    "LearningPattern",
+    "run_migrations",
 ]

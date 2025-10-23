@@ -1,44 +1,65 @@
 import uuid
 import pickle
+import sqlite3
+import logging
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
+from pathlib import Path
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+
+def get_session_db():
+    db_path = Path("sessions_metadata.db")
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            title TEXT,
+            created_at TEXT,
+            last_updated TEXT
+        )
+    """
+    )
+    conn.commit()
+    return conn
 
 
 @router.get("")
 async def get_sessions():
-    from ..api import session_store, agent_sessions, GLOBAL_SESSION_ID
+    from ..api import session_store, GLOBAL_SESSION_ID
 
     sessions = []
-    for session_id, session_data in session_store.items():
-        if session_id == GLOBAL_SESSION_ID:
-            continue
+    db_conn = get_session_db()
 
-        session_title = "New Chat"
+    try:
+        cursor = db_conn.execute(
+            "SELECT session_id, title, created_at, last_updated FROM sessions ORDER BY created_at DESC"
+        )
+        db_sessions = cursor.fetchall()
 
-        session_titles = getattr(rename_session, 'session_titles', {})
-        if session_id in session_titles:
-            session_title = session_titles[session_id]
-        elif session_id in agent_sessions:
-            try:
-                agent = agent_sessions[session_id]
-                if hasattr(agent, 'state') and agent.state and 'messages' in agent.state:
-                    messages = agent.state['messages']
-                    if messages:
-                        first_user_msg = next((msg for msg in messages if hasattr(msg, 'type') and msg.type == 'human'), None)
-                        if first_user_msg:
-                            session_title = str(first_user_msg.content)[:50]
-            except:
-                pass
+        for row in db_sessions:
+            session_id, title, created_at, last_updated = row
+            if session_id == GLOBAL_SESSION_ID:
+                continue
 
-        sessions.append({
-            "id": session_id,
-            "title": session_title,
-            "created_at": session_data.get("created_at", datetime.now()).isoformat()
-        })
+            if session_id not in session_store:
+                session_store[session_id] = {
+                    "session_id": session_id,
+                    "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now(),
+                }
 
-    return sorted(sessions, key=lambda x: x["created_at"], reverse=True)
+            sessions.append(
+                {"id": session_id, "title": title or "New Chat", "created_at": created_at or datetime.now().isoformat()}
+            )
+    except Exception as e:
+        logger.error(f"Failed to load sessions from database: {e}")
+    finally:
+        db_conn.close()
+
+    return sessions
 
 
 @router.post("/new")
@@ -47,10 +68,22 @@ async def create_new_session():
     from ..api_utils.session_management import clean_checkpointer_state
 
     new_session_id = str(uuid.uuid4())
-    session_store[new_session_id] = {
-        "session_id": new_session_id,
-        "created_at": datetime.now()
-    }
+    created_at = datetime.now()
+
+    session_store[new_session_id] = {"session_id": new_session_id, "created_at": created_at}
+
+    db_conn = get_session_db()
+    try:
+        db_conn.execute(
+            "INSERT INTO sessions (session_id, title, created_at, last_updated) VALUES (?, ?, ?, ?)",
+            (new_session_id, "New Chat", created_at.isoformat(), created_at.isoformat()),
+        )
+        db_conn.commit()
+        logger.info(f"Created new session: {new_session_id}")
+    except Exception as e:
+        logger.error(f"Failed to persist new session: {e}")
+    finally:
+        db_conn.close()
 
     clean_checkpointer_state(new_session_id, "new session")
 
@@ -67,6 +100,16 @@ async def delete_session(session_id: str):
     if session_id in agent_sessions:
         del agent_sessions[session_id]
 
+    db_conn = get_session_db()
+    try:
+        db_conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        db_conn.commit()
+        logger.info(f"Deleted session: {session_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete session from database: {e}")
+    finally:
+        db_conn.close()
+
     clean_checkpointer_state(session_id, "delete session")
 
     return {"success": True}
@@ -79,10 +122,19 @@ async def rename_session(session_id: str, request: dict):
         if not new_title:
             raise HTTPException(status_code=400, detail="Title cannot be empty")
 
-        if not hasattr(rename_session, 'session_titles'):
-            rename_session.session_titles = {}
-
-        rename_session.session_titles[session_id] = new_title
+        db_conn = get_session_db()
+        try:
+            db_conn.execute(
+                "UPDATE sessions SET title = ?, last_updated = ? WHERE session_id = ?",
+                (new_title, datetime.now().isoformat(), session_id),
+            )
+            db_conn.commit()
+            logger.info(f"Renamed session {session_id} to '{new_title}'")
+        except Exception as e:
+            logger.error(f"Failed to rename session in database: {e}")
+            raise
+        finally:
+            db_conn.close()
 
         return {"success": True, "title": new_title}
     except Exception as e:
@@ -94,29 +146,62 @@ async def get_session_messages(session_id: str):
     from ..api import session_store
 
     if session_id not in session_store:
-        raise HTTPException(status_code=404, detail="Session not found")
+        db_conn = get_session_db()
+        try:
+            cursor = db_conn.execute("SELECT session_id, created_at FROM sessions WHERE session_id = ?", (session_id,))
+            row = cursor.fetchone()
+            if row:
+                session_id_db, created_at = row
+                session_store[session_id] = {
+                    "session_id": session_id_db,
+                    "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now(),
+                }
+                logger.info(f"Restored session {session_id} to session_store from database")
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to check session in database: {e}")
+            raise HTTPException(status_code=404, detail="Session not found")
+        finally:
+            db_conn.close()
 
     messages = []
 
     try:
         from data_scientist_chatbot.app.core.graph_builder import memory
+
         if memory:
             cursor = memory.conn.execute(
                 "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
-                (session_id,)
+                (session_id,),
             )
             row = cursor.fetchone()
             if row:
-                checkpoint_data = pickle.loads(row[0])
-                if 'channel_values' in checkpoint_data and 'messages' in checkpoint_data['channel_values']:
-                    for msg in checkpoint_data['channel_values']['messages']:
-                        if hasattr(msg, 'type') and msg.type in ['human', 'ai']:
-                            messages.append({
-                                "type": msg.type,
-                                "content": str(msg.content)[:500],
-                                "timestamp": datetime.now().isoformat()
-                            })
+                try:
+                    checkpoint_data = pickle.loads(row[0])
+                    logger.info(f"Checkpoint data keys: {checkpoint_data.keys()}")
+                except Exception as pickle_error:
+                    logger.error(f"Failed to unpickle checkpoint for session {session_id}: {pickle_error}")
+                    logger.info(f"Checkpoint data type: {type(row[0])}, length: {len(row[0]) if row[0] else 0}")
+                    return messages
+                if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
+                    msg_count = len(checkpoint_data["channel_values"]["messages"])
+                    logger.info(f"Found {msg_count} messages in checkpoint for session {session_id}")
+                    for msg in checkpoint_data["channel_values"]["messages"]:
+                        if hasattr(msg, "type") and msg.type in ["human", "ai"]:
+                            messages.append(
+                                {"type": msg.type, "content": str(msg.content), "timestamp": datetime.now().isoformat()}
+                            )
+                    logger.info(f"Returning {len(messages)} messages for session {session_id}")
+                else:
+                    logger.warning(f"No messages found in checkpoint for session {session_id}")
+            else:
+                logger.warning(f"No checkpoint found for session {session_id}")
+        else:
+            logger.warning(f"Memory not initialized")
     except Exception as e:
-        print(f"Error loading messages from checkpointer: {e}")
+        logger.error(f"Error loading messages from checkpointer: {e}", exc_info=True)
 
     return messages

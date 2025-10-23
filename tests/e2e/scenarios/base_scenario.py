@@ -97,7 +97,7 @@ class BaseScenario(ABC):
             steps_completed=steps_completed,
             total_steps=len(self.steps),
             errors=self.errors,
-            metadata=self.get_metadata()
+            metadata=self.get_metadata(),
         )
 
     @abstractmethod
@@ -107,11 +107,7 @@ class BaseScenario(ABC):
 
     def get_metadata(self) -> Dict[str, Any]:
         """Return scenario metadata for reporting"""
-        return {
-            "description": self.description,
-            "start_time": self.start_time,
-            "end_time": self.end_time
-        }
+        return {"description": self.description, "start_time": self.start_time, "end_time": self.end_time}
 
     def validate_outcome(self, expected: str, actual: str) -> bool:
         """Validate step outcome against expectations"""

@@ -20,6 +20,7 @@ def temp_checkpointer_db():
 def checkpointer_with_temp_db(temp_checkpointer_db):
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
+
         conn = sqlite3.connect(temp_checkpointer_db, check_same_thread=False)
         checkpointer = SqliteSaver(conn)
         yield checkpointer
@@ -30,7 +31,6 @@ def checkpointer_with_temp_db(temp_checkpointer_db):
 
 @pytest.mark.integration
 class TestMemorySynchronization:
-
     def test_checkpointer_persists_conversation_state(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
 
@@ -39,7 +39,7 @@ class TestMemorySynchronization:
 
         agent = create_agent_executor(memory=checkpointer_with_temp_db)
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.return_value = AIMessage(content="Router decision: brain")
@@ -51,13 +51,12 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 0,
                 "last_agent_sequence": [],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
 
             result = agent.invoke(initial_state, config)
 
             assert len(result["messages"]) > 0
-
 
     def test_context_retrieval_across_turns(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
@@ -67,14 +66,14 @@ class TestMemorySynchronization:
 
         agent = create_agent_executor(memory=checkpointer_with_temp_db)
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.side_effect = [
                 AIMessage(content="Router: brain"),
                 AIMessage(content="Nice to meet you, Alice!"),
                 AIMessage(content="Router: brain"),
-                AIMessage(content="Your name is Alice, as you mentioned earlier.")
+                AIMessage(content="Your name is Alice, as you mentioned earlier."),
             ]
             mock_ollama.return_value = mock_instance
 
@@ -84,7 +83,7 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 0,
                 "last_agent_sequence": [],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
             result1 = agent.invoke(turn1_state, config)
 
@@ -93,12 +92,11 @@ class TestMemorySynchronization:
                 "session_id": session_id,
                 "python_executions": 0,
                 "retry_count": 0,
-                "last_agent_sequence": []
+                "last_agent_sequence": [],
             }
             result2 = agent.invoke(turn2_state, config)
 
             assert len(result2["messages"]) >= len(result1["messages"])
-
 
     def test_session_isolation_between_users(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
@@ -110,7 +108,7 @@ class TestMemorySynchronization:
         config_alice = {"configurable": {"thread_id": session_alice}}
         config_bob = {"configurable": {"thread_id": session_bob}}
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.return_value = AIMessage(content="Acknowledged")
@@ -122,7 +120,7 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 0,
                 "last_agent_sequence": [],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
             result_alice = agent.invoke(state_alice, config_alice)
 
@@ -132,12 +130,11 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 0,
                 "last_agent_sequence": [],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
             result_bob = agent.invoke(state_bob, config_bob)
 
             assert result_alice["messages"][0].content != result_bob["messages"][0].content
-
 
     def test_python_execution_counter_persistence(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
@@ -147,20 +144,16 @@ class TestMemorySynchronization:
 
         agent = create_agent_executor(memory=checkpointer_with_temp_db)
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.return_value = AIMessage(
                 content="",
-                tool_calls=[{
-                    "name": "python_code_interpreter",
-                    "args": {"code": "print(1+1)"},
-                    "id": "call_1"
-                }]
+                tool_calls=[{"name": "python_code_interpreter", "args": {"code": "print(1+1)"}, "id": "call_1"}],
             )
             mock_ollama.return_value = mock_instance
 
-            with patch('data_scientist_chatbot.app.tools.executor.execute_tool') as mock_exec:
+            with patch("data_scientist_chatbot.app.tools.executor.execute_tool") as mock_exec:
                 mock_exec.return_value = "2"
 
                 state = {
@@ -169,12 +162,11 @@ class TestMemorySynchronization:
                     "python_executions": 0,
                     "retry_count": 0,
                     "last_agent_sequence": [],
-                    "router_decision": "hands"
+                    "router_decision": "hands",
                 }
 
                 result = agent.invoke(state, config)
                 assert result.get("python_executions", 0) >= 0
-
 
     def test_retry_count_reset_after_success(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
@@ -184,7 +176,7 @@ class TestMemorySynchronization:
 
         agent = create_agent_executor(memory=checkpointer_with_temp_db)
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.return_value = AIMessage(content="Success")
@@ -196,12 +188,11 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 2,
                 "last_agent_sequence": ["brain"],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
 
             result = agent.invoke(state, config)
             assert result.get("retry_count", 0) <= 2
-
 
     def test_business_context_preservation(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
@@ -214,10 +205,10 @@ class TestMemorySynchronization:
         business_ctx = {
             "domain": "finance",
             "objective": "fraud_detection",
-            "stakeholders": ["security_team", "compliance"]
+            "stakeholders": ["security_team", "compliance"],
         }
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.return_value = AIMessage(content="Acknowledged")
@@ -230,12 +221,11 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 0,
                 "last_agent_sequence": [],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
 
             result = agent.invoke(state, config)
             assert result.get("business_context", {}).get("domain") == "finance"
-
 
     def test_scratchpad_accumulation(self, checkpointer_with_temp_db):
         from data_scientist_chatbot.app.core.graph_builder import create_agent_executor
@@ -245,7 +235,7 @@ class TestMemorySynchronization:
 
         agent = create_agent_executor(memory=checkpointer_with_temp_db)
 
-        with patch('langchain_ollama.chat_models.ChatOllama') as mock_ollama:
+        with patch("langchain_ollama.chat_models.ChatOllama") as mock_ollama:
             mock_instance = MagicMock()
             mock_instance.bind_tools.return_value = mock_instance
             mock_instance.invoke.return_value = AIMessage(content="Processing")
@@ -258,7 +248,7 @@ class TestMemorySynchronization:
                 "python_executions": 0,
                 "retry_count": 0,
                 "last_agent_sequence": [],
-                "router_decision": "brain"
+                "router_decision": "brain",
             }
 
             result = agent.invoke(state, config)

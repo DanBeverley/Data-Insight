@@ -5,17 +5,17 @@ from .stakeholder_reporter import StakeholderReporter, ReportFormat, AudienceTyp
 from .insight_orchestrator import InsightOrchestrator
 
 __all__ = [
-    'BusinessTranslator',
-    'BusinessMetric', 
-    'StakeholderView',
-    'NarrativeGenerator',
-    'ExecutiveSummary',
-    'TechnicalReport',
-    'DashboardEngine',
-    'DashboardUpdate',
-    'MetricTrend',
-    'StakeholderReporter',
-    'ReportFormat',
-    'AudienceType',
-    'InsightOrchestrator'
+    "BusinessTranslator",
+    "BusinessMetric",
+    "StakeholderView",
+    "NarrativeGenerator",
+    "ExecutiveSummary",
+    "TechnicalReport",
+    "DashboardEngine",
+    "DashboardUpdate",
+    "MetricTrend",
+    "StakeholderReporter",
+    "ReportFormat",
+    "AudienceType",
+    "InsightOrchestrator",
 ]

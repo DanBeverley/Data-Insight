@@ -13,30 +13,34 @@ def create_validation_issues(validation_report) -> list:
             "severity": "high" if "missing" in check.message.lower() or "null" in check.message.lower() else "medium",
             "affected_columns": list(check.details.keys()) if check.details else [],
             "details": check.details,
-            "passed": check.passed
+            "passed": check.passed,
         }
-        for check in validation_report.checks if not check.passed
+        for check in validation_report.checks
+        if not check.passed
     ]
 
 
 def create_intelligence_summary(intelligence_profile: dict) -> dict:
-    column_profiles = intelligence_profile.get('column_profiles', {})
-    domain_analysis = intelligence_profile.get('domain_analysis', {})
+    column_profiles = intelligence_profile.get("column_profiles", {})
+    domain_analysis = intelligence_profile.get("domain_analysis", {})
 
-    semantic_types = {col: profile.semantic_type.value
-                    for col, profile in column_profiles.items()}
+    semantic_types = {col: profile.semantic_type.value for col, profile in column_profiles.items()}
 
-    detected_domains = domain_analysis.get('detected_domains', [])
+    detected_domains = domain_analysis.get("detected_domains", [])
     primary_domain = detected_domains[0] if detected_domains else None
 
     return {
         "semantic_types": semantic_types,
-        "primary_domain": primary_domain.get('domain') if primary_domain else 'unknown',
-        "domain_confidence": primary_domain.get('confidence', 0) if primary_domain else 0,
+        "primary_domain": primary_domain.get("domain") if primary_domain else "unknown",
+        "domain_confidence": primary_domain.get("confidence", 0) if primary_domain else 0,
         "domain_analysis": domain_analysis,
-        "key_insights": intelligence_profile.get('overall_recommendations', [])[:3] if intelligence_profile.get('overall_recommendations') else [],
-        "relationships_found": len(intelligence_profile.get('relationship_analysis', {}).get('relationships', [])),
-        "profiling_completed": True
+        "key_insights": (
+            intelligence_profile.get("overall_recommendations", [])[:3]
+            if intelligence_profile.get("overall_recommendations")
+            else []
+        ),
+        "relationships_found": len(intelligence_profile.get("relationship_analysis", {}).get("relationships", [])),
+        "profiling_completed": True,
     }
 
 
@@ -46,7 +50,7 @@ def process_dataframe_ingestion(
     source_info: Dict[str, Any],
     enable_profiling: bool,
     data_profiler,
-    session_store: Dict[str, Any]
+    session_store: Dict[str, Any],
 ) -> Dict[str, Any]:
     from ..data_quality.validator import DataQualityValidator
 
@@ -58,20 +62,20 @@ def process_dataframe_ingestion(
         "dataframe": df,
         "validation_report": validation_report,
         "created_at": datetime.now().isoformat(),
-        **source_info
+        **source_info,
     }
 
     response_data = {
         "session_id": session_id,
         "status": "success",
+        "message": f"Dataset uploaded successfully with {df.shape[0]} rows and {df.shape[1]} columns",
+        "rows": df.shape[0],
+        "columns": df.shape[1],
         "shape": df.shape,
-        "columns": df.columns.tolist(),
+        "column_names": df.columns.tolist(),
         "data_types": df.dtypes.astype(str).to_dict(),
-        "validation": {
-            "is_valid": validation_report.is_valid,
-            "issues": create_validation_issues(validation_report)
-        },
-        **{k: v for k, v in source_info.items() if k not in ['dataframe', 'validation_report']}
+        "validation": {"is_valid": validation_report.is_valid, "issues": create_validation_issues(validation_report)},
+        **{k: v for k, v in source_info.items() if k not in ["dataframe", "validation_report"]},
     }
 
     if enable_profiling:
@@ -89,7 +93,7 @@ def process_dataframe_ingestion(
                 "primary_domain": "unknown",
                 "domain_confidence": 0,
                 "domain_analysis": {"detected_domains": []},
-                "relationships_found": 0
+                "relationships_found": 0,
             }
 
     session_store[session_id] = session_data

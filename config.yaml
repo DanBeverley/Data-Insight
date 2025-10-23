@@ -44,13 +44,21 @@ feature_selection:
 knowledge_graph:
   enabled: true
   backend: "neo4j"  # Options: "neo4j", "postgres"
-  
+
   neo4j:
     uri: "bolt://localhost:7687"
     username: "neo4j"
     password: "password"
     database: "datainsight"
-  
+
   postgres:
     connection_string: "postgresql://user:password@localhost:5432/datainsight"
     database: "datainsight"
+
+object_storage:
+  enabled: true
+  provider: "azure"  # Options: "azure", "s3", "gcs", "minio"
+  container_name: "datainsight-models"
+  cache_dir: "data/model_cache"
+  cache_max_size_mb: 500
+  presigned_url_expiry_hours: 24
