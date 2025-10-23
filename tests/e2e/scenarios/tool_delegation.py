@@ -54,11 +54,18 @@ class ToolDelegationScenario(BaseScenario):
         return False
 
     def _upload_dataset(self) -> bool:
-        from tests.conftest import housing_dataset
         from src.api_utils.upload_handler import handle_upload
+        import pandas as pd
 
         try:
-            df = housing_dataset(None)
+            df = pd.DataFrame(
+                {
+                    "price": [300000, 450000, 250000, 500000, 350000],
+                    "area": [1500, 2000, 1200, 2200, 1800],
+                    "bedrooms": [3, 4, 2, 4, 3],
+                    "bathrooms": [2, 3, 1, 3, 2],
+                }
+            )
             result = handle_upload(df, self.session_id)
             self.dataset_uploaded = result.get("status") == "success"
             return self.dataset_uploaded
