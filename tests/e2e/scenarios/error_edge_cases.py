@@ -54,6 +54,7 @@ class ErrorEdgeCasesScenario(BaseScenario):
 
     def _upload_malformed(self) -> bool:
         from src.api_utils.upload_handler import handle_upload
+        import builtins
 
         try:
             malformed_df = pd.DataFrame(
@@ -65,6 +66,11 @@ class ErrorEdgeCasesScenario(BaseScenario):
             )
 
             result = handle_upload(malformed_df, self.session_id)
+
+            if hasattr(builtins, "_session_store") and self.session_id in builtins._session_store:
+                if "dataframe" in builtins._session_store[self.session_id]:
+                    del builtins._session_store[self.session_id]["dataframe"]
+
             return True
         except Exception:
             return True
