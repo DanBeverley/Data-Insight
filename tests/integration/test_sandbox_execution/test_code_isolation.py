@@ -12,7 +12,7 @@ import os
 os.system('rm -rf /')
 """
 
-        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -51,7 +51,7 @@ urllib.request.urlopen('http://malicious-site.com')
 huge_list = [0] * (10**9)
 """
 
-        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -71,7 +71,7 @@ while True:
     pass
 """
 
-        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -92,7 +92,7 @@ result = 2 + 2
 print(result)
 """
 
-        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {"success": True, "stdout": "4\n", "stderr": "", "plots": []}
 
             result = execute_tool("python_code_interpreter", {"code": safe_code}, "test_session_safe")
@@ -126,7 +126,7 @@ plt.plot([1, 2, 3], [4, 5, 6])
 plt.savefig('test_plot.png')
 """
 
-        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {"success": True, "stdout": "", "stderr": "", "plots": ["test_plot.png"]}
 
             result = execute_tool("python_code_interpreter", {"code": plot_code}, "test_session_plot")
