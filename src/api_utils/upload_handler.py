@@ -164,3 +164,23 @@ def validate_file_upload(file_content: BinaryIO, filename: str) -> bool:
         return False
 
     return True
+
+
+def handle_upload(df: pd.DataFrame, session_id: str, filename: str = "dataset.csv") -> Dict[str, Any]:
+    import builtins
+
+    if not hasattr(builtins, "_session_store"):
+        builtins._session_store = {}
+
+    response_data = {
+        "status": "success",
+        "message": "Dataset uploaded successfully",
+        "rows": len(df),
+        "columns": len(df.columns),
+        "column_names": df.columns.tolist(),
+    }
+
+    enhance_with_agent_profile(df, session_id, filename, response_data)
+    load_data_to_agent_sandbox(df, session_id, {}, lambda sid: None, response_data)
+
+    return response_data
