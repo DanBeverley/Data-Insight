@@ -218,7 +218,7 @@ class HybridDataProfiler:
                     "anomalies": [asdict(anomaly) for anomaly in anomaly_results] if anomaly_results else [],
                 },
                 relationship_analysis={
-                    "missing_patterns": missing_analysis.pattern_summary if missing_analysis else {},
+                    "missing_patterns": missing_analysis if missing_analysis else {},
                     "drift_results": [asdict(drift) for drift in drift_results] if drift_results else [],
                 },
                 recommendations=recommendations,
@@ -559,10 +559,6 @@ class HybridDataProfiler:
         # Quality recommendations
         if quality_report and quality_report.recommendations:
             recommendations.extend(quality_report.recommendations[:3])
-
-        # Missing value recommendations
-        if missing_analysis and hasattr(missing_analysis, "recommendations"):
-            recommendations.extend(missing_analysis.recommendations[:2])
 
         # Anomaly-based recommendations
         if anomaly_results:
