@@ -62,12 +62,25 @@ def stream_agent_response(
         raise ValueError("Query is empty or too short after sanitization")
 
     has_dataset = False
+    df = None
     if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
         has_dataset = "dataframe" in builtins._session_store[session_id]
+        if has_dataset:
+            df = builtins._session_store[session_id]["dataframe"]
 
     if not has_dataset:
         yield {"content": "Please upload a dataset first to proceed with your analysis."}
         return
+
+    # Simple validation: check for underscore-containing words (likely column names) that don't exist
+    if df is not None:
+        query_words = sanitized_query.replace(",", " ").split()
+        available_columns = set(col.lower() for col in df.columns)
+
+        for word in query_words:
+            if "_" in word and word.lower() not in available_columns:
+                yield {"content": f"Error: Column '{word}' not found in dataset."}
+                return
 
     yield {"content": f"Processing query for session {session_id}: {sanitized_query[:100]}..."}
 
