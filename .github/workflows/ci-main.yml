@@ -212,7 +212,6 @@ jobs:
         run: |
           pytest tests/e2e/ \
             -v \
-            -m e2e \
             -k "${{ matrix.scenario }}" \
             --html=reports/${{ matrix.scenario }}.html \
             --self-contained-html \
