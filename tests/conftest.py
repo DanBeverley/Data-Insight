@@ -188,3 +188,19 @@ def cleanup_sandboxes():
                 del builtins._persistent_sandboxes[session_id]
             except Exception:
                 pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_all_sandboxes_on_exit():
+    yield
+
+    import builtins
+
+    if hasattr(builtins, "_persistent_sandboxes"):
+        sandboxes_to_close = list(builtins._persistent_sandboxes.items())
+        for session_id, sandbox in sandboxes_to_close:
+            try:
+                sandbox.close()
+            except Exception:
+                pass
+        builtins._persistent_sandboxes.clear()
