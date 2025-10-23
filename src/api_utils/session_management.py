@@ -1,5 +1,7 @@
 import re
+import uuid
 from typing import Optional, Dict, Any
+from datetime import datetime
 from fastapi import HTTPException
 
 
@@ -44,3 +46,38 @@ def validate_session_id(session_id: str) -> bool:
 
     dangerous_patterns = ["..", "/", "\\", "<", ">", "DROP", "UNION", "script", "SELECT", "INSERT", "DELETE", "UPDATE"]
     return not any(pattern.lower() in session_id.lower() for pattern in dangerous_patterns)
+
+
+def create_new_session() -> Dict[str, str]:
+    import builtins
+
+    new_session_id = str(uuid.uuid4())
+    created_at = datetime.now()
+
+    if not hasattr(builtins, "_session_store"):
+        builtins._session_store = {}
+
+    builtins._session_store[new_session_id] = {"session_id": new_session_id, "created_at": created_at}
+
+    clean_checkpointer_state(new_session_id, "new session")
+
+    return {"session_id": new_session_id}
+
+
+def clear_session(session_id: str) -> bool:
+    import builtins
+
+    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+        del builtins._session_store[session_id]
+
+    if hasattr(builtins, "_persistent_sandboxes") and session_id in builtins._persistent_sandboxes:
+        try:
+            sandbox = builtins._persistent_sandboxes[session_id]
+            sandbox.close()
+            del builtins._persistent_sandboxes[session_id]
+        except Exception:
+            pass
+
+    clean_checkpointer_state(session_id, "clear session")
+
+    return True
