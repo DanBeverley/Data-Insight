@@ -42,7 +42,9 @@ def extract_agent_response(messages: List[Any], recent_count: int = 3) -> Tuple[
     return response_content, list(set(plots))
 
 
-def stream_agent_response(query: str, session_id: str, stream: bool = True) -> Generator[str, None, None]:
+def stream_agent_response(
+    query: str, session_id: str, stream: bool = True, web_search_enabled: bool = False
+) -> Generator[dict, None, None]:
     MAX_QUERY_LENGTH = 50000
 
     if not query or not isinstance(query, str):
@@ -58,4 +60,9 @@ def stream_agent_response(query: str, session_id: str, stream: bool = True) -> G
     if not sanitized_query or len(sanitized_query) < 3:
         raise ValueError("Query is empty or too short after sanitization")
 
-    yield f"Processing query for session {session_id}: {sanitized_query[:100]}..."
+    yield {"content": f"Processing query for session {session_id}: {sanitized_query[:100]}..."}
+
+    if web_search_enabled:
+        yield {"tool_calls": [{"name": "web_search", "query": sanitized_query}]}
+
+    yield {"content": "Query completed", "plots": []}
