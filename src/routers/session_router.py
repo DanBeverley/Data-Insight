@@ -180,11 +180,24 @@ async def get_session_messages(session_id: str):
             row = cursor.fetchone()
             if row:
                 try:
+                    if not row[0] or len(row[0]) < 10:
+                        logger.warning(f"Checkpoint data too small or empty for session {session_id}")
+                        return messages
+
                     checkpoint_data = pickle.loads(row[0])
                     logger.info(f"Checkpoint data keys: {checkpoint_data.keys()}")
-                except Exception as pickle_error:
-                    logger.error(f"Failed to unpickle checkpoint for session {session_id}: {pickle_error}")
-                    logger.info(f"Checkpoint data type: {type(row[0])}, length: {len(row[0]) if row[0] else 0}")
+                except (pickle.UnpicklingError, EOFError, AttributeError) as pickle_error:
+                    logger.error(f"Corrupted checkpoint data for session {session_id}: {pickle_error}")
+                    logger.info("Attempting to clean corrupted checkpoint...")
+                    try:
+                        cursor.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+                        conn.commit()
+                        logger.info(f"Cleaned corrupted checkpoint for session {session_id}")
+                    except Exception as cleanup_error:
+                        logger.error(f"Failed to clean checkpoint: {cleanup_error}")
+                    return messages
+                except Exception as e:
+                    logger.error(f"Unexpected error loading checkpoint for session {session_id}: {e}")
                     return messages
                 if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
                     msg_count = len(checkpoint_data["channel_values"]["messages"])
