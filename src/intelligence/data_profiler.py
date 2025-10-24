@@ -3,9 +3,12 @@
 import re
 import logging
 import warnings
+import os
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -66,6 +69,13 @@ class SemanticProfile:
     recommendations: List[str]
 
 
+def _profile_column_worker(series: pd.Series, column_name: str, domain_keywords: Dict) -> SemanticProfile:
+    """Worker function for parallel column profiling (must be picklable)"""
+    profiler = IntelligentDataProfiler()
+    profiler.domain_keywords = domain_keywords
+    return profiler._profile_column(series, column_name)
+
+
 class IntelligentDataProfiler:
     """AI-powered data understanding beyond basic dtypes"""
 
@@ -101,11 +111,17 @@ class IntelligentDataProfiler:
 
     def profile_dataset(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Complete intelligent profiling of dataset"""
-        # Basic semantic profiling
-        column_profiles = {}
-        for column in df.columns:
-            profile = self._profile_column(df[column], column)
-            column_profiles[column] = profile
+        n_columns = len(df.columns)
+        use_parallel = n_columns > 8
+
+        if use_parallel:
+            logging.info(f"Using parallel profiling for {n_columns} columns")
+            column_profiles = self._profile_columns_parallel(df)
+        else:
+            column_profiles = {}
+            for column in df.columns:
+                profile = self._profile_column(df[column], column)
+                column_profiles[column] = profile
 
         # Domain detection
         domain_matches = self.domain_detector.detect_domain(df, column_profiles)
@@ -129,6 +145,29 @@ class IntelligentDataProfiler:
                 column_profiles, domain_matches, relationships
             ),
         }
+
+    def _profile_columns_parallel(self, df: pd.DataFrame) -> Dict[str, SemanticProfile]:
+        """Profile all columns in parallel using multiprocessing"""
+        cpu_count = os.cpu_count() or 4
+        max_workers = min(cpu_count, len(df.columns))
+
+        column_profiles = {}
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_column = {
+                executor.submit(_profile_column_worker, df[col].copy(), col, self.domain_keywords): col
+                for col in df.columns
+            }
+
+            for future in as_completed(future_to_column):
+                column = future_to_column[future]
+                try:
+                    profile = future.result()
+                    column_profiles[column] = profile
+                except Exception as e:
+                    logging.error(f"Error profiling column {column}: {e}")
+                    column_profiles[column] = self._profile_column(df[column], column)
+
+        return column_profiles
 
     def _profile_column(self, series: pd.Series, column_name: str) -> SemanticProfile:
         """Profile individual column for semantic type"""

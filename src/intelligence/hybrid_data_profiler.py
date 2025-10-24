@@ -6,6 +6,7 @@ for AI agent awareness including anomalies, quality assessment, semantic underst
 
 import logging
 import json
+import hashlib
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -92,8 +93,10 @@ class HybridDataProfiler:
         self.drift_monitor = ComprehensiveDriftMonitor()
         self.missing_value_intelligence = AdvancedMissingValueIntelligence()
 
-        # Profile history for comparison
+        # Profile history and caching
         self.profile_history: List[DataProfileSummary] = []
+        self._profile_cache: Dict[str, DataProfileSummary] = {}
+        self._cache_max_size = 50
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration for hybrid profiler"""
@@ -109,6 +112,70 @@ class HybridDataProfiler:
             "recommendation_limit": 10,
             "save_profile_history": True,
         }
+
+    def _get_dataset_cache_key(self, df: pd.DataFrame) -> str:
+        """Generate cache key based on dataset characteristics"""
+        key_parts = [
+            str(df.shape),
+            str(sorted(df.columns.tolist())),
+            str(df.dtypes.to_dict()),
+            str(hash(tuple(df.iloc[0].values))) if len(df) > 0 else "empty",
+        ]
+        return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+    def _get_cached_profile(self, cache_key: str) -> Optional[DataProfileSummary]:
+        """Retrieve cached profile if available"""
+        return self._profile_cache.get(cache_key)
+
+    def _cache_profile(self, cache_key: str, profile: DataProfileSummary) -> None:
+        """Cache profile with LRU eviction"""
+        if len(self._profile_cache) >= self._cache_max_size:
+            oldest_key = next(iter(self._profile_cache))
+            del self._profile_cache[oldest_key]
+        self._profile_cache[cache_key] = profile
+
+    def _get_adaptive_sample(self, df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+        """
+        Intelligently sample dataset based on size for optimal performance.
+
+        Sampling Strategy:
+        - <100K rows: Full profiling
+        - 100K-500K rows: 50K sample (stratified)
+        - 500K-1M rows: 30K sample (stratified)
+        - >1M rows: 20K sample (stratified)
+        """
+        n_rows = len(df)
+
+        if n_rows <= 100000:
+            return df, n_rows
+        elif n_rows <= 500000:
+            sample_size = 50000
+        elif n_rows <= 1000000:
+            sample_size = 30000
+        else:
+            sample_size = 20000
+
+        try:
+            categorical_cols = df.select_dtypes(include=["object", "category"]).columns
+
+            if len(categorical_cols) > 0:
+                stratify_col = categorical_cols[0]
+                value_counts = df[stratify_col].value_counts()
+
+                if len(value_counts) < 1000 and value_counts.min() >= 2:
+                    from sklearn.model_selection import train_test_split
+
+                    df_sample, _ = train_test_split(
+                        df, train_size=sample_size, stratify=df[stratify_col], random_state=42
+                    )
+                    return df_sample, sample_size
+
+            df_sample = df.sample(n=sample_size, random_state=42)
+            return df_sample, sample_size
+
+        except Exception:
+            df_sample = df.sample(n=sample_size, random_state=42)
+            return df_sample, sample_size
 
     def generate_comprehensive_profile(
         self, df: pd.DataFrame, reference_df: Optional[pd.DataFrame] = None, context: Optional[Dict[str, Any]] = None
@@ -127,6 +194,12 @@ class HybridDataProfiler:
         start_time = datetime.now()
         context = context or {}
 
+        cache_key = self._get_dataset_cache_key(df)
+        cached_profile = self._get_cached_profile(cache_key)
+        if cached_profile is not None:
+            logging.info(f"Using cached profile for dataset ({len(df)} rows)")
+            return cached_profile
+
         logging.info(
             f"Starting comprehensive profiling of dataset with {len(df)} samples and {len(df.columns)} features"
         )
@@ -136,30 +209,34 @@ class HybridDataProfiler:
                 f"Dataset has fewer than {self.config['min_samples_for_full_profile']} samples. Profile may be limited."
             )
 
+        df_sample, sample_size = self._get_adaptive_sample(df)
+        if sample_size < len(df):
+            logging.info(f"Using adaptive sampling: {sample_size:,} rows from {len(df):,} total rows")
+
         try:
             # 1. Basic Intelligent Profiling
             logging.info("Phase 1: Intelligent data profiling...")
-            semantic_profile = self.intelligent_profiler.profile_dataset(df)
+            semantic_profile = self.intelligent_profiler.profile_dataset(df_sample)
 
-            # 2. Data Quality Assessment
-            quality_report = None
-            if self.config["enable_quality_assessment"]:
-                logging.info("Phase 2: Data quality assessment...")
-                quality_report = self.quality_assessor.assess_quality(df, reference_df, context)
-
-            # 3. Anomaly Detection
+            # 2. Anomaly Detection (run before quality assessment to avoid duplication)
             anomaly_results = None
             anomaly_summary = {}
             if self.config["enable_anomaly_detection"]:
-                logging.info("Phase 3: Multi-layer anomaly detection...")
-                anomaly_results = self.anomaly_detector.detect_anomalies(df, reference_df)
+                logging.info("Phase 2: Multi-layer anomaly detection...")
+                anomaly_results = self.anomaly_detector.detect_anomalies(df_sample, reference_df)
                 anomaly_summary = self.anomaly_detector.get_anomaly_summary()
+
+            # 3. Data Quality Assessment (receives pre-computed anomaly results)
+            quality_report = None
+            if self.config["enable_quality_assessment"]:
+                logging.info("Phase 3: Data quality assessment...")
+                quality_report = self.quality_assessor.assess_quality(df_sample, reference_df, context, anomaly_results)
 
             # 4. Missing Value Intelligence
             missing_analysis = None
             if self.config["enable_missing_value_analysis"]:
                 logging.info("Phase 4: Missing value intelligence analysis...")
-                missing_analysis = self.missing_value_intelligence.analyze_missing_patterns(df)
+                missing_analysis = self.missing_value_intelligence.analyze_missing_patterns(df_sample)
 
             # 5. PII Detection & Privacy Assessment
             pii_detection = None
@@ -167,7 +244,7 @@ class HybridDataProfiler:
                 logging.info("Phase 5: PII detection and privacy assessment...")
                 try:
                     privacy_engine = PrivacyEngine()
-                    pii_detection = privacy_engine.assess_privacy_risk(df)
+                    pii_detection = privacy_engine.assess_privacy_risk(df_sample)
                 except Exception as e:
                     logging.warning(f"PII detection failed: {e}")
 
@@ -177,7 +254,7 @@ class HybridDataProfiler:
                 logging.info("Phase 6: Data drift monitoring...")
                 try:
                     self.drift_monitor.fit_reference(reference_df)
-                    drift_results = self.drift_monitor.detect_drift(df)
+                    drift_results = self.drift_monitor.detect_drift(df_sample)
                 except Exception as e:
                     logging.warning(f"Drift analysis failed: {e}")
 
@@ -242,6 +319,9 @@ class HybridDataProfiler:
             # Store in history
             if self.config["save_profile_history"]:
                 self.profile_history.append(profile_summary)
+
+            # Cache the profile for future use
+            self._cache_profile(cache_key, profile_summary)
 
             duration = (datetime.now() - start_time).total_seconds()
             logging.info(f"Comprehensive profiling completed in {duration:.2f} seconds")
