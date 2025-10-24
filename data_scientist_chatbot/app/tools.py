@@ -189,70 +189,85 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
         indented_code = "\n".join("    " + line if line.strip() else "" for line in code.split("\n"))
         indented_dataset_load = "\n".join(line.strip() for line in dataset_load_code.split("\n") if line.strip())
 
+        df_rows = len(df) if "df" in locals() and df is not None else 0
+        sampling_code = ""
+        if is_plotting and df_rows > 50000:
+            sampling_code = f"""
+                            # Auto-sampling for large dataset visualization
+                            if 'df' in locals() and len(df) > 50000:
+                                print(f"Dataset has {{len(df):,}} rows - sampling 50,000 rows for visualization performance")
+                                df_plot = df.sample(n=min(50000, len(df)), random_state=42).sort_index()
+                            else:
+                                df_plot = df if 'df' in locals() else None
+                            """
+
         enhanced_code = f"""import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
-import seaborn as sns
-import sys
-import os
-import glob
+                        matplotlib.use('Agg')
+                        import matplotlib.pyplot as plt
+                        import pandas as pd
+                        import numpy as np
+                        import seaborn as sns
+                        import sys
+                        import os
+                        import glob
 
-def use_noop(*args, **kwargs):
-    pass
+                        def use_noop(*args, **kwargs):
+                            pass
 
-matplotlib.use = use_noop
-plt.use = use_noop
+                        matplotlib.use = use_noop
+                        plt.use = use_noop
 
-{indented_dataset_load}
+                        {indented_dataset_load}
 
-before_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
+                        {sampling_code}
 
-# Track model files before execution
-model_exts = ['*.pkl', '*.joblib', '*.h5', '*.pt', '*.pth', '*.json', '*.txt', '*.cbm', '*.onnx']
-before_models = set()
-for ext in model_exts:
-    before_models.update(glob.glob(ext))
-    before_models.update(glob.glob(f'/tmp/{{ext}}'))
+                        before_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
 
-try:
-{indented_code}
-except Exception as e:
-    print(f"Execution error: {{type(e).__name__}}: {{e}}")
-    import traceback
-    traceback.print_exc()
+                        # Track model files before execution
+                        model_exts = ['*.pkl', '*.joblib', '*.h5', '*.pt', '*.pth', '*.json', '*.txt', '*.cbm', '*.onnx']
+                        before_models = set()
+                        for ext in model_exts:
+                            before_models.update(glob.glob(ext))
+                            before_models.update(glob.glob(f'/tmp/{{ext}}'))
 
-after_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
-new_pngs = after_pngs - before_pngs
-processed = set()
+                        try:
+                        {indented_code}
+                        except Exception as e:
+                            print(f"Execution error: {{type(e).__name__}}: {{e}}")
+                            import traceback
+                            traceback.print_exc()
 
-for fig_num in plt.get_fignums():
-    import uuid
-    filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
-    plt.figure(fig_num)
-    plt.savefig(filename, format='png', dpi=150, bbox_inches='tight')
-    plt.close(fig_num)
-    if os.path.exists(filename):
-        print(f"PLOT_SAVED:{{filename}}")
-        processed.add(filename)
+                        after_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
+                        new_pngs = after_pngs - before_pngs
+                        processed = set()
 
-for png in new_pngs:
-    if png not in processed and os.path.exists(png) and os.path.getsize(png) > 100:
-        print(f"PLOT_SAVED:{{os.path.basename(png)}}")
+                        for fig_num in plt.get_fignums():
+                            import uuid
+                            filename = f"plot_{{uuid.uuid4().hex[:8]}}.png"
+                            plt.figure(fig_num)
+                            plt.savefig(filename, format='png', dpi=150, bbox_inches='tight')
+                            plt.close(fig_num)
+                            if os.path.exists(filename):
+                                print(f"PLOT_SAVED:{{filename}}")
+                                processed.add(filename)
 
-# Detect new model files
-after_models = set()
-for ext in model_exts:
-    after_models.update(glob.glob(ext))
-    after_models.update(glob.glob(f'/tmp/{{ext}}'))
+                        for png in new_pngs:
+                            if png not in processed and os.path.exists(png) and os.path.getsize(png) > 100:
+                                print(f"PLOT_SAVED:{{os.path.basename(png)}}")
 
-new_models = after_models - before_models
-for model_file in new_models:
-    if os.path.exists(model_file) and os.path.getsize(model_file) > 0:
-        print(f"MODEL_SAVED:{{os.path.basename(model_file)}}")
-"""
-        result = sandbox.run_code(enhanced_code, timeout=30)
+                        # Detect new model files
+                        after_models = set()
+                        for ext in model_exts:
+                            after_models.update(glob.glob(ext))
+                            after_models.update(glob.glob(f'/tmp/{{ext}}'))
+
+                        new_models = after_models - before_models
+                        for model_file in new_models:
+                            if os.path.exists(model_file) and os.path.getsize(model_file) > 0:
+                                print(f"MODEL_SAVED:{{os.path.basename(model_file)}}")
+                        """
+        timeout = 120 if df_rows > 100000 else 60 if df_rows > 10000 else 30
+        result = sandbox.run_code(enhanced_code, timeout=timeout)
 
         if hasattr(result, "error") and result.error:
             error_msg = f"{result.error.name}: {result.error.value}"
@@ -569,7 +584,7 @@ for model_file in new_models:
                     del session_sandboxes[session_id]
 
                 new_sandbox = get_sandbox(session_id)
-                result = new_sandbox.run_code(code, timeout=30)
+                result = new_sandbox.run_code(code, timeout=timeout)
 
                 performance_monitor.record_metric(
                     session_id=session_id,
@@ -770,22 +785,22 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
 
         # Create wrapper script
         wrapped_script = f"""
-{wrapper_code}
+                        {wrapper_code}
 
-# User training code
-user_code = '''
-{code}
-'''
+                        # User training code
+                        user_code = '''
+                        {code}
+                        '''
 
-# Execute with train wrapper
-result = train_wrapper(
-    user_code=user_code,
-    output_dir='/opt/ml/model',
-    user_format={repr(user_format)}
-)
+                        # Execute with train wrapper
+                        result = train_wrapper(
+                            user_code=user_code,
+                            output_dir='/opt/ml/model',
+                            user_format={repr(user_format)}
+                        )
 
-print(f"Training complete: {{result}}")
-"""
+                        print(f"Training complete: {{result}}")
+                        """
 
         # Upload script to S3
         script_key = f"scripts/train_{session_id}_{uuid.uuid4()}.py"

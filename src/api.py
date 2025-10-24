@@ -7,11 +7,12 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 import pandas as pd
 import joblib
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import asyncio
 from langchain_core.messages import ToolMessage
 import uuid
 import re
@@ -40,7 +41,6 @@ except Exception as e:
 from .common.data_ingestion import ingest_data, ingest_from_url
 from .data_quality.validator import DataQualityValidator
 from .intelligence.data_profiler import IntelligentDataProfiler
-from .visualization.data_explorer import IntelligentDataExplorer, VisualizationRequest
 from .api_utils.session_management import clean_checkpointer_state, get_or_create_agent_session, validate_session
 from .api_utils.agent_response import extract_plot_urls, extract_agent_response
 from .api_utils.data_ingestion import (
@@ -103,7 +103,6 @@ app.add_middleware(
 )
 
 logger = logging.getLogger(__name__)
-data_explorer = IntelligentDataExplorer()
 static_dir = Path(__file__).parent.parent / "static"
 
 
@@ -133,6 +132,67 @@ import builtins
 builtins._session_store = session_store
 
 data_profiler = IntelligentDataProfiler()
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, session_id: str):
+        await websocket.accept()
+        self.active_connections[session_id] = websocket
+        logging.info(f"WebSocket connected for session {session_id}")
+
+    def disconnect(self, session_id: str):
+        if session_id in self.active_connections:
+            del self.active_connections[session_id]
+            logging.info(f"WebSocket disconnected for session {session_id}")
+
+    async def send_progress(self, session_id: str, message: Dict[str, Any]):
+        if session_id in self.active_connections:
+            try:
+                await self.active_connections[session_id].send_json(message)
+            except Exception as e:
+                logging.error(f"Error sending progress to {session_id}: {e}")
+                self.disconnect(session_id)
+
+
+manager = ConnectionManager()
+
+
+async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: str):
+    """Run profiling in background and send progress updates via WebSocket"""
+    try:
+        await manager.send_progress(
+            session_id, {"status": "profiling", "progress": 10, "message": "Starting profiling..."}
+        )
+
+        loop = asyncio.get_event_loop()
+        intelligence_profile = await loop.run_in_executor(None, data_profiler.profile_dataset, df)
+
+        await manager.send_progress(
+            session_id, {"status": "profiling", "progress": 80, "message": "Generating summary..."}
+        )
+
+        intelligence_summary = create_intelligence_summary(intelligence_profile)
+
+        session_store[session_id]["intelligence_profile"] = intelligence_profile
+        session_store[session_id]["intelligence_summary"] = intelligence_summary
+        session_store[session_id]["profiling_status"] = "completed"
+
+        await manager.send_progress(
+            session_id,
+            {"status": "completed", "progress": 100, "message": "Profiling completed", "data": intelligence_summary},
+        )
+
+        logging.info(f"Background profiling completed for session {session_id}")
+    except Exception as e:
+        logging.error(f"Background profiling failed for session {session_id}: {e}")
+        session_store[session_id]["profiling_status"] = "failed"
+        session_store[session_id]["profiling_error"] = str(e)
+        await manager.send_progress(
+            session_id, {"status": "error", "progress": 0, "message": f"Profiling failed: {str(e)}"}
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -247,8 +307,13 @@ async def chat_endpoint(chat_request: ChatMessage):
 
 
 @app.post("/api/upload")
-async def upload_data(file: UploadFile = File(...), enable_profiling: bool = Form(True), session_id: str = Form(...)):
-    """Upload and validate dataset with intelligent profiling."""
+async def upload_data(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    enable_profiling: bool = Form(True),
+    session_id: str = Form(...),
+):
+    """Upload and validate dataset with progressive profiling."""
     try:
         if not session_id or not session_id.strip():
             raise HTTPException(status_code=400, detail="session_id is required")
@@ -260,11 +325,10 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
             raise HTTPException(status_code=400, detail="Failed to parse uploaded file")
 
         response_data = process_dataframe_ingestion(
-            df, session_id, {"filename": file.filename}, enable_profiling, data_profiler, session_store
+            df, session_id, {"filename": file.filename}, False, data_profiler, session_store
         )
         session_id = response_data["session_id"]
 
-        # Enhance with agent profile and load to sandbox
         import builtins
 
         if not hasattr(builtins, "_session_store"):
@@ -274,6 +338,13 @@ async def upload_data(file: UploadFile = File(...), enable_profiling: bool = For
 
         if AGENT_AVAILABLE:
             load_data_to_agent_sandbox(df, session_id, agent_sessions, create_enhanced_agent_executor, response_data)
+
+        if enable_profiling:
+            response_data["profiling_status"] = "pending"
+            response_data["message"] += " - Profiling in progress..."
+            background_tasks.add_task(run_profiling_background, df.copy(), session_id, file.filename)
+        else:
+            response_data["profiling_status"] = "disabled"
 
         return response_data
 
@@ -549,6 +620,34 @@ async def get_agent_artifact(session_id: str, filename: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error serving artifact: {str(e)}")
+
+
+@app.websocket("/ws/profiling/{session_id}")
+async def websocket_profiling_progress(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for real-time profiling progress updates"""
+    await manager.connect(websocket, session_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(session_id)
+
+
+@app.get("/api/profiling-status/{session_id}")
+async def get_profiling_status(session_id: str):
+    """Polling endpoint for profiling status (fallback for non-WebSocket clients)"""
+    if session_id not in session_store:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = session_store[session_id]
+    profiling_status = session_data.get("profiling_status", "unknown")
+
+    if profiling_status == "completed" and "intelligence_summary" in session_data:
+        return {"status": "completed", "data": session_data["intelligence_summary"]}
+    elif profiling_status == "failed":
+        return {"status": "failed", "error": session_data.get("profiling_error", "Unknown error")}
+    else:
+        return {"status": "pending", "message": "Profiling in progress"}
 
 
 @app.get("/api/health")

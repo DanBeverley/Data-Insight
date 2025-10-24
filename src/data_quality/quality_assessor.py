@@ -79,7 +79,11 @@ class ContextAwareQualityAssessor:
         }
 
     def assess_quality(
-        self, df: pd.DataFrame, reference_df: Optional[pd.DataFrame] = None, context: Optional[Dict[str, Any]] = None
+        self,
+        df: pd.DataFrame,
+        reference_df: Optional[pd.DataFrame] = None,
+        context: Optional[Dict[str, Any]] = None,
+        anomaly_results: Optional[List[AnomalyResult]] = None,
     ) -> DataQualityReport:
         """
         Comprehensive data quality assessment with contextual awareness.
@@ -88,6 +92,7 @@ class ContextAwareQualityAssessor:
             df: DataFrame to assess
             reference_df: Optional reference DataFrame for comparison
             context: Optional context information (domain, data type, etc.)
+            anomaly_results: Optional pre-computed anomaly results to avoid recomputation
 
         Returns:
             Comprehensive data quality report
@@ -108,8 +113,27 @@ class ContextAwareQualityAssessor:
         # 1. Completeness Assessment
         dimension_scores[QualityDimension.COMPLETENESS] = self._assess_completeness(df, context)
 
-        # 2. Accuracy Assessment (outliers, anomalies)
-        dimension_scores[QualityDimension.ACCURACY] = self._assess_accuracy(df, reference_df, context)
+        # Detect anomalies if not provided
+        if anomaly_results is None:
+            try:
+                anomaly_results = self.anomaly_detector.detect_anomalies(df, reference_df)
+                anomaly_summary = self.anomaly_detector.get_anomaly_summary()
+            except Exception as e:
+                logging.warning(f"Anomaly detection failed: {e}")
+                anomaly_results, anomaly_summary = [], {}
+        else:
+            anomaly_summary = {
+                "total_anomalies": len(anomaly_results),
+                "by_severity": {
+                    "critical": len([a for a in anomaly_results if a.severity == "critical"]),
+                    "high": len([a for a in anomaly_results if a.severity == "high"]),
+                    "medium": len([a for a in anomaly_results if a.severity == "medium"]),
+                    "low": len([a for a in anomaly_results if a.severity == "low"]),
+                },
+            }
+
+        # 2. Accuracy Assessment (pass anomaly results to avoid recomputation)
+        dimension_scores[QualityDimension.ACCURACY] = self._assess_accuracy(df, reference_df, context, anomaly_results)
 
         # 3. Consistency Assessment
         dimension_scores[QualityDimension.CONSISTENCY] = self._assess_consistency(df, context)
@@ -126,15 +150,8 @@ class ContextAwareQualityAssessor:
         # Calculate overall weighted score
         overall_score = self._calculate_overall_score(dimension_scores)
 
-        # Detect anomalies and drift
-        anomaly_results, anomaly_summary = [], {}
+        # Detect drift
         drift_results, drift_detected = [], False
-
-        try:
-            anomaly_results = self.anomaly_detector.detect_anomalies(df, reference_df)
-            anomaly_summary = self.anomaly_detector.get_anomaly_summary()
-        except Exception as e:
-            logging.warning(f"Anomaly detection failed: {e}")
 
         try:
             if reference_df is not None:
@@ -245,7 +262,11 @@ class ContextAwareQualityAssessor:
         )
 
     def _assess_accuracy(
-        self, df: pd.DataFrame, reference_df: Optional[pd.DataFrame], context: Dict[str, Any]
+        self,
+        df: pd.DataFrame,
+        reference_df: Optional[pd.DataFrame],
+        context: Dict[str, Any],
+        anomaly_results: Optional[List[AnomalyResult]] = None,
     ) -> QualityScore:
         """Assess data accuracy through outlier and anomaly detection."""
         issues = []
@@ -280,17 +301,13 @@ class ContextAwareQualityAssessor:
         outlier_ratio = total_outliers / total_numeric_values
 
         # Score: higher outlier ratio = lower accuracy
-        base_score = max(0, 100 - (outlier_ratio * 500))  # Scale outlier impact
+        base_score = max(0, 100 - (outlier_ratio * 500))
 
-        # Adjust based on anomaly detection results if available
+        # Adjust based on anomaly detection results if provided
         anomaly_adjustment = 0
-        try:
-            anomaly_results = self.anomaly_detector.detect_anomalies(df, reference_df)
-            if anomaly_results:
-                high_severity_anomalies = [r for r in anomaly_results if r.severity in ["high", "critical"]]
-                anomaly_adjustment = len(high_severity_anomalies) * 5  # -5 points per high severity anomaly
-        except Exception as e:
-            logging.warning(f"Anomaly detection failed during accuracy assessment: {e}")
+        if anomaly_results:
+            high_severity_anomalies = [r for r in anomaly_results if r.severity in ["high", "critical"]]
+            anomaly_adjustment = len(high_severity_anomalies) * 5
 
         final_score = max(0, base_score - anomaly_adjustment)
 
