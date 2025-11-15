@@ -57,10 +57,10 @@ def format_training_result(result: dict) -> str:
             output_parts.append(f"\n{result['stdout']}")
         if result.get("plots"):
             plots_str = ", ".join(result["plots"])
-            output_parts.append(f"\n📊 Generated visualizations: {plots_str}")
+            output_parts.append(f"\nGenerated visualizations: {plots_str}")
     else:
         error = result.get("stderr", "Unknown error")
-        output_parts.append(f"\n❌ Error: {error}")
+        output_parts.append(f"\nError: {error}")
 
     return "\n".join(output_parts)
 
@@ -156,7 +156,7 @@ def execute_tool(tool_name: str, tool_args: dict, session_id: str) -> str:
         if stderr_content:
             output_parts.append(f"Error: {stderr_content}")
         if plots:
-            output_parts.append(f"\n📊 Generated {len(plots)} visualization(s): {plots}")
+            output_parts.append(f"\nGenerated {len(plots)} visualization(s): {plots}")
         content = (
             "\n".join(output_parts) if output_parts else "Code executed successfully, but no output was generated."
         )
@@ -182,6 +182,26 @@ def execute_tool(tool_name: str, tool_args: dict, session_id: str) -> str:
         model_type = tool_args.get("model_type")
         model_id = tool_args.get("model_id")
         return load_trained_model_logic(model_type, model_id, session_id)
+    elif tool_name == "inspect_dataset":
+        from data_scientist_chatbot.app.tools.dataset_explorer import inspect_dataset
+
+        return inspect_dataset(session_id)
+    elif tool_name == "list_files":
+        from data_scientist_chatbot.app.tools.dataset_explorer import list_files
+
+        folder = tool_args.get("folder")
+        extension = tool_args.get("extension")
+        return list_files(session_id, folder, extension)
+    elif tool_name == "load_file":
+        from data_scientist_chatbot.app.tools.dataset_explorer import load_file
+
+        file_path = tool_args.get("file_path")
+        return load_file(session_id, file_path)
+    elif tool_name == "combine_files":
+        from data_scientist_chatbot.app.tools.dataset_explorer import combine_files
+
+        file_pattern = tool_args.get("file_pattern")
+        return combine_files(session_id, file_pattern)
     elif tool_name == "aws_gpu_train":
         return aws_gpu_train(tool_args["code"], tool_args.get("session_id"))
     elif tool_name == "azure_gpu_train":
@@ -380,7 +400,7 @@ def load_trained_model_logic(model_type: str, model_id: str, session_id: str) ->
     """
     try:
         sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
-        from src.storage.blob_service import BlobStorageService
+        from src.storage.cloud_storage import get_cloud_storage
         from src.storage.model_registry import ModelRegistryService
         from src.storage.model_loader import ModelLoader
         from src.database.service import get_database_service
@@ -391,10 +411,13 @@ def load_trained_model_logic(model_type: str, model_id: str, session_id: str) ->
             return "Model persistence is not enabled. Please configure object_storage in config.yaml."
 
         # Initialize services
-        blob_service = BlobStorageService(container_name=storage_config.get("container_name", "datainsight-models"))
+        cloud_storage = get_cloud_storage(container_name=storage_config.get("container_name", "datainsight-models"))
+        if not cloud_storage:
+            return "Cloud storage not configured. Please set R2 or Azure credentials in .env"
+
         db_service = get_database_service()
         registry = ModelRegistryService(db_service)
-        loader = ModelLoader(blob_service, registry)
+        loader = ModelLoader(cloud_storage, registry)
 
         # Get sandbox for this session
         import builtins
