@@ -1,8 +1,9 @@
 marked.setOptions({
-    gfm:true,
-    breaks:true,
-    heaerIds:false,
-    langPrefix:'language-'
+    gfm: true,
+    breaks: true,
+    headerIds: false,
+    tables: true,
+    langPrefix: 'language-'
 });
 
 class ChatInterface {
@@ -11,8 +12,43 @@ class ChatInterface {
         this.loadingMessageElement = null;
         this.selectedFile = null;
         this.attachmentBadge = null;
+        this.statusMessageElement = null;
+        this.messageVersions = new Map();
         this.emojiConverter = new EmojiConvertor();
         this.emojiConverter.replace_mode = 'unified';
+    }
+
+    saveVersionHistory(sessionId) {
+        if (!sessionId) return;
+        const versionsObj = {};
+        this.messageVersions.forEach((versions, messageId) => {
+            versionsObj[messageId] = versions;
+        });
+        try {
+            localStorage.setItem(`message_versions_${sessionId}`, JSON.stringify(versionsObj));
+        } catch (e) {
+            console.warn('Failed to save version history:', e);
+        }
+    }
+
+    loadVersionHistory(sessionId) {
+        if (!sessionId) return;
+        try {
+            const saved = localStorage.getItem(`message_versions_${sessionId}`);
+            if (saved) {
+                const versionsObj = JSON.parse(saved);
+                this.messageVersions = new Map(Object.entries(versionsObj));
+            } else {
+                this.messageVersions = new Map();
+            }
+        } catch (e) {
+            console.warn('Failed to load version history:', e);
+            this.messageVersions = new Map();
+        }
+    }
+
+    clearVersionHistory() {
+        this.messageVersions = new Map();
     }
 
     setApp(app) {
@@ -50,6 +86,12 @@ class ChatInterface {
             const webSearchEnabled = localStorage.getItem('webSearchEnabled') === 'true';
             webSearchToggle.checked = webSearchEnabled;
 
+            const tokenStreamingToggle = document.getElementById('tokenStreamingToggle');
+            const tokenStreamingEnabled = localStorage.getItem('tokenStreamingEnabled') !== 'false';
+            if (tokenStreamingToggle) {
+                tokenStreamingToggle.checked = tokenStreamingEnabled;
+            }
+
             settingsToggleBtn.addEventListener('click', () => {
                 settingsPanel.classList.toggle('open');
                 const arrow = settingsToggleBtn.querySelector('.settings-arrow');
@@ -62,12 +104,48 @@ class ChatInterface {
                 localStorage.setItem('webSearchEnabled', e.target.checked);
                 console.log('Web search', e.target.checked ? 'enabled' : 'disabled');
             });
+
+            if (tokenStreamingToggle) {
+                tokenStreamingToggle.addEventListener('change', (e) => {
+                    localStorage.setItem('tokenStreamingEnabled', e.target.checked);
+                    console.log('Token streaming', e.target.checked ? 'enabled' : 'disabled');
+                });
+            }
+
+            const exportConversationBtn = document.getElementById('exportConversationBtn');
+            const exportFormatMenu = document.getElementById('exportFormatMenu');
+
+            if (exportConversationBtn && exportFormatMenu) {
+                exportConversationBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    exportFormatMenu.classList.toggle('show');
+                });
+
+                const exportFormatBtns = exportFormatMenu.querySelectorAll('.export-format-btn');
+                exportFormatBtns.forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const format = btn.dataset.format;
+                        await this.exportConversation(format);
+                        exportFormatMenu.classList.remove('show');
+                        settingsPanel.classList.remove('open');
+                    });
+                });
+            }
         }
 
         // Ensure we have a session ID for agent communication
         if (!this.app.agentSessionId) {
             this.app.agentSessionId = this.app.currentSessionId || '';
         }
+
+        const handleButtonClick = () => {
+            if (heroSendBtn.classList.contains('stop-mode')) {
+                this.stopGeneration();
+            } else {
+                sendMessage();
+            }
+        };
 
         const sendMessage = () => {
             const message = heroChatInput.value.trim();
@@ -82,13 +160,13 @@ class ChatInterface {
             if (this.selectedFile) {
                 this.sendMessageWithAttachment(message);
             } else {
-                this.addChatMessage('user', message);
+                const userMessageId = this.addChatMessage('user', message);
                 heroChatInput.value = '';
-                this.streamAgentResponse(message);
+                this.streamAgentResponse(message, userMessageId);
             }
         };
 
-        heroSendBtn.addEventListener('click', sendMessage);
+        heroSendBtn.addEventListener('click', handleButtonClick);
         heroChatInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -117,24 +195,46 @@ class ChatInterface {
         });
     }
 
-    streamAgentResponse(message) {
-        let statusMessageElement = null;
+    streamAgentResponse(message, userMessageId = null) {
+        this.statusMessageElement = null;
         const webSearchEnabled = localStorage.getItem('webSearchEnabled') === 'true';
+
+        this.transformButtonToStop();
+
+        let streamingMessageElement = null;
+        let streamingContent = '';
 
         this.app.apiClient.streamAgentResponse(
             message,
             this.app.agentSessionId,
             webSearchEnabled,
             (statusText, statusType) => {
-                if (!statusMessageElement) {
-                    statusMessageElement = this.showStreamingStatusPlaceholder();
+                if (!this.statusMessageElement) {
+                    this.statusMessageElement = this.showStreamingStatusPlaceholder();
                 }
-                this.updateStreamingStatusWithType(statusMessageElement, statusText, statusType, 'Processing');
+                this.updateStreamingStatusWithType(this.statusMessageElement, statusText, statusType, 'Processing');
+            },
+            (tokenData) => {
+                if (tokenData.type === 'start') {
+                    streamingContent = '';
+                    streamingMessageElement = this.addChatMessage('bot', '');
+                } else if (tokenData.content) {
+                    streamingContent += tokenData.content;
+                    if (streamingMessageElement) {
+                        const contentDiv = streamingMessageElement.querySelector('.message-content');
+                        if (contentDiv) {
+                            contentDiv.textContent = streamingContent;
+                        }
+                    }
+                } else if (tokenData.type === 'end') {
+                    streamingMessageElement = null;
+                    streamingContent = '';
+                }
             },
             (data) => {
                 setTimeout(() => {
-                    if (statusMessageElement) {
-                        const remainingLines = statusMessageElement.querySelectorAll('.status-line.active');
+                    if (this.statusMessageElement) {
+                        const remainingLines = this.statusMessageElement.querySelectorAll('.status-line.active');
                         remainingLines.forEach(line => {
                             line.classList.remove('active');
                             line.classList.add('completed');
@@ -148,23 +248,199 @@ class ChatInterface {
                             }
                         });
                     }
-                    this.addChatMessage('bot', data.response, data.plots);
+
+                    let botMessageId;
+                    if (streamingMessageElement) {
+                        const contentDiv = streamingMessageElement.querySelector('.message-content');
+                        if (contentDiv) {
+                            contentDiv.innerHTML = marked.parse(data.response || '');
+                        }
+
+                        if (data.plots && data.plots.length > 0) {
+                            const plotsContainer = streamingMessageElement.querySelector('.message-plots');
+                            if (plotsContainer) {
+                                plotsContainer.innerHTML = '';
+                                data.plots.forEach(plotPath => {
+                                    const img = document.createElement('img');
+                                    img.src = plotPath;
+                                    img.alt = 'Generated Plot';
+                                    img.className = 'plot-image';
+                                    plotsContainer.appendChild(img);
+                                });
+                            }
+                        }
+
+                        botMessageId = streamingMessageElement.dataset.messageId;
+                        streamingMessageElement = null;
+                    } else {
+                        botMessageId = this.addChatMessage('bot', data.response, data.plots);
+                    }
+
+                    const statusContainerId = this.statusMessageElement ? this.statusMessageElement.dataset.statusId : null;
+
+                    if (botMessageId && statusContainerId) {
+                        const botMsg = document.querySelector(`[data-message-id="${botMessageId}"]`);
+                        if (botMsg) {
+                            botMsg.dataset.linkedStatusId = statusContainerId;
+                        }
+                    }
+
+                    if (userMessageId && botMessageId) {
+                        const userMsg = document.querySelector(`[data-message-id="${userMessageId}"]`);
+                        const botMsg = document.querySelector(`[data-message-id="${botMessageId}"]`);
+                        if (userMsg) {
+                            userMsg.dataset.linkedBotMessageId = botMessageId;
+                        }
+                        if (botMsg) {
+                            botMsg.dataset.linkedUserMessageId = userMessageId;
+                        }
+                    }
+
+                    if (this._waitingForVersionResponse && this._waitingForVersionResponse.tempUserMessageId === userMessageId) {
+                        const versionData = this._waitingForVersionResponse;
+                        const versions = this.messageVersions.get(versionData.messageId);
+
+                        versions.push({
+                            userText: versionData.newText,
+                            botMessageId: botMessageId,
+                            attachment: versionData.newAttachment,
+                            statusContainerId: statusContainerId
+                        });
+
+                        this.messageVersions.set(versionData.messageId, versions);
+                        versionData.messageDiv.dataset.currentVersion = String(versions.length - 1);
+                        this.showVersion(versionData.messageDiv, versions.length - 1);
+
+                        const tempUserDiv = document.querySelector(`[data-message-id="${versionData.tempUserMessageId}"]`);
+                        if (tempUserDiv) tempUserDiv.remove();
+
+                        this._waitingForVersionResponse = null;
+
+                        if (this.app.currentSessionId) {
+                            this.saveVersionHistory(this.app.currentSessionId);
+                        }
+                    }
+
+                    this.statusMessageElement = null;
+                    this.transformButtonToSend();
+
+                    if (this.app.sessionManager) {
+                        let agentResponseText = '';
+                        if (typeof data.response === 'string') {
+                            agentResponseText = data.response;
+                        } else if (data.response && data.response.content) {
+                            agentResponseText = data.response.content
+                                .filter(item => item.type === 'text')
+                                .map(item => item.text)
+                                .join(' ');
+                        }
+                        this.app.sessionManager.autoSaveSessionTitle(message, agentResponseText);
+                    }
+
+                    if (this.app.currentSessionId) {
+                        this.saveVersionHistory(this.app.currentSessionId);
+                    }
                 }, 150);
             },
             (errorMessage) => {
                 setTimeout(() => {
-                    this.updateStreamingStatusWithType(statusMessageElement, `Error: ${errorMessage}`, 'error', 'Error');
-                    statusMessageElement.style.display = 'none';
+                    this.updateStreamingStatusWithType(this.statusMessageElement, `Error: ${errorMessage}`, 'error', 'Error');
+                    if (this.statusMessageElement) {
+                        this.statusMessageElement.style.display = 'none';
+                    }
                     this.addChatMessage('bot', `Error: ${errorMessage}`);
+                    this.statusMessageElement = null;
+                    this.transformButtonToSend();
                 }, 150);
             }
         );
+    }
+
+    async pollProfilingStatus(sessionId) {
+        const maxAttempts = 60;
+        let attempts = 0;
+
+        const poll = async () => {
+            if (attempts >= maxAttempts) {
+                console.log('Profiling status polling timeout');
+                return;
+            }
+
+            attempts++;
+
+            try {
+                const response = await fetch(`/api/profiling-status/${sessionId}`);
+                const data = await response.json();
+
+                if (!this.statusMessageElement) {
+                    this.statusMessageElement = this.showStreamingStatusPlaceholder();
+                }
+
+                if (this.statusMessageElement) {
+                    const statusText = data.message || 'Processing...';
+                    this.updateStreamingStatusWithType(this.statusMessageElement, statusText, 'profiling', 'Profiling');
+                }
+
+                if (data.status === 'completed' || data.status === 'failed') {
+                    console.log('Profiling completed:', data.status);
+                    return;
+                }
+
+                setTimeout(poll, 500);
+            } catch (error) {
+                console.error('Error polling profiling status:', error);
+            }
+        };
+
+        await poll();
+    }
+
+    transformButtonToStop() {
+        const sendBtn = document.getElementById('heroSendMessage');
+        if (!sendBtn) return;
+
+        sendBtn.classList.add('stop-mode');
+        sendBtn.innerHTML = '<i class="fa-solid fa-square"></i>';
+        sendBtn.title = 'Stop Generation';
+    }
+
+    transformButtonToSend() {
+        const sendBtn = document.getElementById('heroSendMessage');
+        if (!sendBtn) return;
+
+        sendBtn.classList.remove('stop-mode');
+        sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i>';
+        sendBtn.title = 'Send Message';
+    }
+
+    async stopGeneration() {
+        await this.app.apiClient.cancelTask(this.app.agentSessionId || this.app.currentSessionId);
+
+        const stopped = this.app.apiClient.stopStreaming();
+        if (stopped) {
+            if (this.statusMessageElement) {
+                const wrapper = this.statusMessageElement.querySelector('.status-lines-wrapper');
+                if (wrapper) {
+                    wrapper.innerHTML = '';
+                }
+                this.updateStreamingStatusWithType(this.statusMessageElement, 'Generation stopped by user', 'stopped', 'Stopped');
+                setTimeout(() => {
+                    if (this.statusMessageElement) {
+                        this.statusMessageElement.style.display = 'none';
+                        this.statusMessageElement = null;
+                    }
+                }, 2500);
+            }
+            this.transformButtonToSend();
+        }
     }
 
     showStreamingStatusPlaceholder() {
         const heroChatMessages = document.getElementById('heroChatMessages');
         const messageDiv = document.createElement('div');
         messageDiv.className = 'chat-message bot streaming-status-container';
+        const statusId = `status-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        messageDiv.dataset.statusId = statusId;
         messageDiv.innerHTML = `
             <div class="status-lines-wrapper">
                 <!-- Status lines will be added dynamically -->
@@ -272,27 +548,27 @@ class ChatInterface {
 
         switch (statusType) {
             case 'data_processing':
-                prefix = '📊 ';
+                prefix = '';
                 typeClass = 'active';
                 break;
             case 'analysis':
-                prefix = '🔍 ';
+                prefix = '';
                 typeClass = 'active';
                 break;
             case 'model_training':
-                prefix = '🤖 ';
+                prefix = '';
                 typeClass = 'active';
                 break;
             case 'processing':
-                prefix = '⚙️ ';
+                prefix = '';
                 typeClass = 'active';
                 break;
             case 'completed':
-                prefix = '✅ ';
+                prefix = '';
                 typeClass = 'completed';
                 break;
             case 'error':
-                prefix = '❌ ';
+                prefix = 'ERROR: ';
                 typeClass = 'error';
                 break;
         }
@@ -301,12 +577,17 @@ class ChatInterface {
         this.updateStreamingStatus(containerElement, `${prefix}${fullStatusText}`, typeClass);
     }
 
-    addChatMessage(sender, responseData, plots = null, attachmentFileName = null) {
+    addChatMessage(sender, responseData, plots = null, attachmentFileName = null, messageId = null) {
         const heroChatMessages = document.getElementById('heroChatMessages');
         if (!heroChatMessages) return;
 
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message ${sender}`;
+
+        if (!messageId) {
+            messageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        }
+        messageDiv.dataset.messageId = messageId;
 
         const contentWrapper = document.createElement('div');
         contentWrapper.className = 'message-content-wrapper';
@@ -333,8 +614,11 @@ class ChatInterface {
                 .join('\n\n');
         }
 
-        // Use the markdown converter for the entire message content
-        content.innerHTML = this.convertMarkdownToHtml(messageText);
+        if (sender === 'bot') {
+            content.innerHTML = this.formatBotResponse(messageText);
+        } else {
+            content.innerHTML = this.convertMarkdownToHtml(messageText);
+        }
         contentWrapper.appendChild(content);
         
         if (plots && Array.isArray(plots) && plots.length > 0) {
@@ -389,6 +673,44 @@ class ChatInterface {
             section.classList.toggle('open');
             });
         });
+
+        if (sender === 'user') {
+            const editControls = document.createElement('div');
+            editControls.className = 'message-edit-controls';
+            editControls.innerHTML = `
+                <button class="edit-btn" title="Edit message">
+                    <i class="fa-solid fa-pen"></i>
+                </button>
+            `;
+            messageDiv.appendChild(editControls);
+
+            const editBtn = editControls.querySelector('.edit-btn');
+            editBtn.addEventListener('click', () => this.enterEditMode(messageDiv, attachmentFileName));
+        }
+
+        if (sender === 'bot') {
+            const regenerateControls = document.createElement('div');
+            regenerateControls.className = 'message-regenerate-controls';
+            regenerateControls.innerHTML = `
+                <button class="regenerate-btn" title="Regenerate response">
+                    <i class="fa-solid fa-arrows-rotate"></i>
+                </button>
+            `;
+            contentWrapper.appendChild(regenerateControls);
+
+            const regenerateBtn = regenerateControls.querySelector('.regenerate-btn');
+            if (regenerateBtn) {
+                regenerateBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Regenerate button clicked for message:', messageDiv.dataset.messageId);
+                    this.regenerateResponse(messageDiv);
+                });
+            } else {
+                console.error('Failed to create regenerate button');
+            }
+        }
+
         heroChatMessages.appendChild(messageDiv);
 
         if (window.MathJax && window.MathJax.typesetPromise) {
@@ -403,6 +725,364 @@ class ChatInterface {
             });
         }
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
+
+        return messageId;
+    }
+
+    enterEditMode(messageDiv, currentAttachment) {
+        const contentWrapper = messageDiv.querySelector('.message-content-wrapper');
+        const messageContent = messageDiv.querySelector('.message-content');
+        const editControls = messageDiv.querySelector('.message-edit-controls');
+
+        if (!contentWrapper || !messageContent) return;
+
+        const currentText = messageContent.textContent.trim();
+        messageDiv.dataset.originalText = currentText;
+
+        messageDiv.classList.add('editing');
+        if (editControls) {
+            editControls.style.display = 'none';
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.className = 'edit-textarea';
+        textarea.value = currentText;
+        textarea.rows = Math.min(Math.max(currentText.split('\n').length, 3), 10);
+
+        messageContent.replaceWith(textarea);
+        textarea.focus();
+
+        const editActions = document.createElement('div');
+        editActions.className = 'edit-actions';
+
+        let editAttachmentName = currentAttachment;
+        const attachmentControls = document.createElement('div');
+        attachmentControls.className = 'edit-attachment-controls';
+
+        if (currentAttachment) {
+            attachmentControls.innerHTML = `
+                <div class="current-attachment">
+                    <i class="fa-solid fa-file"></i>
+                    <span>${currentAttachment}</span>
+                    <button class="remove-attachment-btn" title="Remove attachment">
+                        <i class="fa-solid fa-times"></i>
+                    </button>
+                </div>
+            `;
+            const removeBtn = attachmentControls.querySelector('.remove-attachment-btn');
+            removeBtn.addEventListener('click', () => {
+                editAttachmentName = null;
+                attachmentControls.innerHTML = '';
+                const addAttachmentBtn = document.createElement('button');
+                addAttachmentBtn.className = 'add-attachment-btn';
+                addAttachmentBtn.innerHTML = '<i class="fa-solid fa-paperclip"></i> Add attachment';
+                addAttachmentBtn.addEventListener('click', () => this.addAttachmentInEdit(attachmentControls, (fileName) => {
+                    editAttachmentName = fileName;
+                }));
+                attachmentControls.appendChild(addAttachmentBtn);
+            });
+        } else {
+            const addAttachmentBtn = document.createElement('button');
+            addAttachmentBtn.className = 'add-attachment-btn';
+            addAttachmentBtn.innerHTML = '<i class="fa-solid fa-paperclip"></i> Add attachment';
+            addAttachmentBtn.addEventListener('click', () => this.addAttachmentInEdit(attachmentControls, (fileName) => {
+                editAttachmentName = fileName;
+            }));
+            attachmentControls.appendChild(addAttachmentBtn);
+        }
+
+        const actionButtons = document.createElement('div');
+        actionButtons.className = 'edit-action-buttons';
+        actionButtons.innerHTML = `
+            <button class="cancel-edit-btn">Cancel</button>
+            <button class="save-edit-btn">Save & Resend</button>
+        `;
+
+        editActions.appendChild(attachmentControls);
+        editActions.appendChild(actionButtons);
+        contentWrapper.appendChild(editActions);
+
+        const cancelBtn = actionButtons.querySelector('.cancel-edit-btn');
+        const saveBtn = actionButtons.querySelector('.save-edit-btn');
+
+        cancelBtn.addEventListener('click', () => this.cancelEdit(messageDiv, currentText, currentAttachment));
+        saveBtn.addEventListener('click', () => this.saveEditedMessage(messageDiv, textarea.value, editAttachmentName));
+    }
+
+    addAttachmentInEdit(attachmentControls, callback) {
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = '.csv,.xlsx,.xls,.json,.tsv,.parquet,.zip,.txt';
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                this.selectedFile = file;
+                attachmentControls.innerHTML = `
+                    <div class="current-attachment">
+                        <i class="fa-solid fa-file"></i>
+                        <span>${file.name}</span>
+                        <button class="remove-attachment-btn" title="Remove attachment">
+                            <i class="fa-solid fa-times"></i>
+                        </button>
+                    </div>
+                `;
+                const removeBtn = attachmentControls.querySelector('.remove-attachment-btn');
+                removeBtn.addEventListener('click', () => {
+                    this.selectedFile = null;
+                    callback(null);
+                    attachmentControls.innerHTML = '';
+                    const addAttachmentBtn = document.createElement('button');
+                    addAttachmentBtn.className = 'add-attachment-btn';
+                    addAttachmentBtn.innerHTML = '<i class="fa-solid fa-paperclip"></i> Add attachment';
+                    addAttachmentBtn.addEventListener('click', () => this.addAttachmentInEdit(attachmentControls, callback));
+                    attachmentControls.appendChild(addAttachmentBtn);
+                });
+                callback(file.name);
+            }
+        });
+        fileInput.click();
+    }
+
+    cancelEdit(messageDiv, originalText, originalAttachment) {
+        const contentWrapper = messageDiv.querySelector('.message-content-wrapper');
+        const textarea = messageDiv.querySelector('.edit-textarea');
+        const editActions = messageDiv.querySelector('.edit-actions');
+        const editControls = messageDiv.querySelector('.message-edit-controls');
+
+        if (!textarea || !contentWrapper) return;
+
+        const messageContent = document.createElement('div');
+        messageContent.className = 'message-content';
+        messageContent.innerHTML = this.convertMarkdownToHtml(originalText);
+
+        textarea.replaceWith(messageContent);
+        editActions.remove();
+
+        messageDiv.classList.remove('editing');
+        editControls.style.display = '';
+    }
+
+    async saveEditedMessage(messageDiv, newText, newAttachment) {
+        if (!newText.trim() && !this.selectedFile) return;
+
+        const heroChatMessages = document.getElementById('heroChatMessages');
+        const heroChatInput = document.getElementById('heroChatInput');
+        if (!heroChatMessages) return;
+
+        if (heroChatInput) {
+            heroChatInput.value = '';
+        }
+
+        const messageId = messageDiv.dataset.messageId;
+        const linkedBotMessageId = messageDiv.dataset.linkedBotMessageId;
+
+        const allMessages = Array.from(heroChatMessages.querySelectorAll('.chat-message:not(.streaming-status-container)'));
+        const messageIndex = allMessages.indexOf(messageDiv);
+
+        if (messageIndex === -1) {
+            console.error('Could not find message index');
+            return;
+        }
+
+        try {
+            const sessionId = this.app.currentSessionId || this.app.agentSessionId;
+            const response = await fetch(`/api/sessions/${sessionId}/revert/${messageIndex}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to revert conversation state');
+            }
+
+            const result = await response.json();
+            console.log('Reverted to message', messageIndex, result);
+
+            for (let i = allMessages.length - 1; i > messageIndex; i--) {
+                allMessages[i].remove();
+            }
+
+            const contentWrapper = messageDiv.querySelector('.message-content-wrapper');
+            const textarea = messageDiv.querySelector('.edit-textarea');
+            const editControls = messageDiv.querySelector('.message-edit-controls');
+            const editActions = messageDiv.querySelector('.edit-actions');
+
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            messageContent.innerHTML = this.convertMarkdownToHtml(newText);
+
+            if (textarea && contentWrapper) {
+                textarea.replaceWith(messageContent);
+            }
+
+            if (editActions) {
+                editActions.remove();
+            }
+
+            const existingAttachment = contentWrapper.querySelector('.message-attachment');
+            if (existingAttachment) {
+                existingAttachment.remove();
+            }
+
+            if (newAttachment || this.selectedFile) {
+                const attachmentFileName = this.selectedFile ? this.selectedFile.name : newAttachment;
+                const attachmentDiv = document.createElement('div');
+                attachmentDiv.className = 'message-attachment';
+                attachmentDiv.innerHTML = `
+                    <i class="fa-solid fa-file"></i>
+                    <span>${attachmentFileName}</span>`;
+                contentWrapper.insertBefore(attachmentDiv, messageContent);
+            }
+
+            if (editControls) {
+                editControls.style.display = '';
+            }
+            messageDiv.classList.remove('editing');
+
+            this.streamAgentResponse(newText, messageId);
+
+        } catch (error) {
+            console.error('Error reverting conversation:', error);
+            alert('Failed to revert conversation. Please try again.');
+        }
+    }
+
+    async regenerateResponse(botMessageDiv) {
+        const linkedUserMessageId = botMessageDiv.dataset.linkedUserMessageId;
+
+        if (!linkedUserMessageId) {
+            console.error('Regenerate failed: No linked user message ID on bot message', botMessageDiv);
+            alert('Cannot regenerate: Message link not found. This may be an older message.');
+            return;
+        }
+
+        const userMessageDiv = document.querySelector(`[data-message-id="${linkedUserMessageId}"]`);
+        if (!userMessageDiv) {
+            console.error('Regenerate failed: User message not found for ID:', linkedUserMessageId);
+            alert('Cannot regenerate: Original message not found.');
+            return;
+        }
+
+        const messageContent = userMessageDiv.querySelector('.message-content');
+        if (!messageContent) {
+            console.error('Regenerate failed: Message content not found in:', userMessageDiv);
+            alert('Cannot regenerate: Message content is missing.');
+            return;
+        }
+
+        const userText = messageContent.textContent.trim();
+
+        if (!userText) {
+            console.error('Regenerate failed: User text is empty');
+            alert('Cannot regenerate: Message text is empty.');
+            return;
+        }
+
+        botMessageDiv.style.opacity = '0.5';
+
+        const regenerateBtn = botMessageDiv.querySelector('.regenerate-btn');
+        if (regenerateBtn) {
+            regenerateBtn.disabled = true;
+            regenerateBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        }
+
+        console.log('Regenerating response for message:', userText);
+
+        this.streamAgentResponse(userText, linkedUserMessageId);
+
+        setTimeout(() => {
+            botMessageDiv.remove();
+        }, 500);
+    }
+
+    showVersion(messageDiv, versionIndex) {
+        const messageId = messageDiv.dataset.messageId;
+        const versions = this.messageVersions.get(messageId);
+
+        if (!versions || versionIndex < 0 || versionIndex >= versions.length) return;
+
+        const version = versions[versionIndex];
+        messageDiv.dataset.currentVersion = String(versionIndex);
+
+        const messageContent = messageDiv.querySelector('.message-content');
+        if (messageContent) {
+            messageContent.innerHTML = this.convertMarkdownToHtml(version.userText);
+        }
+
+        versions.forEach((v, idx) => {
+            if (v.botMessageId) {
+                const botMsg = document.querySelector(`[data-message-id="${v.botMessageId}"]`);
+                if (botMsg) {
+                    botMsg.style.display = idx === versionIndex ? '' : 'none';
+                }
+            }
+            if (v.statusContainerId) {
+                const statusContainer = document.querySelector(`[data-status-id="${v.statusContainerId}"]`);
+                if (statusContainer) {
+                    statusContainer.style.display = idx === versionIndex ? '' : 'none';
+                }
+            }
+        });
+
+        if (version.botMessageId) {
+            messageDiv.dataset.linkedBotMessageId = version.botMessageId;
+        }
+
+        messageDiv.style.opacity = '1';
+
+        this.updateVersionNavigation(messageDiv);
+    }
+
+    updateVersionNavigation(messageDiv) {
+        const messageId = messageDiv.dataset.messageId;
+        const versions = this.messageVersions.get(messageId);
+
+        if (!versions || versions.length <= 1) {
+            const existingNav = messageDiv.querySelector('.version-navigation');
+            if (existingNav) existingNav.remove();
+            return;
+        }
+
+        const currentVersion = parseInt(messageDiv.dataset.currentVersion || '0');
+        let versionNav = messageDiv.querySelector('.version-navigation');
+
+        if (!versionNav) {
+            versionNav = document.createElement('div');
+            versionNav.className = 'version-navigation';
+            const editControls = messageDiv.querySelector('.message-edit-controls');
+            if (editControls) {
+                editControls.before(versionNav);
+            } else {
+                messageDiv.appendChild(versionNav);
+            }
+        }
+
+        versionNav.innerHTML = `
+            <button class="version-btn version-prev" ${currentVersion === 0 ? 'disabled' : ''}>
+                <i class="fa-solid fa-chevron-left"></i>
+            </button>
+            <span class="version-counter">${currentVersion + 1}/${versions.length}</span>
+            <button class="version-btn version-next" ${currentVersion === versions.length - 1 ? 'disabled' : ''}>
+                <i class="fa-solid fa-chevron-right"></i>
+            </button>
+        `;
+
+        const prevBtn = versionNav.querySelector('.version-prev');
+        const nextBtn = versionNav.querySelector('.version-next');
+
+        prevBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (currentVersion > 0) {
+                this.showVersion(messageDiv, currentVersion - 1);
+            }
+        });
+
+        nextBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (currentVersion < versions.length - 1) {
+                this.showVersion(messageDiv, currentVersion + 1);
+            }
+        });
     }
 
     showLoadingMessage() {
@@ -507,23 +1187,9 @@ class ChatInterface {
             cleanMessage = cleanMessage.replace(plotPattern, '');
         }
 
-        cleanMessage = cleanMessage.replace(imagePattern, (match, url) => {
-            plotUrls.push(url);
-            return '';
-        });
-
         cleanMessage = cleanMessage.replace(/```[\s\S]*?```/g, '').trim();
 
         let formatted = '';
-
-        if (plotUrls.length > 0) {
-            formatted += '<div class="response-section">';
-            formatted += '<div class="section-header"><i class="fa-solid fa-chart-line"></i> Visualization</div>';
-            plotUrls.forEach(url => {
-                formatted += `<div class="visualization-container"><img src="${url}" alt="Visualization" style="max-width: 100%; border-radius: 4px; margin: 0.5rem 0;" /></div>`;
-            });
-            formatted += '</div>';
-        }
 
         const commentaryMatch = cleanMessage.match(/\*\*Commentary\*\*([\s\S]*?)$/);
         let commentary = '';
@@ -544,15 +1210,39 @@ class ChatInterface {
     }
 
     convertMarkdownToHtml(markdown) {
-        const dirty = marked.parse(markdown);
+        if (!markdown) return '';
+
+        marked.use({
+            gfm: true,
+            breaks: true,
+            headerIds: false,
+            mangle: false,
+            pedantic: false
+        });
+
+        const sanitizedMarkdown = markdown
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            .replace(/^[\s\n]*Below[\s\u200B-\u200D\uFEFF]*\*\*[\s\u200B-\u200D\uFEFF]*\*\*[\s\n]*/i, '')
+            .trim();
+
+        const dirty = marked.parse(sanitizedMarkdown);
+
         const clean = DOMPurify.sanitize(dirty, {
-          ADD_TAGS: ['iframe'],
-          ADD_ATTR: ['allowfullscreen','src']
+          ALLOWED_TAGS: ['p', 'br', 'strong', 'b', 'em', 'i', 'u', 'code', 'pre', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'span', 'iframe', 'img'],
+          ALLOWED_ATTR: ['href', 'target', 'rel', 'src', 'alt', 'allowfullscreen', 'class', 'align', 'style', 'width', 'height'],
+          KEEP_CONTENT: true
         });
         const withEmojis = this.emojiConverter.replace_colons(clean);
         return withEmojis.replace(/<table>/g,'<div class="table-wrapper"><table>')
                          .replace(/<\/table>/g,'</table></div>');
       }
+
+    convertInlineMarkdown(text) {
+        return text
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/`(.+?)`/g, '<code>$1</code>');
+    }
 
     convertMarkdownTableToHtml(message) {
         const lines = message.split('\n');
@@ -569,7 +1259,7 @@ class ChatInterface {
                     let tableHTML = '<div class="table-responsive-container"><div class="table-scroll-wrapper"><table class="data-table">';
                     tableHTML += '<thead><tr>';
                     headers.forEach(header => {
-                        tableHTML += `<th>${header}</th>`;
+                        tableHTML += `<th>${this.convertInlineMarkdown(header)}</th>`;
                     });
                     tableHTML += '</tr></thead><tbody>';
 
@@ -580,7 +1270,7 @@ class ChatInterface {
                         if (cells.length > 0) {
                             tableHTML += '<tr>';
                             cells.forEach(cell => {
-                                tableHTML += `<td>${this.convertMarkdownToHtml(cell)}</td>`;
+                                tableHTML += `<td>${this.convertInlineMarkdown(cell)}</td>`;
                             });
                             tableHTML += '</tr>';
                         }
@@ -741,12 +1431,12 @@ class ChatInterface {
 
         applyBtn.addEventListener('click', () => {
             this.handlePIIConsent(true);
-            noticeDiv.innerHTML = `<p>✅ Privacy protection will be applied.</p>`;
+            noticeDiv.innerHTML = `<p>Privacy protection will be applied.</p>`;
         }, { once: true });
 
         continueBtn.addEventListener('click', () => {
             this.handlePIIConsent(false);
-            noticeDiv.innerHTML = `<p>ℹ️ Continuing analysis without privacy protection.</p>`;
+            noticeDiv.innerHTML = `<p>INFO: Continuing analysis without privacy protection.</p>`;
         }, { once: true });
     }
 
@@ -851,6 +1541,45 @@ class ChatInterface {
         } catch (error) {
             this.hideLoadingMessage();
             this.addChatMessage('bot', `Upload error: ${error.message}`);
+        }
+    }
+
+    async exportConversation(format) {
+        try {
+            const sessionId = this.app.currentSessionId || this.app.agentSessionId;
+            if (!sessionId) {
+                console.warn('No active session to export');
+                return;
+            }
+
+            const response = await fetch(`/api/sessions/${sessionId}/export?format=${format}`);
+            if (!response.ok) {
+                throw new Error(`Export failed: ${response.status}`);
+            }
+
+            const blob = await response.blob();
+            const timestamp = new Date().toISOString().slice(0, 10);
+            const extensions = {
+                'markdown': 'md',
+                'json': 'json',
+                'html': 'html',
+                'pdf': 'pdf'
+            };
+            const filename = `conversation_${timestamp}.${extensions[format] || 'txt'}`;
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            console.log(`Conversation exported as ${format}`);
+        } catch (error) {
+            console.error('Error exporting conversation:', error);
         }
     }
 }
