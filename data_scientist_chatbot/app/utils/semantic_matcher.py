@@ -8,6 +8,8 @@ from datetime import datetime
 
 
 class SemanticPatternMatcher:
+    _model_cache: Optional[Any] = None  # Class-level model cache
+
     def __init__(self, config_path: Optional[str] = None):
         if config_path is None:
             config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
@@ -22,7 +24,11 @@ class SemanticPatternMatcher:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self.model = SentenceTransformer(embedding_model)
+            if SemanticPatternMatcher._model_cache is None:
+                SemanticPatternMatcher._model_cache = SentenceTransformer(embedding_model)
+                print(f"[SemanticMatcher] Loaded model {embedding_model} (cached for reuse)")
+
+            self.model = SemanticPatternMatcher._model_cache
         except ImportError:
             print("[SemanticMatcher] sentence-transformers not installed, pattern matching disabled")
             self.model = None
