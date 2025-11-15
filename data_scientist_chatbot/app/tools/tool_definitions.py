@@ -31,7 +31,7 @@ class WebSearchInput(BaseModel):
 
 class ZipArtifactsInput(BaseModel):
     artifact_ids: List[str] = Field(description="List of artifact IDs to include in the zip file")
-    description: Optional[str] = Field(default=None, description="Optional description for the zip archive")
+    description: str = Field(default="", description="Description for the zip archive")
 
 
 class CodingTask(BaseModel):
@@ -78,13 +78,17 @@ def retrieve_historical_patterns(task_description: str) -> str:
 @tool(args_schema=CodingTask)
 def delegate_coding_task(task_description: str) -> str:
     """
-    Delegate computational work to specialized coding agent. Use ONLY when the user has:
-    - Uploaded a dataset and needs analysis, visualization, or modeling
-    - Specific technical requests requiring data processing or machine learning
-    - Questions that require code execution to answer properly
+    Delegate computational work to specialized coding agent. Use when the user needs:
+    - Data analysis, visualization, or statistical exploration
+    - Data preprocessing (cleaning, encoding, imputation, scaling)
+    - Model training and evaluation
+    - Complete workflows (preprocess + train + evaluate)
+
+    The coding agent can generate multiple artifacts (processed datasets, models, visualizations).
+    For modeling tasks, consider data quality - delegate preprocessing if needed.
 
     DO NOT use for:
-    - Conversational exchanges, greetings, or general questions
+    - Conversational exchanges or general questions
     - Requests when no dataset is available
     - Explanations that don't require computation
     """
@@ -187,3 +191,79 @@ def load_trained_model(model_type: Optional[str] = None, model_id: Optional[str]
         Path to the loaded model file in the sandbox
     """
     return "This is a placeholder. Model loading happens in the graph node."
+
+
+class DatasetExplorerInput(BaseModel):
+    folder: Optional[str] = Field(default=None, description="Filter by folder name (e.g., 'stocks', 'etfs')")
+    extension: Optional[str] = Field(default=None, description="Filter by file extension (e.g., '.csv', '.json')")
+
+
+class FilePathInput(BaseModel):
+    file_path: str = Field(description="Relative path to the file within the uploaded dataset")
+
+
+class FileCombineInput(BaseModel):
+    file_pattern: str = Field(description="Glob pattern to match files (e.g., 'stocks/*.csv', '*.json')")
+
+
+@tool
+def inspect_dataset() -> str:
+    """
+    See what files and structure exist in the uploaded dataset.
+    Use this to understand what data is available before analyzing.
+
+    Returns JSON with:
+    - Total files and size
+    - File types present
+    - Folder structure
+    - Sample file listing
+
+    Perfect for multi-file uploads, ZIP archives, or complex folder structures.
+    """
+    return "This is a placeholder. Dataset inspection happens in the graph node."
+
+
+@tool(args_schema=DatasetExplorerInput)
+def list_files(folder: Optional[str] = None, extension: Optional[str] = None) -> str:
+    """
+    List files in the uploaded dataset. Optionally filter by folder or extension.
+
+    Args:
+        folder: Only show files in this folder (e.g., 'stocks', 'root')
+        extension: Only show files with this extension (e.g., '.csv', '.json')
+
+    Returns JSON with file paths, names, and sizes.
+    """
+    return "This is a placeholder. File listing happens in the graph node."
+
+
+@tool(args_schema=FilePathInput)
+def load_file(file_path: str) -> str:
+    """
+    Load a specific file from the uploaded dataset intelligently.
+
+    Tries to load as CSV first, falls back to text if needed.
+    Automatically loads into session dataframe if successful.
+
+    Args:
+        file_path: Relative path to file (e.g., 'stocks/AAPL.csv', 'metadata.csv')
+
+    Returns preview of loaded data and confirmation it's ready for analysis.
+    """
+    return "This is a placeholder. File loading happens in the graph node."
+
+
+@tool(args_schema=FileCombineInput)
+def combine_files(file_pattern: str) -> str:
+    """
+    Combine multiple files matching a pattern into single dataframe.
+
+    Useful for analyzing groups of related files together.
+    Adds 'source_file' column to track origin.
+
+    Args:
+        file_pattern: Glob pattern (e.g., 'stocks/*.csv' to combine all stock data)
+
+    Returns combined dataframe info and loads it into session.
+    """
+    return "This is a placeholder. File combination happens in the graph node."
