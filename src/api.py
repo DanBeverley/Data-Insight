@@ -2,6 +2,7 @@ import io
 import json
 import logging
 import time
+import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -18,6 +19,15 @@ import uuid
 import re
 
 try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastAPIIntegration
+    from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+    SENTRY_AVAILABLE = True
+except ImportError:
+    SENTRY_AVAILABLE = False
+
+try:
     import sys
     from pathlib import Path
 
@@ -30,11 +40,11 @@ try:
 
     create_agent_executor = create_enhanced_agent_executor
     CHAT_AVAILABLE = True
-    print("✅ Chat functionality loaded successfully")
+    print("Chat functionality loaded successfully")
 except Exception as e:
     CHAT_AVAILABLE = False
     create_agent_executor = None
-    print(f"⚠️  Chat functionality not available: {e}")
+    print(f"WARNING: Chat functionality not available: {e}")
     import traceback
 
     traceback.print_exc()
@@ -65,7 +75,7 @@ from .api_utils.models import (
 from .api_utils.upload_handler import enhance_with_agent_profile, load_data_to_agent_sandbox
 from .api_utils.artifact_handler import handle_artifact_download
 from .api_utils.streaming_service import stream_agent_chat
-from .routers import data_router, session_router
+from .routers import data_router, session_router, auth_router
 
 try:
     from .database.service import get_database_service
@@ -92,6 +102,24 @@ def get_session_agent(session_id: str):
     return session_agents.get(session_id)
 
 
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_AVAILABLE and SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            FastAPIIntegration(),
+            SqlalchemyIntegration(),
+        ],
+        traces_sample_rate=0.1,
+        profiles_sample_rate=0.1,
+        environment=os.getenv("ENVIRONMENT", "development"),
+    )
+    print("Sentry monitoring enabled")
+elif SENTRY_DSN and not SENTRY_AVAILABLE:
+    print("WARNING: Sentry DSN provided but sentry-sdk not installed")
+else:
+    print("INFO: Sentry monitoring disabled (no SENTRY_DSN configured)")
+
 app = FastAPI(title="DnA", description="", version="2.0.0")
 
 app.add_middleware(
@@ -102,7 +130,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database schema on application startup"""
+    try:
+        from .database.migrations import initialize_database_schema
+        from .database.service import get_database_service
+
+        db_service = get_database_service()
+        if db_service:
+            success = initialize_database_schema(db_service.db)
+            if success:
+                logger.info("Database schema initialized successfully")
+            else:
+                logger.warning("WARNING: Database schema initialization had issues")
+        else:
+            logger.warning("WARNING: Database service not available")
+    except Exception as e:
+        logger.warning(f"Database initialization skipped: {e}")
+
+    try:
+        from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
+
+        logger.info("Validating checkpoint system...")
+        result = perform_checkpoint_maintenance(force_cleanup=False)
+
+        if result.get("status") == "healthy":
+            logger.info(f"Checkpoint system healthy: {result.get('stats', {})}")
+        elif result.get("status") == "degraded":
+            logger.warning(f"Checkpoint system degraded, auto-cleaned: {result.get('operations', [])}")
+        elif result.get("status") == "unavailable":
+            logger.info("Checkpoint system not configured")
+        else:
+            logger.error(f"Checkpoint system error: {result.get('message', 'Unknown error')}")
+    except Exception as e:
+        logger.warning(f"Checkpoint validation skipped: {e}")
+
+
 logger = logging.getLogger(__name__)
+
+
 static_dir = Path(__file__).parent.parent / "static"
 
 
@@ -122,6 +198,7 @@ async def get_styles():
 
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+app.include_router(auth_router)
 app.include_router(data_router)
 app.include_router(session_router)
 
@@ -160,39 +237,70 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: str):
-    """Run profiling in background and send progress updates via WebSocket"""
-    try:
-        await manager.send_progress(
-            session_id, {"status": "profiling", "progress": 10, "message": "Starting profiling..."}
+async def send_profiling_update(session_id: str, percent: int, message: str):
+    if session_id in manager.active_connections:
+        await manager.send_personal_message(
+            json.dumps({"type": "progress", "percent": percent, "message": message}), session_id
         )
+
+
+async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: str):
+    try:
+        from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+        import builtins
+        from .api_utils.session_persistence import session_data_store
+
+        def progress_callback(percent: int, message: str):
+            session_store[session_id]["profiling_message"] = message
+            if session_id in manager.active_connections:
+                try:
+                    asyncio.create_task(
+                        manager.send_progress(session_id, {"type": "progress", "percent": percent, "message": message})
+                    )
+                except:
+                    pass
 
         loop = asyncio.get_event_loop()
-        intelligence_profile = await loop.run_in_executor(None, data_profiler.profile_dataset, df)
 
-        await manager.send_progress(
-            session_id, {"status": "profiling", "progress": 80, "message": "Generating summary..."}
+        data_profile = await loop.run_in_executor(
+            None,
+            lambda: generate_dataset_profile_for_agent(
+                df,
+                context={"filename": filename, "upload_session": session_id},
+                config={"progress_callback": progress_callback},
+            ),
         )
 
-        intelligence_summary = create_intelligence_summary(intelligence_profile)
+        session_data = {"dataframe": df, "data_profile": data_profile, "filename": filename}
+        builtins._session_store[session_id] = session_data
+        session_data_store.save_session_data(session_id, session_data)
 
-        session_store[session_id]["intelligence_profile"] = intelligence_profile
-        session_store[session_id]["intelligence_summary"] = intelligence_summary
         session_store[session_id]["profiling_status"] = "completed"
+        session_store[session_id]["profiling_message"] = "Profiling complete"
 
-        await manager.send_progress(
-            session_id,
-            {"status": "completed", "progress": 100, "message": "Profiling completed", "data": intelligence_summary},
-        )
+        if session_id in manager.active_connections:
+            await manager.send_progress(
+                session_id,
+                {
+                    "type": "complete",
+                    "profile": {
+                        "quality_score": round(data_profile.quality_assessment.get("overall_score", 0), 1)
+                        if data_profile.quality_assessment.get("overall_score")
+                        else None,
+                        "anomalies_detected": data_profile.anomaly_detection.get("summary", {}).get(
+                            "total_anomalies", 0
+                        ),
+                        "profiling_time": round(data_profile.profile_metadata.get("profiling_duration", 0), 2),
+                    },
+                },
+            )
 
         logging.info(f"Background profiling completed for session {session_id}")
     except Exception as e:
         logging.error(f"Background profiling failed for session {session_id}: {e}")
         session_store[session_id]["profiling_status"] = "failed"
         session_store[session_id]["profiling_error"] = str(e)
-        await manager.send_progress(
-            session_id, {"status": "error", "progress": 0, "message": f"Profiling failed: {str(e)}"}
-        )
+        session_store[session_id]["profiling_message"] = f"Profiling failed: {str(e)}"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -206,6 +314,8 @@ async def root():
 async def chat_endpoint(chat_request: ChatMessage):
     """Handle chat messages with the AI agent"""
     try:
+        from .api_utils.message_storage import save_message
+
         session_id = chat_request.session_id or str(uuid.uuid4())
         agent = get_session_agent(session_id)
 
@@ -218,6 +328,8 @@ async def chat_endpoint(chat_request: ChatMessage):
                 )
             else:
                 raise HTTPException(status_code=500, detail="Failed to initialize chat agent for this session")
+
+        save_message(session_id, "human", chat_request.message)
 
         input_state = {"messages": [("user", chat_request.message)], "session_id": session_id, "python_executions": 0}
 
@@ -261,7 +373,7 @@ async def chat_endpoint(chat_request: ChatMessage):
                                 url = f"/static/plots/{plot_file}"
                                 if url not in all_plot_urls:
                                     all_plot_urls.append(url)
-                                    print(f"FastAPI DEBUG: ✅ Added plot URL: {url}")
+                                    print(f"FastAPI DEBUG: Added plot URL: {url}")
 
                         # Also check for any PNG files mentioned
                         if ".png" in content:
@@ -274,7 +386,7 @@ async def chat_endpoint(chat_request: ChatMessage):
                                     url = f"/static/plots/{pf}"
                                     if url not in all_plot_urls:
                                         all_plot_urls.append(url)
-                                        print(f"FastAPI DEBUG: ✅ Added plot URL from PNG: {url}")
+                                        print(f"FastAPI DEBUG: Added plot URL from PNG: {url}")
 
                 if "agent" in chunk:
                     print("FastAPI DEBUG: Processing agent response")
@@ -295,6 +407,9 @@ async def chat_endpoint(chat_request: ChatMessage):
 
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Agent error: {str(agent_error)}")
+
+        metadata = {"plots": all_plot_urls} if all_plot_urls else None
+        save_message(session_id, "ai", final_response_content, metadata=metadata)
 
         return ChatResponse(status="success", response=final_response_content, plots=all_plot_urls)
 
@@ -319,6 +434,47 @@ async def upload_data(
             raise HTTPException(status_code=400, detail="session_id is required")
 
         contents = await file.read()
+
+        import builtins
+
+        if not hasattr(builtins, "_session_store"):
+            builtins._session_store = {}
+
+        if file.filename.endswith(".zip"):
+            from pathlib import Path
+            import tempfile
+            from src.api_utils.dataset_manifest import handle_file_upload
+
+            temp_file = Path(tempfile.gettempdir()) / f"upload_{session_id}_{file.filename}"
+            with open(temp_file, "wb") as f:
+                f.write(contents)
+
+            result = handle_file_upload(temp_file, file.filename, session_id)
+
+            if not result["success"]:
+                raise HTTPException(status_code=400, detail=result.get("error", "Failed to process ZIP file"))
+
+            builtins._session_store[session_id] = {
+                "dataset_manifest": result["manifest"],
+                "dataset_type": "multi_file",
+                "upload_filename": file.filename,
+            }
+
+            temp_file.unlink()
+
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "agent_session_id": session_id,
+                "message": f"Uploaded archive with {result['manifest']['total_files']} files",
+                "dataset_type": "multi_file",
+                "manifest_summary": {
+                    "total_files": result["manifest"]["total_files"],
+                    "total_size_mb": result["manifest"]["total_size_mb"],
+                    "file_types": result["manifest"].get("file_types_summary", {}),
+                },
+            }
+
         df = ingest_data(io.BytesIO(contents), filename=file.filename)
 
         if df is None:
@@ -329,19 +485,13 @@ async def upload_data(
         )
         session_id = response_data["session_id"]
 
-        import builtins
-
-        if not hasattr(builtins, "_session_store"):
-            builtins._session_store = {}
-
-        enhance_with_agent_profile(df, session_id, file.filename, response_data)
-
-        if AGENT_AVAILABLE:
-            load_data_to_agent_sandbox(df, session_id, agent_sessions, create_enhanced_agent_executor, response_data)
+        load_data_to_agent_sandbox(df, session_id, session_agents, create_enhanced_agent_executor, response_data)
 
         if enable_profiling:
             response_data["profiling_status"] = "pending"
-            response_data["message"] += " - Profiling in progress..."
+            response_data[
+                "message"
+            ] = f"Dataset uploaded successfully - {len(df)} rows, {len(df.columns)} columns. Profiling in progress..."
             background_tasks.add_task(run_profiling_background, df.copy(), session_id, file.filename)
         else:
             response_data["profiling_status"] = "disabled"
@@ -455,6 +605,8 @@ async def agent_chat(request: AgentChatRequest):
         raise HTTPException(status_code=503, detail="Agent service not available")
 
     try:
+        from .api_utils.message_storage import save_message
+
         session_id = request.session_id
         if not session_id:
             raise HTTPException(status_code=400, detail="Session ID required")
@@ -471,6 +623,8 @@ async def agent_chat(request: AgentChatRequest):
 
         # Data is already loaded in the stateful sandbox, just use the user's message
         user_message = request.message
+
+        save_message(session_id, "human", user_message)
 
         # Check for long-running tasks (model building, complex analysis)
         is_long_task = any(
@@ -514,13 +668,47 @@ async def agent_chat(request: AgentChatRequest):
             print(f"DEBUG: Final response content: {content[:100]}")
             print(f"DEBUG: Response has {len(plots)} plots")
 
+            metadata = {"plots": plots} if plots else None
+            save_message(session_id, "ai", content, metadata=metadata)
+
             return {"status": "success", "response": content, "session_id": session_id, "plots": plots}
     except Exception as e:
         return {"status": "error", "detail": f"Agent chat error: {str(e)}"}
 
 
+@app.post("/api/agent/cancel/{session_id}")
+async def cancel_agent_task(session_id: str):
+    """
+    Cancel an in-progress agent task.
+    Marks the session as cancelled so streaming can gracefully stop.
+    """
+    if not DATABASE_AVAILABLE:
+        return {"success": False, "detail": "Database not available"}
+
+    try:
+        from .database.models import CancelledTask
+        from .database.connection import get_database_manager
+
+        db_manager = get_database_manager()
+        db = db_manager.db
+
+        cancelled_task = CancelledTask(session_id=session_id, cancelled_at=datetime.now(), reason="user_requested")
+
+        db.add(cancelled_task)
+        db.commit()
+
+        logging.info(f"Marked session {session_id} as cancelled")
+        return {"success": True, "session_id": session_id}
+
+    except Exception as e:
+        logging.error(f"Failed to cancel task: {e}")
+        return {"success": False, "detail": str(e)}
+
+
 @app.get("/api/agent/chat-stream")
-async def agent_chat_stream(message: str, session_id: str, web_search_enabled: bool = False):
+async def agent_chat_stream(
+    message: str, session_id: str, web_search_enabled: bool = False, token_streaming: bool = True
+):
     """Stream agent chat responses with dynamic status updates."""
     if not AGENT_AVAILABLE:
         raise HTTPException(status_code=503, detail="Agent service not available")
@@ -536,6 +724,7 @@ async def agent_chat_stream(message: str, session_id: str, web_search_enabled: b
         global status_agent_runnable
 
         session_store[session_id]["web_search_enabled"] = web_search_enabled
+        session_store[session_id]["token_streaming"] = token_streaming
 
         if create_enhanced_agent_executor is None:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Agent service not available'})}\n\n"
@@ -548,10 +737,16 @@ async def agent_chat_stream(message: str, session_id: str, web_search_enabled: b
                 from data_scientist_chatbot.app.core.agent_factory import create_status_agent
 
                 status_agent_runnable = create_status_agent()
+                print(f"INFO: Status agent initialized successfully")
             except Exception as e:
-                print(f"WARNING: Failed to initialize status agent: {e}")
+                print(f"ERROR: Failed to initialize status agent: {e}")
+                import traceback
 
-        async for event_data in stream_agent_chat(message, session_id, agent, session_store, status_agent_runnable):
+                print(traceback.format_exc())
+
+        async for event_data in stream_agent_chat(
+            message, session_id, agent, session_store, status_agent_runnable, agent_sessions
+        ):
             yield event_data
 
     return StreamingResponse(
@@ -641,46 +836,113 @@ async def get_profiling_status(session_id: str):
 
     session_data = session_store[session_id]
     profiling_status = session_data.get("profiling_status", "unknown")
+    profiling_message = session_data.get("profiling_message", "Processing...")
 
     if profiling_status == "completed" and "intelligence_summary" in session_data:
-        return {"status": "completed", "data": session_data["intelligence_summary"]}
+        return {"status": "completed", "message": profiling_message, "data": session_data["intelligence_summary"]}
     elif profiling_status == "failed":
-        return {"status": "failed", "error": session_data.get("profiling_error", "Unknown error")}
+        return {
+            "status": "failed",
+            "message": profiling_message,
+            "error": session_data.get("profiling_error", "Unknown error"),
+        }
     else:
-        return {"status": "pending", "message": "Profiling in progress"}
+        return {"status": profiling_status, "message": profiling_message}
 
 
 @app.get("/api/health")
 async def health_check():
-    """Enhanced application health check endpoint with performance monitoring."""
-    health_status = {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    """Basic health check endpoint - returns 200 if app is running"""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/api/ready")
+async def readiness_check():
+    """
+    Readiness check endpoint for K8s/orchestration.
+    Verifies all dependencies are available before accepting traffic.
+    """
+    ready_status = {"status": "ready", "timestamp": datetime.now().isoformat(), "checks": {}}
+    all_ready = True
 
     if DATABASE_AVAILABLE:
         try:
             db_manager = get_database_manager()
             db_health = db_manager.execute_health_check()
-            health_status["database"] = "healthy" if db_health else "degraded"
-        except:
-            health_status["database"] = "unavailable"
+            ready_status["checks"]["database"] = "ready" if db_health else "not_ready"
+            if not db_health:
+                all_ready = False
+        except Exception as e:
+            ready_status["checks"]["database"] = f"not_ready: {str(e)}"
+            all_ready = False
     else:
-        health_status["database"] = "not_configured"
+        ready_status["checks"]["database"] = "not_configured"
 
-    health_status["agent_service"] = "available" if AGENT_AVAILABLE else "unavailable"
+    ready_status["checks"]["agent_service"] = "ready" if AGENT_AVAILABLE else "not_ready"
+    if not AGENT_AVAILABLE:
+        all_ready = False
 
-    # Add performance monitoring status
     if AGENT_AVAILABLE and performance_monitor:
         try:
             cache_stats = performance_monitor.cache.get_stats()
-            health_status["performance_monitoring"] = "active"
-            health_status["cache_utilization"] = f"{cache_stats['size']}/{cache_stats['max_size']}"
-            health_status["active_agent_sessions"] = len(agent_sessions)
-            health_status["thread_pool_workers"] = task_executor._max_workers if task_executor else 0
+            ready_status["checks"]["performance_monitoring"] = "ready"
+            ready_status["cache_utilization"] = f"{cache_stats['size']}/{cache_stats['max_size']}"
+            ready_status["active_agent_sessions"] = len(agent_sessions)
+            ready_status["thread_pool_workers"] = task_executor._max_workers if task_executor else 0
         except:
-            health_status["performance_monitoring"] = "degraded"
+            ready_status["checks"]["performance_monitoring"] = "degraded"
     else:
-        health_status["performance_monitoring"] = "unavailable"
+        ready_status["checks"]["performance_monitoring"] = "not_configured"
 
-    return health_status
+    ready_status["status"] = "ready" if all_ready else "not_ready"
+
+    status_code = 200 if all_ready else 503
+    return JSONResponse(content=ready_status, status_code=status_code)
+
+
+@app.get("/api/checkpoint/health")
+async def checkpoint_health():
+    try:
+        from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
+
+        result = perform_checkpoint_maintenance(force_cleanup=False)
+        status_code = 200 if result.get("status") in ["healthy", "unavailable"] else 503
+
+        return JSONResponse(content=result, status_code=status_code)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/checkpoint/maintenance")
+async def trigger_checkpoint_maintenance():
+    try:
+        from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
+
+        result = perform_checkpoint_maintenance(force_cleanup=True)
+
+        return JSONResponse(content=result, status_code=200)
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.post("/api/checkpoint/cleanup")
+async def cleanup_old_checkpoints_endpoint(retention_days: int = 7):
+    try:
+        from data_scientist_chatbot.app.core.graph_builder import memory, cleanup_old_checkpoints
+
+        if not memory:
+            return JSONResponse(
+                content={"status": "unavailable", "message": "Checkpoint system not available"}, status_code=503
+            )
+
+        deleted = cleanup_old_checkpoints(memory.conn, retention_days)
+
+        return JSONResponse(
+            content={"status": "success", "deleted_checkpoints": deleted, "retention_days": retention_days},
+            status_code=200,
+        )
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 
 if __name__ == "__main__":
