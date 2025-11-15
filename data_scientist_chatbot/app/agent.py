@@ -12,17 +12,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END, MessagesState, add_messages
 from typing_extensions import Annotated
 
-try:
-    from langgraph.checkpoint.sqlite import SqliteSaver
-
-    CHECKPOINTER_AVAILABLE = True
-    db_path = "context.db"
-    memory = SqliteSaver(conn=sqlite3.connect(db_path, check_same_thread=False))
-except ImportError:
-    SqliteSaver = None
-    memory = None
-    CHECKPOINTER_AVAILABLE = False
-
 import sys
 import os
 
@@ -52,7 +41,7 @@ try:
         zip_artifacts,
     )
     from prompts import get_brain_prompt, get_hands_prompt, get_router_prompt, get_status_agent_prompt
-    from utils.context import get_data_context, get_artifacts_context
+    from utils.context import get_data_context
     from utils.sanitizers import sanitize_output
     from utils.format_parser import extract_format_from_request
     from utils.helpers import has_tool_calls
@@ -81,7 +70,7 @@ except ImportError:
             zip_artifacts,
         )
         from .prompts import get_brain_prompt, get_hands_prompt, get_router_prompt, get_status_agent_prompt
-        from .utils.context import get_data_context, get_artifacts_context
+        from .utils.context import get_data_context
         from .utils.sanitizers import sanitize_output
         from .utils.format_parser import extract_format_from_request
         from .utils.helpers import has_tool_calls
@@ -115,9 +104,9 @@ class AgentState(TypedDict):
     retry_count: int
     last_agent_sequence: List[str]
     router_decision: Optional[str]
-    complexity_score: int
-    complexity_reasoning: str
-    route_strategy: str
+    execution_result: Optional[dict]
+    artifacts: List[dict]
+    data_summary: Optional[dict]
 
 
 class HandsSubgraphState(TypedDict):
@@ -128,6 +117,9 @@ class HandsSubgraphState(TypedDict):
     pattern_context: str
     learning_context: str
     retry_count: int
+    execution_result: Optional[dict]
+    artifacts: List[dict]
+    workflow_stage: Optional[str]
 
 
 performance_monitor = PerformanceMonitor()
@@ -187,7 +179,7 @@ def execute_tools_node(state: AgentState) -> dict:
         sanitized_content = sanitize_output(content)
         tool_responses.append(ToolMessage(content=sanitized_content, tool_call_id=tool_id))
 
-    python_executions = state.get("python_executions", 0)
+    python_executions = state.get("python_executions") or 0
     for tool_name in [tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "") for tc in tool_calls]:
         if tool_name == "python_code_interpreter":
             python_executions += 1
@@ -199,7 +191,7 @@ def execute_tools_node(state: AgentState) -> dict:
         "plan": state.get("plan"),
         "scratchpad": state.get("scratchpad", ""),
         "retry_count": 0,  # Reset after successful tool execution
-        "last_agent_sequence": state.get("last_agent_sequence", []) + ["action"],
+        "last_agent_sequence": (state.get("last_agent_sequence") or []) + ["action"],
     }
     print(f"DEBUG execute_tools_node: Python executions count: {python_executions}")
     print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
@@ -221,9 +213,6 @@ def run_router_agent(state: AgentState):
             "messages": state["messages"],
             "router_decision": "brain",
             "current_agent": "router",
-            "complexity_score": 5,
-            "complexity_reasoning": "No user message",
-            "route_strategy": "standard",
         }
 
     session_context = ""
@@ -253,22 +242,6 @@ def run_router_agent(state: AgentState):
         session_context = "Session state: No dataset uploaded yet"
         print(f"DEBUG: Router exception: {e}")
 
-    complexity_assessment = None
-    try:
-        from core.complexity_analyzer import create_complexity_analyzer
-        from core.agent_factory import create_router_agent as get_router_llm
-
-        analyzer = create_complexity_analyzer(get_router_llm())
-        complexity_assessment = analyzer.analyze(
-            user_request=last_user_message.content,
-            session_context={"has_dataset": has_dataset, "artifact_count": artifact_count},
-        )
-        print(
-            f"DEBUG: Complexity - Score: {complexity_assessment.score}, Strategy: {complexity_assessment.route_strategy}"
-        )
-    except Exception as e:
-        print(f"DEBUG: Complexity analysis failed: {e}")
-
     print(f"DEBUG: Router context: {session_context}")
     print(f"DEBUG: Router analyzing message: {str(last_user_message.content)[:100]}...")
 
@@ -290,19 +263,11 @@ def run_router_agent(state: AgentState):
                 "messages": state["messages"],
                 "router_decision": "brain",
                 "current_agent": "router",
-                "complexity_score": complexity_assessment.score if complexity_assessment else 5,
-                "complexity_reasoning": complexity_assessment.reasoning if complexity_assessment else "Default",
-                "route_strategy": complexity_assessment.route_strategy if complexity_assessment else "standard",
             }
 
         json_str = json_match.group(0)
         router_data = json.loads(json_str)
         decision = router_data.get("routing_decision", "brain")
-
-        if complexity_assessment and complexity_assessment.route_strategy == "direct" and decision == "hands":
-            print(f"DEBUG: Enforcing complexity-based routing: direct → hands (no brain summary)")
-        elif complexity_assessment and complexity_assessment.route_strategy == "collaborative" and decision == "brain":
-            print(f"DEBUG: Complexity-based routing: collaborative strategy approved for brain")
 
         print(f"DEBUG: Router decision: {decision}")
 
@@ -310,9 +275,6 @@ def run_router_agent(state: AgentState):
             "messages": state["messages"],
             "router_decision": decision,
             "current_agent": "router",
-            "complexity_score": complexity_assessment.score if complexity_assessment else 5,
-            "complexity_reasoning": complexity_assessment.reasoning if complexity_assessment else "Standard task",
-            "route_strategy": complexity_assessment.route_strategy if complexity_assessment else "standard",
         }
         return result_state
 
@@ -324,13 +286,12 @@ def run_router_agent(state: AgentState):
             "messages": state["messages"],
             "router_decision": "brain",
             "current_agent": "router",
-            "complexity_score": 5,
-            "complexity_reasoning": "Error in routing",
-            "route_strategy": "standard",
         }
 
 
 def run_brain_agent(state: AgentState):
+    from core.workflow_types import ExecutionResult, Artifact, WorkflowStage
+
     session_id = state.get("session_id")
     enhanced_state = state.copy()
 
@@ -344,19 +305,24 @@ def run_brain_agent(state: AgentState):
         enhanced_state["business_context"] = {}
     if "retry_count" not in enhanced_state:
         enhanced_state["retry_count"] = 0
-    if "last_agent_sequence" not in enhanced_state:
+    if "last_agent_sequence" not in enhanced_state or enhanced_state["last_agent_sequence"] is None:
         enhanced_state["last_agent_sequence"] = []
 
-    last_sequence = enhanced_state.get("last_agent_sequence", [])
+    last_sequence = enhanced_state.get("last_agent_sequence") or []
     enhanced_state["last_agent_sequence"] = last_sequence + ["brain"]
 
+    execution_result_dict = state.get("execution_result")
+    execution_result = ExecutionResult(**execution_result_dict) if execution_result_dict else None
+
+    artifacts_dicts = state.get("artifacts") or []
+    artifacts = [Artifact(**a) for a in artifacts_dicts] if artifacts_dicts else []
+
+    logger.info(
+        f"Brain agent: execution_result={'present' if execution_result else 'none'}, artifacts={len(artifacts)}"
+    )
+
     recent_tool_result = None
-    messages = enhanced_state.get("messages", [])
-    print(f"DEBUG: Brain received {len(messages)} total messages in state")
-    for i, msg in enumerate(messages):
-        if hasattr(msg, "type"):
-            content_preview = str(msg.content)[:80] if hasattr(msg, "content") else "no content"
-            print(f"DEBUG: Message {i}: type={msg.type}, content={content_preview}")
+    messages = enhanced_state.get("messages") or []
     if messages:
         for i in range(len(messages) - 1, max(-1, len(messages) - 3), -1):
             msg = messages[i]
@@ -371,11 +337,7 @@ def run_brain_agent(state: AgentState):
                         recent_tool_result = f"Created visualization: {plot_match.group(1)}"
                         break
 
-    logger.debug(f"Brain agent - recent tool result found: {recent_tool_result is not None}")
     data_context = get_data_context(session_id)
-    artifacts_context = get_artifacts_context(session_id)
-    logger.debug(f"Brain data context length: {len(data_context) if data_context else 0} chars")
-    logger.debug(f"Brain artifacts context length: {len(artifacts_context) if artifacts_context else 0} chars")
 
     # Extract recent conversation history to prevent inappropriate tool usage
     conversation_history = ""
@@ -391,24 +353,77 @@ def run_brain_agent(state: AgentState):
     if history_parts:
         conversation_history = " | ".join(history_parts)
 
-    # Build context and role for template variables
+    artifact_context = ""
+    if execution_result and execution_result.success and artifacts:
+        viz_artifacts = [a for a in artifacts if a.category == "visualization"]
+        model_artifacts = [a for a in artifacts if a.category == "model"]
+        dataset_artifacts = [a for a in artifacts if a.category == "dataset"]
+
+        artifact_lines = []
+
+        if viz_artifacts:
+            artifact_lines.append(f"📊 Visualizations ({len(viz_artifacts)}):")
+            for artifact in viz_artifacts[:15]:
+                url = artifact.presigned_url or artifact.cloud_url or artifact.local_path
+                artifact_id = (
+                    artifact.artifact_id
+                    if hasattr(artifact, "artifact_id") and artifact.artifact_id
+                    else artifact.filename
+                )
+                display_name = artifact.filename.replace("_", " ").replace(".png", "")
+                artifact_lines.append(f"  • {artifact.filename} (ID: {artifact_id})")
+                artifact_lines.append(f"    Path: {url}")
+                logger.info(f"Artifact [{artifact.filename}] - ID:{artifact_id}, Path:{url}")
+            if len(viz_artifacts) > 15:
+                artifact_lines.append(f"  ... and {len(viz_artifacts) - 15} more")
+
+        if model_artifacts:
+            artifact_lines.append(f"\n💾 Models ({len(model_artifacts)}):")
+            for artifact in model_artifacts[:5]:
+                url = artifact.presigned_url or artifact.cloud_url or artifact.local_path
+                artifact_id = artifact.artifact_id if hasattr(artifact, "artifact_id") else artifact.filename
+                artifact_lines.append(f"  • {artifact.filename} (ID: {artifact_id})")
+                artifact_lines.append(f"    Path: {url}")
+            if len(model_artifacts) > 5:
+                artifact_lines.append(f"  ... and {len(model_artifacts) - 5} more")
+
+        if dataset_artifacts:
+            artifact_lines.append(f"\n📁 Datasets ({len(dataset_artifacts)}):")
+            for artifact in dataset_artifacts[:5]:
+                url = artifact.presigned_url or artifact.cloud_url or artifact.local_path
+                artifact_id = artifact.artifact_id if hasattr(artifact, "artifact_id") else artifact.filename
+                artifact_lines.append(f"  • {artifact.filename} (ID: {artifact_id})")
+                artifact_lines.append(f"    Path: {url}")
+            if len(dataset_artifacts) > 5:
+                artifact_lines.append(f"  ... and {len(dataset_artifacts) - 5} more")
+
+        total_artifacts = len(viz_artifacts) + len(model_artifacts) + len(dataset_artifacts)
+        artifact_context = f"""
+Note: The following is reference material for your use. Use the Path values to embed visualizations in your response, but do not repeat this listing.
+
+AVAILABLE ARTIFACTS ({total_artifacts} total):
+{chr(10).join(artifact_lines)}
+
+To embed images: use ![description](Path)
+To zip artifacts: use zip_artifacts tool with the ID values"""
+        logger.info(f"Artifact context integrated into system prompt ({len(artifact_context)} chars)")
+        logger.info(f"[ARTIFACT CONTEXT DEBUG]:\n{artifact_context}")
+
     context = ""
     if data_context and data_context.strip():
         context = f"Working with data: {data_context}"
     else:
         context = "Ready to help analyze data. Need dataset upload first."
 
-    if artifacts_context and artifacts_context.strip():
-        context += f"\n\n{artifacts_context}"
-
     if conversation_history and conversation_history.strip():
         context += f" | Recent: {conversation_history}"
 
+    if artifact_context:
+        context += f"\n\n{artifact_context}"
+
     role = "business consultant" if recent_tool_result is not None else "data consultant"
 
-    messages = enhanced_state.get("messages", [])
-    if messages is None:
-        messages = []
+    messages = enhanced_state.get("messages") or []
 
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -443,6 +458,13 @@ def run_brain_agent(state: AgentState):
     enhanced_state_with_context["context"] = context
     enhanced_state_with_context["role"] = role
 
+    logger.info(f"[FULL CONTEXT DEBUG - length={len(context)}]:\n{context}")
+    logger.info(f"Brain will receive {len(filtered_messages)} messages")
+    for idx, msg in enumerate(filtered_messages):
+        msg_type = getattr(msg, "type", "unknown")
+        content_preview = str(getattr(msg, "content", ""))[:100]
+        logger.debug(f"  Message {idx}: type={msg_type}, content_preview={content_preview}")
+
     llm = create_brain_agent()
     brain_tools = [delegate_coding_task, knowledge_graph_query, access_learning_data, web_search, zip_artifacts]
 
@@ -456,19 +478,29 @@ def run_brain_agent(state: AgentState):
     agent_runnable = prompt | llm_with_tools
 
     try:
-        original_count = len(enhanced_state.get("messages", []))
-        filtered_count = len(filtered_messages)
-        print(f"DEBUG: Brain agent filtered messages: {original_count} -> {filtered_count}")
         response = agent_runnable.invoke(enhanced_state_with_context)
-        print(f"DEBUG: Brain agent response type: {type(response)}")
-        if has_tool_calls(response):
-            print(f"DEBUG: Brain agent tool calls: {[tc.get('name') for tc in response.tool_calls]}")
+
+        logger.info(
+            f"[BRAIN RAW RESPONSE - length={len(response.content if hasattr(response, 'content') else 'no content')}]:\n{response.content if hasattr(response, 'content') else response}"
+        )
+
+        if hasattr(response, "content"):
+            if execution_result and not execution_result.success:
+                response.content = f"I encountered an issue while executing the code:\n\n{execution_result.error_details}\n\nWould you like me to try a different approach?"
+            elif not response.content or response.content == "":
+                response.content = (
+                    "I've received your request but couldn't generate a detailed response. Please try rephrasing."
+                )
+
+        has_tools = hasattr(response, "tool_calls") and response.tool_calls
+        workflow_stage = WorkflowStage.IN_PROGRESS.value if has_tools else WorkflowStage.COMPLETED.value
 
         result_state = {
             "messages": [response],
             "current_agent": "brain",
             "last_agent_sequence": enhanced_state["last_agent_sequence"],
             "retry_count": enhanced_state["retry_count"],
+            "workflow_stage": workflow_stage,
         }
 
         try:
@@ -503,11 +535,11 @@ def run_hands_agent(state: AgentState):
 
     # Track hands agent execution
     enhanced_state = state.copy()
-    last_sequence = enhanced_state.get("last_agent_sequence", [])
+    last_sequence = enhanced_state.get("last_agent_sequence") or []
     enhanced_state["last_agent_sequence"] = last_sequence + ["hands"]
 
     # Check for loop prevention
-    retry_count = enhanced_state.get("retry_count", 0)
+    retry_count = enhanced_state.get("retry_count") or 0
     if last_sequence and len(last_sequence) >= 4:
         recent_sequence = last_sequence[-4:]
         if recent_sequence == ["brain", "hands", "brain", "hands"]:
@@ -520,12 +552,10 @@ def run_hands_agent(state: AgentState):
 
     # Check if this is a delegation from brain or direct routing from router
     current_agent = enhanced_state.get("current_agent", "")
-    previous_agent = (
-        enhanced_state.get("last_agent_sequence", [])[-1] if enhanced_state.get("last_agent_sequence") else ""
-    )
+    last_agent_seq = enhanced_state.get("last_agent_sequence") or []
+    previous_agent = last_agent_seq[-1] if last_agent_seq else ""
 
     if previous_agent == "router":
-        # Direct routing from router - use original user message
         user_messages = [msg for msg in state["messages"] if hasattr(msg, "type") and msg.type == "human"]
         if user_messages:
             task_description = user_messages[-1].content
@@ -537,11 +567,7 @@ def run_hands_agent(state: AgentState):
             task_description = tool_call.get("args", {}).get("task_description", task_description)
             print(f"DEBUG: Brain delegation task: {task_description}")
 
-    # Get dataset and artifacts context for Hands agent
     data_context = get_data_context(session_id)
-    artifacts_context = get_artifacts_context(session_id)
-    logger.debug(f"Data context length: {len(data_context) if data_context else 0} chars")
-    logger.debug(f"Artifacts context length: {len(artifacts_context) if artifacts_context else 0} chars")
     logger.debug(f"Hands agent starting with session_id: {session_id}")
 
     # Check if task_description was already set by Brain delegation
@@ -655,8 +681,6 @@ def run_hands_agent(state: AgentState):
         enhanced_data_context = f"{data_context}\n{environment_context}"
     if format_context:
         enhanced_data_context = f"{enhanced_data_context}{format_context}"
-    if artifacts_context:
-        enhanced_data_context = f"{enhanced_data_context}\n\n{artifacts_context}"
 
     # Store execution environment decision in session for later use
     if is_training_task:
@@ -677,17 +701,22 @@ def run_hands_agent(state: AgentState):
     subgraph_state = {
         "messages": [("human", task_description)],
         "session_id": session_id,
-        "python_executions": state.get("python_executions", 0),
+        "python_executions": state.get("python_executions") or 0,
         "data_context": enhanced_data_context,
         "pattern_context": "",
         "learning_context": "",
-        "retry_count": state.get("retry_count", 0),
+        "retry_count": state.get("retry_count") or 0,
     }
 
     # Execute hands subgraph to isolate execution
     try:
         hands_subgraph = create_hands_subgraph()
         result = hands_subgraph.invoke(subgraph_state)
+
+        print(f"DEBUG: Subgraph result keys: {result.keys() if result else 'None'}")
+        print(f"DEBUG: execution_result present: {bool(result.get('execution_result'))}")
+        print(f"DEBUG: artifacts count: {len(result.get('artifacts', []))}")
+
         if result and "messages" in result and result["messages"]:
             final_message = result["messages"][-1]
             if hasattr(final_message, "content"):
@@ -698,9 +727,8 @@ def run_hands_agent(state: AgentState):
             summary_content = "Task completed but no result returned."
         print(f"DEBUG: Hands summary content: {summary_content[:20] if summary_content else 'None'}...")
 
-        complexity_score = state.get("complexity_score", 5)
-
-        last_message = state.get("messages", [])[-1] if state.get("messages") else None
+        state_messages = state.get("messages") or []
+        last_message = state_messages[-1] if state_messages else None
         is_delegation = (
             last_message
             and has_tool_calls(last_message)
@@ -710,17 +738,17 @@ def run_hands_agent(state: AgentState):
         if is_delegation:
             tool_call_id = last_message.tool_calls[0].get("id", "unknown")
             summary_response = ToolMessage(content=summary_content, tool_call_id=tool_call_id)
-        elif complexity_score <= 3:
-            print(f"DEBUG: Simple task (complexity={complexity_score}), skipping Brain summary")
-            summary_response = AIMessage(content=summary_content)
         else:
             summary_response = AIMessage(content=summary_content)
 
         result_state = {
             "messages": [summary_response],
             "current_agent": "hands",
-            "last_agent_sequence": enhanced_state.get("last_agent_sequence", []),
-            "retry_count": enhanced_state.get("retry_count", 0),
+            "last_agent_sequence": enhanced_state.get("last_agent_sequence") or [],
+            "retry_count": enhanced_state.get("retry_count") or 0,
+            "execution_result": result.get("execution_result"),
+            "artifacts": result.get("artifacts", []),
+            "workflow_stage": result.get("workflow_stage"),
         }
         return result_state
 
@@ -787,6 +815,6 @@ async def warmup_models_parallel():
 
     try:
         await asyncio.gather(warmup_brain(), warmup_hands(), warmup_router(), warmup_status())
-        print("🚀 All models warmed in parallel")
+        print("All models warmed in parallel")
     except Exception as e:
-        print(f"⚠️ Parallel warmup error: {e}")
+        print(f"WARNING: Parallel warmup error: {e}")
