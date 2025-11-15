@@ -1,5 +1,6 @@
 import json
 import asyncio
+import logging
 import re
 from datetime import datetime
 from typing import Dict, Any, AsyncGenerator
@@ -13,21 +14,12 @@ def format_agent_output(content: str) -> str:
     if not content or not isinstance(content, str):
         return content
 
-    print(f"DEBUG FORMAT: Input length={len(content)}, first 100 chars: {content[:100]}")
-
-    # Try markdown table first (LLM agents often use this)
-    md_table_result = _try_format_markdown_table(content)
-    if md_table_result:
-        print(f"DEBUG FORMAT: Markdown table detected")
-        return md_table_result[0]
-
     # Try pandas DataFrame
     df_result = _try_format_dataframe(content)
     if df_result:
-        print(f"DEBUG FORMAT: DataFrame detected, formatted length={len(df_result[0])}")
         return df_result[0]
 
-    # Try other formats
+    # Try other formats (skip markdown table - let frontend handle it)
     json_result = _try_format_json(content)
     if json_result:
         return json_result[0]
@@ -44,7 +36,6 @@ def format_agent_output(content: str) -> str:
     if stats_result:
         return stats_result[0]
 
-    print(f"DEBUG FORMAT: No formatter matched, returning original")
     return content
 
 
@@ -311,27 +302,61 @@ def _try_format_statistics(text: str):
 
 
 async def stream_agent_chat(
-    message: str, session_id: str, agent, session_store: Dict[str, Any], status_agent_runnable=None
+    message: str, session_id: str, agent, session_store: Dict[str, Any], status_agent_runnable=None, session_agents=None
 ) -> AsyncGenerator[str, None]:
+    from .message_storage import save_message
+
+    save_message(session_id, "human", message)
+
     try:
         if hasattr(agent, "stream_events"):
-            async for event_data in _stream_with_events(message, session_id, agent, status_agent_runnable):
-                yield event_data
+            try:
+                async for event_data in _stream_with_events(message, session_id, agent, status_agent_runnable):
+                    yield event_data
+            except KeyError as ke:
+                if "__start__" in str(ke):
+                    logging.warning(f"Checkpoint error for session {session_id}: {ke}")
+
+                    from .session_management import clean_checkpointer_state
+
+                    cleaned = clean_checkpointer_state(session_id, "checkpoint_error")
+
+                    if cleaned:
+                        logging.info(f"Checkpoint cleaned, recreating agent with fresh state for session {session_id}")
+
+                        from data_scientist_chatbot.app.core.graph_builder import create_enhanced_agent_executor
+
+                        agent = create_enhanced_agent_executor(session_id)
+
+                        if session_agents is not None and session_id in session_agents:
+                            session_agents[session_id] = agent
+                            logging.info(f"Agent cache updated for session {session_id}")
+                    else:
+                        logging.warning(f"Checkpoint cleanup failed, proceeding anyway for session {session_id}")
+
+                    async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
+                        yield event_data
+                else:
+                    raise
         else:
             async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
                 yield event_data
 
     except Exception as e:
-        print(f"DEBUG: Streaming error: {e}")
+        logging.error(f"Streaming error for session {session_id}: {e}")
         yield f"data: {json.dumps({'type': 'error', 'message': f'Streaming error: {str(e)}'})}\n\n"
 
 
 async def _stream_with_events(message: str, session_id: str, agent, status_agent_runnable) -> AsyncGenerator[str, None]:
-    yield f"data: {json.dumps({'type': 'status', 'message': '🔄 Starting analysis...'})}\n\n"
+    yield f"data: {json.dumps({'type': 'status', 'message': 'Starting analysis...'})}\n\n"
     await asyncio.sleep(0.01)
 
     config = {"configurable": {"thread_id": session_id}}
     input_data = create_agent_input(message, session_id)
+
+    logging.info(f"[STREAM_EVENTS] Starting for session {session_id}")
+    logging.info(f"[STREAM_EVENTS] Agent type: {type(agent)}")
+    logging.info(f"[STREAM_EVENTS] Config: {config}")
 
     plots = []
     final_response = None
@@ -347,65 +372,94 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
         "session_id": session_id,
     }
 
-    for event in agent.stream_events(input_data, config=config, version="v2"):
-        event_name = event.get("event")
-        event_data = event.get("data", {})
+    try:
+        logging.info(f"[STREAM_EVENTS] Calling agent.stream_events...")
+        for event in agent.stream_events(input_data, config=config, version="v2"):
+            from .cancellation import is_task_cancelled
 
-        if event_name == "on_chain_start":
-            current_node = event.get("name", "")
-            workflow_context["current_agent"] = current_node
-            workflow_context["current_action"] = "starting"
+            if is_task_cancelled(session_id):
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Task cancelled by user'})}\n\n"
+                break
 
-            if status_agent_runnable:
-                status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                if status_msg:
-                    yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
+            event_name = event.get("event")
+            event_data = event.get("data", {})
 
-        elif event_name == "on_chat_model_stream":
-            if event_data.get("chunk"):
-                chunk_content = str(event_data["chunk"].content)
-                workflow_context["execution_progress"][current_node] = chunk_content[:100]
+            if event_name == "on_chain_start":
+                current_node = event.get("name", "")
+                workflow_context["current_agent"] = current_node
+                workflow_context["current_action"] = "starting"
 
-        elif event_name == "on_tool_start":
-            tool_name = event.get("name", "")
-            workflow_context["tool_calls"].append({"tool": tool_name, "status": "starting"})
-            workflow_context["current_action"] = f"executing {tool_name}"
+                if status_agent_runnable:
+                    status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
+                    if status_msg:
+                        yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
 
-            if status_agent_runnable:
-                status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                if status_msg:
-                    yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-                    await asyncio.sleep(0.1)
+            elif event_name == "on_chat_model_stream":
+                if event_data.get("chunk"):
+                    chunk_content = str(event_data["chunk"].content)
+                    workflow_context["execution_progress"][current_node] = chunk_content[:100]
 
-        elif event_name == "on_tool_end":
-            tool_name = event.get("name", "")
-            tool_output = event_data.get("output", "")
+            elif event_name == "on_tool_start":
+                tool_name = event.get("name", "")
+                workflow_context["tool_calls"].append({"tool": tool_name, "status": "starting"})
+                workflow_context["current_action"] = f"executing {tool_name}"
 
-            for tool_info in workflow_context["tool_calls"]:
-                if tool_info["tool"] == tool_name and tool_info["status"] == "starting":
-                    tool_info["status"] = "completed"
-                    break
+                if status_agent_runnable:
+                    status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
+                    if status_msg:
+                        yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
+                        await asyncio.sleep(0.1)
 
-            workflow_context["current_action"] = f"completed {tool_name}"
+            elif event_name == "on_tool_end":
+                tool_name = event.get("name", "")
+                tool_output = event_data.get("output", "")
 
-            if status_agent_runnable:
-                status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                if status_msg:
-                    yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-                    await asyncio.sleep(0.1)
+                for tool_info in workflow_context["tool_calls"]:
+                    if tool_info["tool"] == tool_name and tool_info["status"] == "starting":
+                        tool_info["status"] = "completed"
+                        break
 
-            if tool_name == "python_code_interpreter" and "PLOT_SAVED:" in str(tool_output):
-                import re
+                workflow_context["current_action"] = f"completed {tool_name}"
 
-                plot_files = re.findall(r"PLOT_SAVED:([^\s]+\.png)", str(tool_output))
-                for plot_file in plot_files:
-                    plots.append(f"/static/plots/{plot_file}")
-                yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization created successfully!'})}\n\n"
-                await asyncio.sleep(0.2)
+                if status_agent_runnable:
+                    status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
+                    if status_msg:
+                        yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
+                        await asyncio.sleep(0.1)
 
-        elif event_name == "on_chain_end" and event.get("name") == "__start__":
-            final_response = event_data.get("output")
-            break
+                if tool_name == "python_code_interpreter" and "PLOT_SAVED:" in str(tool_output):
+                    import re
+
+                    plot_files = re.findall(r"PLOT_SAVED:([^\s]+\.png)", str(tool_output))
+                    for plot_file in plot_files:
+                        plots.append(f"/static/plots/{plot_file}")
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization created successfully!'})}\n\n"
+                    await asyncio.sleep(0.2)
+
+            elif event_name == "on_chain_end" and event.get("name") == "__start__":
+                final_response = event_data.get("output")
+                break
+
+    except KeyError as ke:
+        logging.error(f"[STREAM_EVENTS] KeyError occurred: {ke}")
+        logging.error(f"[STREAM_EVENTS] Error type: {type(ke)}")
+        import traceback
+
+        logging.error(f"[STREAM_EVENTS] Traceback:\n{traceback.format_exc()}")
+        raise
+    except Exception as e:
+        logging.error(f"[STREAM_EVENTS] Unexpected error: {e}")
+        import traceback
+
+        logging.error(f"[STREAM_EVENTS] Traceback:\n{traceback.format_exc()}")
+        raise
+
+    from .cancellation import is_task_cancelled, clear_cancellation
+
+    if is_task_cancelled(session_id):
+        clear_cancellation(session_id)
+        yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Task cancelled by user'})}\n\n"
+        return
 
     if final_response and final_response.get("messages"):
         final_message = final_response["messages"][-1]
@@ -415,13 +469,52 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
 
     content = format_agent_output(content)
 
+    from src.api import session_store as api_session_store
+
+    token_streaming = api_session_store.get(session_id, {}).get("token_streaming", True)
+
+    if token_streaming:
+        yield f"data: {json.dumps({'type': 'start_tokens'})}\n\n"
+
+        async for token_event in _stream_brain_tokens(content, session_id):
+            yield token_event
+
+        yield f"data: {json.dumps({'type': 'end_tokens'})}\n\n"
+
+    from .message_storage import save_message
+
+    metadata = {"plots": plots} if plots else None
+    save_message(session_id, "ai", content, metadata=metadata)
+
+    clear_cancellation(session_id)
+
     yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots})}\n\n"
+
+
+async def _stream_brain_tokens(content: str, session_id: str) -> AsyncGenerator[str, None]:
+    """
+    Stream content token-by-token for ChatGPT-like experience.
+    Speed: 100 tokens/sec (10ms delay) - faster than ChatGPT's 50 tokens/sec
+    """
+    import os
+
+    token_delay = float(os.getenv("TOKEN_STREAM_DELAY", "0.01"))
+
+    words = content.split()
+    for word in words:
+        from .cancellation import is_task_cancelled
+
+        if is_task_cancelled(session_id):
+            break
+
+        yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
+        await asyncio.sleep(token_delay)
 
 
 async def _stream_fallback(message: str, session_id: str, agent, status_agent_runnable) -> AsyncGenerator[str, None]:
     from langchain_core.messages import HumanMessage
 
-    yield f"data: {json.dumps({'type': 'status', 'message': '🔄 Initializing agent...'})}\n\n"
+    yield f"data: {json.dumps({'type': 'status', 'message': 'Initializing agent...'})}\n\n"
     await asyncio.sleep(0.01)
 
     config = {"configurable": {"thread_id": session_id}}
@@ -430,13 +523,18 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
     final_brain_response = None
     action_outputs = []
 
+    logging.info(f"[FALLBACK] Starting for session {session_id}")
+    logging.info(f"[FALLBACK] Agent type: {type(agent)}")
+    logging.info(f"[FALLBACK] Config: {config}")
+
     original_user_message = HumanMessage(content=message)
     current_state = {"messages": [original_user_message], "session_id": session_id}
 
     try:
+        logging.info(f"[FALLBACK] Calling agent.stream...")
         for event in agent.stream(create_agent_input(message, session_id), config=config):
             for node_name, node_data in event.items():
-                if node_name in ["brain", "hands", "parser", "action"]:
+                if node_name in ["router", "brain", "hands", "parser", "action"]:
                     messages = node_data.get("messages", []) if node_data else []
                     if messages and isinstance(messages, list):
                         all_messages.extend(messages)
@@ -470,16 +568,54 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
 
             final_response = {"messages": all_messages}
 
+    except KeyError as ke:
+        logging.error(f"[FALLBACK] KeyError occurred: {ke}")
+        import traceback
+
+        logging.error(f"[FALLBACK] Traceback:\n{traceback.format_exc()}")
+
+        if "__start__" in str(ke):
+            logging.error(f"[FALLBACK] Checkpoint still broken after cleanup for {session_id}: {ke}")
+
+            try:
+                from data_scientist_chatbot.app.core.graph_builder import memory
+
+                if memory:
+                    state = memory.conn.execute(
+                        "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (session_id,)
+                    ).fetchone()
+                    writes = memory.conn.execute(
+                        "SELECT COUNT(*) FROM writes WHERE thread_id = ?", (session_id,)
+                    ).fetchone()
+                    logging.error(f"[FALLBACK] Checkpoint state - checkpoints: {state[0]}, writes: {writes[0]}")
+            except:
+                pass
+
+            raise
+        else:
+            raise
     except Exception as stream_error:
-        print(f"Streaming execution failed: {stream_error}")
-        final_response = agent.invoke(create_agent_input(message, session_id), config=config)
+        logging.error(f"[FALLBACK] Stream failed for {session_id}: {stream_error}")
+        import traceback
+
+        logging.error(f"[FALLBACK] Traceback:\n{traceback.format_exc()}")
+
+        try:
+            logging.info(f"[FALLBACK] Attempting agent.invoke as last resort...")
+            final_response = agent.invoke(create_agent_input(message, session_id), config=config)
+        except Exception as invoke_error:
+            logging.error(f"[FALLBACK] Invoke also failed for {session_id}: {invoke_error}")
+            import traceback
+
+            logging.error(f"[FALLBACK] Invoke traceback:\n{traceback.format_exc()}")
+            raise
 
     response = final_response if final_response else {}
     messages = response.get("messages", []) if response else []
     _, plots = extract_agent_response(messages, recent_count=3)
 
     if plots:
-        yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization generated!'})}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization generated!'})}\n\n"
         await asyncio.sleep(0.3)
 
     content_parts = []
@@ -501,6 +637,11 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
     content = "\n\n".join(content_parts) if content_parts else "Task completed successfully."
     final_json = {"type": "final_response", "response": content, "plots": plots}
 
+    from .message_storage import save_message
+
+    metadata = {"plots": plots} if plots else None
+    save_message(session_id, "ai", content, metadata=metadata)
+
     yield f"data: {json.dumps(final_json)}\n\n"
 
 
@@ -516,8 +657,14 @@ async def _generate_status(status_agent_runnable, workflow_context, event, curre
         )
         status_response = await asyncio.wait_for(status_agent_runnable.ainvoke(status_formatted), timeout=10.0)
         return status_response.content.strip()
+    except asyncio.TimeoutError:
+        print(f"ERROR: Status agent timeout for node={current_node}")
+        return None
     except Exception as e:
-        print(f"DEBUG: Status generation failed: {type(e).__name__}: {str(e)}")
+        print(f"ERROR: Status generation failed for node={current_node}: {type(e).__name__}: {str(e)}")
+        import traceback
+
+        print(traceback.format_exc())
         return None
 
 
@@ -543,6 +690,12 @@ async def _generate_fallback_status(status_agent_runnable, message, node_name, s
         )
         status_response = await asyncio.wait_for(status_agent_runnable.ainvoke(status_formatted), timeout=10.0)
         return status_response.content.strip() if hasattr(status_response, "content") else str(status_response).strip()
+    except asyncio.TimeoutError:
+        print(f"ERROR: Fallback status agent timeout for node={node_name}")
+        return None
     except Exception as e:
-        print(f"DEBUG: Fallback status agent failed: {type(e).__name__}: {str(e)}")
+        print(f"ERROR: Fallback status agent failed for node={node_name}: {type(e).__name__}: {str(e)}")
+        import traceback
+
+        print(traceback.format_exc())
         return None
