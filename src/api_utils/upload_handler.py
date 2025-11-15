@@ -54,16 +54,23 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
         }
 
         import builtins
+        from .session_persistence import session_data_store
 
-        builtins._session_store[session_id] = {"dataframe": df, "data_profile": data_profile, "filename": filename}
+        session_data = {"dataframe": df, "data_profile": data_profile, "filename": filename}
+        builtins._session_store[session_id] = session_data
+
+        session_data_store.save_session_data(session_id, session_data)
 
         store_in_knowledge_graph(session_id, filename, df, data_profile)
 
     except Exception as e:
         logging.warning(f"Failed to generate dataset profile: {e}")
         import builtins
+        from .session_persistence import session_data_store
 
-        builtins._session_store[session_id] = {"dataframe": df}
+        session_data = {"dataframe": df}
+        builtins._session_store[session_id] = session_data
+        session_data_store.save_session_data(session_id, session_data)
 
 
 def store_in_knowledge_graph(session_id: str, filename: str, df: pd.DataFrame, data_profile) -> None:
@@ -130,12 +137,11 @@ print("Dataset saved as dataset.csv, data.csv, and ds.csv")
             execute_python_in_sandbox(save_code, session_id)
         else:
             error_msg = load_result.get("stderr", "Unknown error")
-            response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {error_msg}"
-            response_data["agent_session_id"] = session_id
+            raise Exception(f"Failed to load dataset into sandbox: {error_msg}")
 
     except Exception as agent_e:
-        logging.warning(f"Agent data loading failed: {agent_e}")
-        response_data["agent_analysis"] = None
+        logging.error(f"Agent data loading failed: {agent_e}")
+        raise
 
 
 def validate_file_upload(file_content: BinaryIO, filename: str) -> bool:
@@ -180,7 +186,6 @@ def handle_upload(df: pd.DataFrame, session_id: str, filename: str = "dataset.cs
         "column_names": df.columns.tolist(),
     }
 
-    enhance_with_agent_profile(df, session_id, filename, response_data)
     load_data_to_agent_sandbox(df, session_id, {}, lambda sid: None, response_data)
 
     return response_data
