@@ -57,8 +57,14 @@ knowledge_graph:
 
 object_storage:
   enabled: true
-  provider: "azure"  # Options: "azure", "s3", "gcs", "minio"
-  container_name: "datainsight-models"
-  cache_dir: "data/model_cache"
+  provider: "r2"  # Cloudflare R2 (S3-compatible)
+  bucket_name: "datainsight-artifacts"  # Single bucket for all artifacts
+  folders:
+    models: "models"
+    plots: "plots"
+    datasets: "datasets"
+  cache_dir: "data/artifact_cache"
   cache_max_size_mb: 500
   presigned_url_expiry_hours: 24
+  upload_to_cloud: true
+  keep_local_copy: true
