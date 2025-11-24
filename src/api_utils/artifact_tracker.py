@@ -126,6 +126,9 @@ class ArtifactTracker:
         file_path: str,
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        blob_path: Optional[str] = None,
+        blob_url: Optional[str] = None,
+        presigned_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         if session_id not in self.session_artifacts:
             self.session_artifacts[session_id] = {"artifacts": [], "created_at": datetime.now().isoformat()}
@@ -154,6 +157,9 @@ class ArtifactTracker:
             "last_updated": datetime.now().isoformat(),
             "metadata": metadata or {},
             "file_hash": file_hash,
+            "blob_path": blob_path,
+            "blob_url": blob_url,
+            "presigned_url": presigned_url,
         }
 
         self.session_artifacts[session_id]["artifacts"].append(artifact)

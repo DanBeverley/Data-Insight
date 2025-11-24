@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from contextlib import asynccontextmanager, contextmanager
 import pandas as pd
 import joblib
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -75,7 +76,7 @@ from .api_utils.models import (
 from .api_utils.upload_handler import enhance_with_agent_profile, load_data_to_agent_sandbox
 from .api_utils.artifact_handler import handle_artifact_download
 from .api_utils.streaming_service import stream_agent_chat
-from .routers import data_router, session_router, auth_router
+from .routers import data_router, session_router, auth_router, hierarchical_upload_router, report_router
 
 try:
     from .database.service import get_database_service
@@ -120,7 +121,37 @@ elif SENTRY_DSN and not SENTRY_AVAILABLE:
 else:
     print("INFO: Sentry monitoring disabled (no SENTRY_DSN configured)")
 
-app = FastAPI(title="DnA", description="", version="2.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if CHAT_AVAILABLE:
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+            from data_scientist_chatbot.app.core.graph_builder import (
+                set_checkpointer,
+                DB_PATH,
+                perform_checkpoint_maintenance,
+            )
+
+            async with AsyncSqliteSaver.from_conn_string(DB_PATH) as checkpointer:
+                set_checkpointer(checkpointer)
+                logging.info("AsyncSqliteSaver initialized successfully")
+
+                result = await perform_checkpoint_maintenance(force_cleanup=False)
+                if result.get("status") == "healthy":
+                    logging.info(f"Checkpoint system healthy: {result.get('stats', {})}")
+                elif result.get("status") == "degraded":
+                    logging.warning(f"Checkpoint system degraded, auto-cleaned: {result.get('operations', [])}")
+
+                yield
+        except Exception as e:
+            logging.warning(f"Checkpointer initialization failed: {e}")
+            yield
+    else:
+        yield
+
+
+app = FastAPI(title="DnA", description="", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -158,25 +189,25 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Database initialization skipped: {e}")
 
-    try:
-        from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
-
-        logger.info("Validating checkpoint system...")
-        result = perform_checkpoint_maintenance(force_cleanup=False)
-
-        if result.get("status") == "healthy":
-            logger.info(f"Checkpoint system healthy: {result.get('stats', {})}")
-        elif result.get("status") == "degraded":
-            logger.warning(f"Checkpoint system degraded, auto-cleaned: {result.get('operations', [])}")
-        elif result.get("status") == "unavailable":
-            logger.info("Checkpoint system not configured")
-        else:
-            logger.error(f"Checkpoint system error: {result.get('message', 'Unknown error')}")
-    except Exception as e:
-        logger.warning(f"Checkpoint validation skipped: {e}")
-
 
 logger = logging.getLogger(__name__)
+
+
+# Context manager to suppress profiling logs during background execution
+@contextmanager
+def suppress_profiling_logs():
+    """Temporarily suppress noisy profiling logs to prevent interference with agent execution"""
+    loggers_to_suppress = ["pandas_profiling", "ydata_profiling", "matplotlib", "numba", "PIL", "fontTools"]
+    old_levels = {name: logging.getLogger(name).getEffectiveLevel() for name in loggers_to_suppress}
+
+    for name in loggers_to_suppress:
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+    try:
+        yield
+    finally:
+        for name, level in old_levels.items():
+            logging.getLogger(name).setLevel(level)
 
 
 static_dir = Path(__file__).parent.parent / "static"
@@ -201,6 +232,8 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 app.include_router(auth_router)
 app.include_router(data_router)
 app.include_router(session_router)
+app.include_router(hierarchical_upload_router)
+app.include_router(report_router)
 
 session_store = {}
 
@@ -260,16 +293,32 @@ async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: 
                 except:
                     pass
 
+        # Sample large DataFrames to reduce CPU contention with agent execution
+        df_for_profiling = df.sample(n=5000, random_state=42) if len(df) > 5000 else df
+        if len(df) > 5000:
+            logging.info(f"[PROFILING] Sampled {len(df)} rows down to 5000 for efficient profiling")
+
         loop = asyncio.get_event_loop()
 
-        data_profile = await loop.run_in_executor(
-            None,
-            lambda: generate_dataset_profile_for_agent(
-                df,
-                context={"filename": filename, "upload_session": session_id},
-                config={"progress_callback": progress_callback},
-            ),
-        )
+        def profiled_execution():
+            """Execute profiling with suppressed logs to prevent interference"""
+            with suppress_profiling_logs():
+                return generate_dataset_profile_for_agent(
+                    df_for_profiling,
+                    context={"filename": filename, "upload_session": session_id},
+                    config={"progress_callback": progress_callback, "minimal": True, "correlations": None},
+                )
+
+        # Add timeout for profiling (5 minutes max)
+        try:
+            data_profile = await asyncio.wait_for(
+                loop.run_in_executor(None, profiled_execution), timeout=300  # 5 minutes
+            )
+        except asyncio.TimeoutError:
+            logging.error(f"[PROFILING] Timeout after 5 minutes for session {session_id}")
+            session_store[session_id]["profiling_status"] = "timeout"
+            session_store[session_id]["profiling_message"] = "Profiling timed out - dataset may be too large"
+            return
 
         session_data = {"dataframe": df, "data_profile": data_profile, "filename": filename}
         builtins._session_store[session_id] = session_data
@@ -305,7 +354,7 @@ async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the chat-first landing interface."""
+    """Serve the main application with vanilla JS + React integration."""
     html_path = Path(__file__).parent.parent / "static" / "index.html"
     return HTMLResponse(html_path.read_text())
 
@@ -433,7 +482,15 @@ async def upload_data(
         if not session_id or not session_id.strip():
             raise HTTPException(status_code=400, detail="session_id is required")
 
+        # Check file size (limit to 100MB to prevent memory issues)
+        MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
         contents = await file.read()
+
+        if len(contents) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large ({len(contents) / 1024 / 1024:.1f}MB). Maximum size is {MAX_FILE_SIZE / 1024 / 1024}MB",
+            )
 
         import builtins
 
@@ -486,6 +543,25 @@ async def upload_data(
         session_id = response_data["session_id"]
 
         load_data_to_agent_sandbox(df, session_id, session_agents, create_enhanced_agent_executor, response_data)
+
+        try:
+            from src.reporting.report_repository import ReportRepository
+            from src.database.connection import get_database_manager
+
+            db_manager = get_database_manager()
+            db = db_manager.get_session()
+            repo = ReportRepository(db)
+
+            report = repo.create_report(session_id=session_id, dataset_name=file.filename, status="generating")
+
+            response_data["report_id"] = report.id
+            response_data["report_created"] = True
+            logging.info(f"Report {report.id} created for upload {file.filename}")
+
+            db.close()
+        except Exception as report_error:
+            logging.error(f"Failed to create report for upload: {report_error}")
+            response_data["report_created"] = False
 
         if enable_profiling:
             response_data["profiling_status"] = "pending"
@@ -707,9 +783,13 @@ async def cancel_agent_task(session_id: str):
 
 @app.get("/api/agent/chat-stream")
 async def agent_chat_stream(
-    message: str, session_id: str, web_search_enabled: bool = False, token_streaming: bool = True
+    message: str,
+    session_id: str,
+    web_search_enabled: bool = False,
+    token_streaming: bool = True,
+    thinking_mode: bool = False,
 ):
-    """Stream agent chat responses with dynamic status updates."""
+    """Stream agent chat responses with dynamic status updates and optional thinking mode."""
     if not AGENT_AVAILABLE:
         raise HTTPException(status_code=503, detail="Agent service not available")
 
@@ -725,6 +805,7 @@ async def agent_chat_stream(
 
         session_store[session_id]["web_search_enabled"] = web_search_enabled
         session_store[session_id]["token_streaming"] = token_streaming
+        session_store[session_id]["thinking_mode"] = thinking_mode
 
         if create_enhanced_agent_executor is None:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Agent service not available'})}\n\n"
@@ -905,7 +986,7 @@ async def checkpoint_health():
     try:
         from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
 
-        result = perform_checkpoint_maintenance(force_cleanup=False)
+        result = await perform_checkpoint_maintenance(force_cleanup=False)
         status_code = 200 if result.get("status") in ["healthy", "unavailable"] else 503
 
         return JSONResponse(content=result, status_code=status_code)
@@ -918,7 +999,7 @@ async def trigger_checkpoint_maintenance():
     try:
         from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
 
-        result = perform_checkpoint_maintenance(force_cleanup=True)
+        result = await perform_checkpoint_maintenance(force_cleanup=True)
 
         return JSONResponse(content=result, status_code=200)
     except Exception as e:
@@ -928,17 +1009,12 @@ async def trigger_checkpoint_maintenance():
 @app.post("/api/checkpoint/cleanup")
 async def cleanup_old_checkpoints_endpoint(retention_days: int = 7):
     try:
-        from data_scientist_chatbot.app.core.graph_builder import memory, cleanup_old_checkpoints
+        from data_scientist_chatbot.app.core.graph_builder import perform_checkpoint_maintenance
 
-        if not memory:
-            return JSONResponse(
-                content={"status": "unavailable", "message": "Checkpoint system not available"}, status_code=503
-            )
-
-        deleted = cleanup_old_checkpoints(memory.conn, retention_days)
+        result = await perform_checkpoint_maintenance(force_cleanup=True)
 
         return JSONResponse(
-            content={"status": "success", "deleted_checkpoints": deleted, "retention_days": retention_days},
+            content=result,
             status_code=200,
         )
     except Exception as e:

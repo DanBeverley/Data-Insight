@@ -25,18 +25,17 @@ def is_task_cancelled(session_id: str) -> bool:
         if not db_manager:
             return False
 
-        db = db_manager.db
-
-        recent_cancellation = (
-            db.query(CancelledTask)
-            .filter(
-                CancelledTask.session_id == session_id,
-                CancelledTask.cancelled_at > datetime.utcnow() - timedelta(seconds=30),
+        with db_manager.get_session() as session:
+            recent_cancellation = (
+                session.query(CancelledTask)
+                .filter(
+                    CancelledTask.session_id == session_id,
+                    CancelledTask.cancelled_at > datetime.utcnow() - timedelta(seconds=30),
+                )
+                .first()
             )
-            .first()
-        )
 
-        return recent_cancellation is not None
+            return recent_cancellation is not None
 
     except Exception as e:
         logger.warning(f"Error checking cancellation status: {e}")
@@ -61,13 +60,10 @@ def clear_cancellation(session_id: str) -> bool:
         if not db_manager:
             return False
 
-        db = db_manager.db
-
-        db.query(CancelledTask).filter(CancelledTask.session_id == session_id).delete()
-
-        db.commit()
-        logger.info(f"Cleared cancellation flag for session {session_id}")
-        return True
+        with db_manager.get_session() as session:
+            session.query(CancelledTask).filter(CancelledTask.session_id == session_id).delete()
+            logger.info(f"Cleared cancellation flag for session {session_id}")
+            return True
 
     except Exception as e:
         logger.error(f"Error clearing cancellation: {e}")

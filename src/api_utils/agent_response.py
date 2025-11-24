@@ -53,7 +53,7 @@ def stream_agent_response(
     if len(query) > MAX_QUERY_LENGTH:
         raise ValueError(f"Query too long: {len(query)} characters exceeds maximum of {MAX_QUERY_LENGTH}")
 
-    from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+    from data_scientist_chatbot.app.utils.text_processing import sanitize_input
     import builtins
 
     sanitized_query = sanitize_input(query)

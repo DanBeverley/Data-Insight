@@ -5,25 +5,43 @@ from datetime import datetime
 from fastapi import HTTPException
 
 
-def clean_checkpointer_state(session_id: str, operation: str = "new session") -> bool:
+async def clean_checkpointer_state(session_id: str, operation: str = "new session") -> bool:
     try:
-        from data_scientist_chatbot.app.core.graph_builder import memory
+        from data_scientist_chatbot.app.core.graph_builder import DB_PATH
+        import aiosqlite
 
-        if memory:
-            memory.conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
-            memory.conn.commit()
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+            await db.commit()
             print(f"DEBUG: Cleaned checkpointer state for {operation} {session_id}")
             return True
-        return False
     except Exception as e:
         print(f"WARNING: Failed to clean checkpointer state for {operation} {session_id}: {e}")
         return False
 
 
 def get_or_create_agent_session(session_id: str, session_agents: Dict[str, Any], create_enhanced_agent_executor):
+    import logging
+    import asyncio
+
     if session_id not in session_agents:
-        clean_checkpointer_state(session_id)
+        logging.info(f"[SESSION] Creating new agent for session: {session_id}")
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                logging.warning(f"[SESSION] Event loop running, skipping async checkpoint cleanup for {session_id}")
+            else:
+                logging.info(f"[SESSION] Cleaning checkpointer state for {session_id}")
+                loop.run_until_complete(clean_checkpointer_state(session_id))
+        except Exception as e:
+            logging.warning(f"[SESSION] Could not clean checkpointer state: {e}")
+
         session_agents[session_id] = create_enhanced_agent_executor(session_id)
+        logging.info(f"[SESSION] Agent created for session: {session_id}")
+    else:
+        logging.debug(f"[SESSION] Reusing existing agent for session: {session_id}")
+
     return session_agents[session_id]
 
 
@@ -57,7 +75,12 @@ def create_new_session() -> Dict[str, str]:
     if not hasattr(builtins, "_session_store"):
         builtins._session_store = {}
 
-    builtins._session_store[new_session_id] = {"session_id": new_session_id, "created_at": created_at}
+    builtins._session_store[new_session_id] = {
+        "session_id": new_session_id,
+        "created_at": created_at,
+        "thinking_mode": False,
+        "web_search_enabled": False,
+    }
 
     clean_checkpointer_state(new_session_id, "new session")
 

@@ -308,46 +308,72 @@ async def stream_agent_chat(
 
     save_message(session_id, "human", message)
 
+    thinking_mode = session_store.get(session_id, {}).get("thinking_mode", False)
+
     try:
-        if hasattr(agent, "stream_events"):
-            try:
-                async for event_data in _stream_with_events(message, session_id, agent, status_agent_runnable):
-                    yield event_data
-            except KeyError as ke:
-                if "__start__" in str(ke):
-                    logging.warning(f"Checkpoint error for session {session_id}: {ke}")
-
-                    from .session_management import clean_checkpointer_state
-
-                    cleaned = clean_checkpointer_state(session_id, "checkpoint_error")
-
-                    if cleaned:
-                        logging.info(f"Checkpoint cleaned, recreating agent with fresh state for session {session_id}")
-
-                        from data_scientist_chatbot.app.core.graph_builder import create_enhanced_agent_executor
-
-                        agent = create_enhanced_agent_executor(session_id)
-
-                        if session_agents is not None and session_id in session_agents:
-                            session_agents[session_id] = agent
-                            logging.info(f"Agent cache updated for session {session_id}")
-                    else:
-                        logging.warning(f"Checkpoint cleanup failed, proceeding anyway for session {session_id}")
-
-                    async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
-                        yield event_data
-                else:
-                    raise
-        else:
+        logging.info(f"[STREAMING] Using .astream() method (async streaming) for session {session_id}")
+        try:
             async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
                 yield event_data
+        except KeyError as ke:
+            if "__start__" in str(ke):
+                logging.warning(f"Checkpoint error for session {session_id}: {ke}")
+
+                from .session_management import clean_checkpointer_state
+
+                cleaned = clean_checkpointer_state(session_id, "checkpoint_error")
+
+                if cleaned:
+                    logging.info(f"Checkpoint cleaned, recreating agent with fresh state for session {session_id}")
+
+                    from data_scientist_chatbot.app.core.graph_builder import create_enhanced_agent_executor
+
+                    agent = create_enhanced_agent_executor(session_id)
+
+                    if session_agents is not None and session_id in session_agents:
+                        session_agents[session_id] = agent
+                        logging.info(f"Agent cache updated for session {session_id}")
+                else:
+                    logging.warning(f"Checkpoint cleanup failed, proceeding anyway for session {session_id}")
+
+                async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
+                    yield event_data
+            else:
+                raise
+        except Exception as stream_error:
+            logging.error(f"[STREAMING] .astream() failed for session {session_id}: {stream_error}")
+
+            if hasattr(agent, "astream_events"):
+                logging.warning(f"[STREAMING] Falling back to astream_events() for session {session_id}")
+                try:
+                    async for event_data in _stream_with_events(
+                        message, session_id, agent, status_agent_runnable, thinking_mode
+                    ):
+                        yield event_data
+                except Exception as e:
+                    logging.error(f"[STREAMING] astream_events() also failed: {e}")
+                    raise
+            else:
+                raise
 
     except Exception as e:
         logging.error(f"Streaming error for session {session_id}: {e}")
+
+        # Save error message to prevent message corruption on reload
+        from .message_storage import save_message
+
+        error_content = f"An error occurred while processing your request: {str(e)}"
+        try:
+            save_message(session_id, "ai", error_content)
+        except Exception as save_error:
+            logging.error(f"Failed to save error message: {save_error}")
+
         yield f"data: {json.dumps({'type': 'error', 'message': f'Streaming error: {str(e)}'})}\n\n"
 
 
-async def _stream_with_events(message: str, session_id: str, agent, status_agent_runnable) -> AsyncGenerator[str, None]:
+async def _stream_with_events(
+    message: str, session_id: str, agent, status_agent_runnable, thinking_mode: bool = False
+) -> AsyncGenerator[str, None]:
     yield f"data: {json.dumps({'type': 'status', 'message': 'Starting analysis...'})}\n\n"
     await asyncio.sleep(0.01)
 
@@ -372,9 +398,16 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
         "session_id": session_id,
     }
 
+    thinking_parser = None
+    if thinking_mode:
+        from .thinking_mode_parser import ThinkingModeParser, create_thinking_status_message
+
+        thinking_parser = ThinkingModeParser()
+        logging.info(f"[STREAM_EVENTS] Thinking mode ENABLED for session {session_id}")
+
     try:
-        logging.info(f"[STREAM_EVENTS] Calling agent.stream_events...")
-        for event in agent.stream_events(input_data, config=config, version="v2"):
+        logging.info(f"[STREAM_EVENTS] Calling agent.astream_events...")
+        async for event in agent.astream_events(input_data, config=config, version="v2"):
             from .cancellation import is_task_cancelled
 
             if is_task_cancelled(session_id):
@@ -383,6 +416,9 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
 
             event_name = event.get("event")
             event_data = event.get("data", {})
+            event_node_name = event.get("name", "unknown")
+
+            logging.debug(f"[EVENT] {event_name} | node={event_node_name} | tags={event.get('tags', [])}")
 
             if event_name == "on_chain_start":
                 current_node = event.get("name", "")
@@ -398,6 +434,12 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
                 if event_data.get("chunk"):
                     chunk_content = str(event_data["chunk"].content)
                     workflow_context["execution_progress"][current_node] = chunk_content[:100]
+
+                    if thinking_parser and chunk_content:
+                        for thinking_update in thinking_parser.parse_streaming_chunk(chunk_content):
+                            status_msg = create_thinking_status_message(thinking_update)
+                            yield f"data: {json.dumps(status_msg)}\n\n"
+                            await asyncio.sleep(0.05)
 
             elif event_name == "on_tool_start":
                 tool_name = event.get("name", "")
@@ -436,9 +478,19 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
                     yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization created successfully!'})}\n\n"
                     await asyncio.sleep(0.2)
 
-            elif event_name == "on_chain_end" and event.get("name") == "__start__":
-                final_response = event_data.get("output")
-                break
+            elif event_name == "on_chain_end":
+                node_name = event.get("name", "unknown")
+                logging.info(f"[EVENT] on_chain_end for node: {node_name}")
+
+                if node_name == "__start__":
+                    logging.info(f"[STREAM_EVENTS] Graph execution completed (__start__ ended)")
+                    final_response = event_data.get("output")
+                    break
+                else:
+                    logging.debug(f"[EVENT] Ignoring on_chain_end for node: {node_name}")
+
+            else:
+                logging.debug(f"[EVENT] Unhandled event type: {event_name} | node={event_node_name}")
 
     except KeyError as ke:
         logging.error(f"[STREAM_EVENTS] KeyError occurred: {ke}")
@@ -454,6 +506,8 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
         logging.error(f"[STREAM_EVENTS] Traceback:\n{traceback.format_exc()}")
         raise
 
+    logging.info("[STREAM_EVENTS] Event loop completed, processing final response...")
+
     from .cancellation import is_task_cancelled, clear_cancellation
 
     if is_task_cancelled(session_id):
@@ -464,8 +518,10 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
     if final_response and final_response.get("messages"):
         final_message = final_response["messages"][-1]
         content = final_message.content if hasattr(final_message, "content") else str(final_message)
+        logging.info(f"[STREAM_EVENTS] Final response content length: {len(content)}")
     else:
         content = "Task completed successfully."
+        logging.warning("[STREAM_EVENTS] No final response messages, using default content")
 
     content = format_agent_output(content)
 
@@ -523,24 +579,52 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
     final_brain_response = None
     action_outputs = []
 
-    logging.info(f"[FALLBACK] Starting for session {session_id}")
-    logging.info(f"[FALLBACK] Agent type: {type(agent)}")
-    logging.info(f"[FALLBACK] Config: {config}")
+    logging.info(f"[STREAM] Starting async streaming for session {session_id}")
+    logging.info(f"[STREAM] Agent type: {type(agent)}")
+    logging.info(f"[STREAM] Config: {config}")
 
     original_user_message = HumanMessage(content=message)
     current_state = {"messages": [original_user_message], "session_id": session_id}
 
     try:
-        logging.info(f"[FALLBACK] Calling agent.stream...")
-        for event in agent.stream(create_agent_input(message, session_id), config=config):
+        logging.info(f"[STREAM] Calling agent.astream (async streaming)...")
+
+        import time
+
+        start_time = time.time()
+        max_stream_time = 300  # 5 minutes maximum
+
+        async for event in agent.astream(create_agent_input(message, session_id), config=config):
+            # Check timeout
+            if time.time() - start_time > max_stream_time:
+                logging.error(f"[STREAM] Stream exceeded max time ({max_stream_time}s), forcing termination")
+                break
+
+            # Log ALL events to debug
+            logging.debug(f"[STREAM] Received event: {list(event.keys())}")
+
+            # Check if this is a special END event (LangGraph marks completed graphs)
+            if "__end__" in event:
+                logging.info(f"[STREAM] Graph reached END, completing stream")
+                final_response = {"messages": all_messages}
+                break
+
             for node_name, node_data in event.items():
                 if node_name in ["router", "brain", "hands", "parser", "action"]:
+                    logging.info(f"[STREAM] Node completed: {node_name}")
                     messages = node_data.get("messages", []) if node_data else []
                     if messages and isinstance(messages, list):
                         all_messages.extend(messages)
                         current_state["messages"] = all_messages
 
+                        if node_name == "hands":
+                            logging.info(f"[STREAM] Hands node completed, messages count: {len(messages)}")
+                            if node_data.get("artifacts"):
+                                logging.info(f"[STREAM] Hands generated {len(node_data.get('artifacts'))} artifacts")
+                            logging.info(f"[STREAM] Waiting for next node (should route to brain)...")
+
                         if node_name == "brain":
+                            logging.info(f"[STREAM] Brain node executing")
                             last_brain_msg = messages[-1]
                             brain_content = (
                                 str(last_brain_msg.content)
@@ -549,6 +633,7 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                             )
                             if not (hasattr(last_brain_msg, "tool_calls") and last_brain_msg.tool_calls):
                                 final_brain_response = brain_content
+                                logging.info(f"[STREAM] Brain generated final response, length: {len(brain_content)}")
 
                         elif node_name == "action":
                             last_action_msg = messages[-1]
@@ -566,83 +651,110 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
 
                     await asyncio.sleep(0.1)
 
+        # Set final_response after loop completes
+        if "final_response" not in locals():
+            final_response = {"messages": all_messages}
+
+        logging.info(f"[STREAM] Stream loop exited, processing final response...")
+
+        # Set final_response after loop completes if not already set
+        if not final_response:
+            logging.info(f"[STREAM] Loop finished without __end__ event, using accumulated messages")
             final_response = {"messages": all_messages}
 
     except KeyError as ke:
-        logging.error(f"[FALLBACK] KeyError occurred: {ke}")
+        logging.error(f"[STREAM] KeyError occurred: {ke}")
         import traceback
 
-        logging.error(f"[FALLBACK] Traceback:\n{traceback.format_exc()}")
+        logging.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
 
         if "__start__" in str(ke):
-            logging.error(f"[FALLBACK] Checkpoint still broken after cleanup for {session_id}: {ke}")
-
-            try:
-                from data_scientist_chatbot.app.core.graph_builder import memory
-
-                if memory:
-                    state = memory.conn.execute(
-                        "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (session_id,)
-                    ).fetchone()
-                    writes = memory.conn.execute(
-                        "SELECT COUNT(*) FROM writes WHERE thread_id = ?", (session_id,)
-                    ).fetchone()
-                    logging.error(f"[FALLBACK] Checkpoint state - checkpoints: {state[0]}, writes: {writes[0]}")
-            except:
-                pass
-
+            logging.error(f"[STREAM] Checkpoint still broken after cleanup for {session_id}: {ke}")
             raise
         else:
             raise
     except Exception as stream_error:
-        logging.error(f"[FALLBACK] Stream failed for {session_id}: {stream_error}")
+        logging.error(f"[STREAM] astream() failed for {session_id}: {stream_error}")
         import traceback
 
-        logging.error(f"[FALLBACK] Traceback:\n{traceback.format_exc()}")
+        logging.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
 
         try:
-            logging.info(f"[FALLBACK] Attempting agent.invoke as last resort...")
-            final_response = agent.invoke(create_agent_input(message, session_id), config=config)
+            logging.info(f"[STREAM] Attempting agent.ainvoke() as last resort...")
+            final_response = await agent.ainvoke(create_agent_input(message, session_id), config=config)
         except Exception as invoke_error:
-            logging.error(f"[FALLBACK] Invoke also failed for {session_id}: {invoke_error}")
+            logging.error(f"[STREAM] ainvoke() also failed for {session_id}: {invoke_error}")
             import traceback
 
-            logging.error(f"[FALLBACK] Invoke traceback:\n{traceback.format_exc()}")
+            logging.error(f"[STREAM] ainvoke() traceback:\n{traceback.format_exc()}")
             raise
 
-    response = final_response if final_response else {}
-    messages = response.get("messages", []) if response else []
-    _, plots = extract_agent_response(messages, recent_count=3)
+    logging.info(f"[STREAM] Processing final response...")
 
-    if plots:
-        yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization generated!'})}\n\n"
-        await asyncio.sleep(0.3)
+    try:
+        response = final_response if final_response else {}
+        messages = response.get("messages", []) if response else []
+        logging.info(f"[STREAM] Extracting from {len(messages)} messages...")
 
-    content_parts = []
-    if action_outputs:
-        formatted_outputs = [format_agent_output(output) for output in action_outputs]
-        content_parts.extend(formatted_outputs)
-    if final_brain_response:
-        content_parts.append(format_agent_output(final_brain_response))
+        _, plots = extract_agent_response(messages, recent_count=3)
+        logging.info(f"[STREAM] Extracted {len(plots)} plots")
 
-    if not content_parts:
-        final_message = messages[-1] if messages else None
-        fallback_content = (
-            final_message.content
-            if final_message and hasattr(final_message, "content")
-            else "Task completed successfully."
+        if plots:
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization generated!'})}\n\n"
+            await asyncio.sleep(0.3)
+
+        logging.info(f"[STREAM] Building response content...")
+        logging.info(
+            f"[STREAM] Available: action_outputs={len(action_outputs)}, final_brain_response={bool(final_brain_response)}, messages={len(messages)}"
         )
-        content_parts.append(format_agent_output(fallback_content))
 
-    content = "\n\n".join(content_parts) if content_parts else "Task completed successfully."
-    final_json = {"type": "final_response", "response": content, "plots": plots}
+        content_parts = []
 
-    from .message_storage import save_message
+        # Use action outputs (hands execution results)
+        if action_outputs:
+            formatted_outputs = [format_agent_output(output) for output in action_outputs]
+            content_parts.extend(formatted_outputs)
+            logging.info(f"[STREAM] Added {len(formatted_outputs)} action outputs")
 
-    metadata = {"plots": plots} if plots else None
-    save_message(session_id, "ai", content, metadata=metadata)
+        # Use brain response if available
+        if final_brain_response:
+            content_parts.append(format_agent_output(final_brain_response))
+            logging.info(f"[STREAM] Added brain response ({len(final_brain_response)} chars)")
 
-    yield f"data: {json.dumps(final_json)}\n\n"
+        # Fallback: Extract from messages if content_parts is still empty
+        if not content_parts:
+            logging.warning(f"[STREAM] No content_parts built, using fallback extraction")
+            final_message = messages[-1] if messages else None
+            fallback_content = (
+                final_message.content
+                if final_message and hasattr(final_message, "content")
+                else "Task completed successfully."
+            )
+            content_parts.append(format_agent_output(fallback_content))
+            logging.info(f"[STREAM] Used fallback content ({len(str(fallback_content))} chars)")
+
+        content = "\n\n".join(content_parts) if content_parts else "Task completed successfully."
+        logging.info(f"[STREAM] Content length: {len(content)} chars")
+
+        from .message_storage import save_message
+
+        metadata = {"plots": plots} if plots else None
+        save_message(session_id, "ai", content, metadata=metadata)
+        logging.info(f"[STREAM] Message saved to storage")
+
+        final_json = {"type": "final_response", "response": content, "plots": plots}
+        logging.info(f"[STREAM] Yielding final response to frontend...")
+        yield f"data: {json.dumps(final_json)}\n\n"
+        logging.info(f"[STREAM] Final response yielded successfully!")
+
+    except Exception as final_error:
+        logging.error(f"[STREAM] Error in final response processing: {final_error}")
+        import traceback
+
+        logging.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
+
+        error_response = {"type": "final_response", "response": "Analysis completed.", "plots": []}
+        yield f"data: {json.dumps(error_response)}\n\n"
 
 
 async def _generate_status(status_agent_runnable, workflow_context, event, current_node):
