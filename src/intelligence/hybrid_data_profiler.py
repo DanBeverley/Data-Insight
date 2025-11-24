@@ -280,12 +280,30 @@ class HybridDataProfiler:
                     return self.quality_assessor.assess_quality(df_phase3, reference_df, context, anomaly_results)
                 return None
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                phase2_future = executor.submit(run_phase2)
-                anomaly_results, anomaly_summary = phase2_future.result()
+            import threading
 
-                phase3_future = executor.submit(run_phase3, anomaly_results)
-                quality_report = phase3_future.result()
+            anomaly_results = None
+            anomaly_summary = {}
+            quality_report = None
+
+            def run_phase2_and_3_async():
+                try:
+                    nonlocal anomaly_results, anomaly_summary, quality_report
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        phase2_future = executor.submit(run_phase2)
+                        anomaly_results, anomaly_summary = phase2_future.result()
+
+                        phase3_future = executor.submit(run_phase3, anomaly_results)
+                        quality_report = phase3_future.result()
+
+                    logging.info("Background profiling (Phase 2, 3) completed")
+                except Exception as e:
+                    logging.error(f"Background profiling failed: {e}")
+
+            background_thread = threading.Thread(target=run_phase2_and_3_async, daemon=True)
+            background_thread.start()
+
+            logging.info("Phase 2, 3 deferred to background thread")
 
             pii_detection = None
             if self.config.get("enable_privacy_analysis", True):
