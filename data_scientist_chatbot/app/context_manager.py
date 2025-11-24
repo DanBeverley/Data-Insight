@@ -440,3 +440,101 @@ class ContextManager:
             summary_parts.append(f"Proven successful patterns: {', '.join(pattern_summaries)}")
 
         return " | ".join(summary_parts)
+
+    def record_execution(self, session_id: str, turn_data: Dict[str, Any]) -> None:
+        """Record code execution turn for session learning"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO performance_metrics (session_id, metric_name, metric_value, timestamp)
+            VALUES (?, ?, ?, ?)
+        """,
+            (
+                session_id,
+                "execution",
+                1.0 if turn_data.get("success", False) else 0.0,
+                datetime.now(),
+            ),
+        )
+
+        if turn_data.get("success", False) and turn_data.get("code"):
+            self.record_pattern_usage(
+                pattern_type="code_execution",
+                pattern_data={
+                    "request": turn_data.get("user_request", "")[:100],
+                    "code_snippet": turn_data.get("code", "")[:200],
+                },
+                success=True,
+            )
+
+        conn.commit()
+        conn.close()
+
+    def get_learning_context(self, session_id: str) -> str:
+        """Get learning context for session (execution history summary)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT metric_value FROM performance_metrics
+            WHERE session_id = ? AND metric_name = 'execution'
+            ORDER BY timestamp DESC
+            LIMIT 10
+        """,
+            (session_id,),
+        )
+
+        results = cursor.fetchall()
+        conn.close()
+
+        if not results:
+            return ""
+
+        total_executions = len(results)
+        successful_executions = sum(1 for r in results if r[0] > 0.5)
+
+        patterns = self.get_cross_session_patterns(pattern_type="code_execution", limit=3)
+
+        context_parts = [f"SESSION LEARNING ({total_executions} executions, {successful_executions} successful)"]
+
+        if patterns:
+            context_parts.append("\nRECENT SUCCESSFUL APPROACHES:")
+            for p in patterns:
+                context_parts.append(f"  ✓ {p['data'].get('request', 'Unknown')[:60]}")
+
+        return "\n".join(context_parts)
+
+
+class SessionMemoryAdapter:
+    """Adapter to provide session_memory.py interface using ContextManager"""
+
+    def __init__(self, session_id: str, context_manager: ContextManager):
+        self.session_id = session_id
+        self.context_manager = context_manager
+
+    def get_learning_context(self) -> str:
+        return self.context_manager.get_learning_context(self.session_id)
+
+
+_context_manager_instance = None
+
+
+def get_context_manager() -> ContextManager:
+    """Get singleton ContextManager instance"""
+    global _context_manager_instance
+    if _context_manager_instance is None:
+        _context_manager_instance = ContextManager()
+    return _context_manager_instance
+
+
+def get_session_memory(session_id: str) -> SessionMemoryAdapter:
+    """Get session memory adapter for backward compatibility"""
+    return SessionMemoryAdapter(session_id, get_context_manager())
+
+
+def record_execution(session_id: str, turn_data: Dict[str, Any]) -> None:
+    """Record execution turn for backward compatibility"""
+    get_context_manager().record_execution(session_id, turn_data)
