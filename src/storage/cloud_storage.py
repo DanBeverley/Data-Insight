@@ -22,7 +22,7 @@ def get_cloud_storage(bucket_name: str = "datainsight-artifacts"):
         try:
             from .r2_service import R2StorageService
 
-            logger.info("Using Cloudflare R2 for cloud storage")
+            logger.debug("Using Cloudflare R2 for cloud storage")
             return R2StorageService(bucket_name=bucket_name)
         except Exception as e:
             logger.error(f"Failed to initialize R2 storage: {e}")

@@ -46,7 +46,12 @@ class R2StorageService:
 
         endpoint_url = f"https://{self.account_id}.r2.cloudflarestorage.com"
 
-        config = Config(signature_version="s3v4", retries={"max_attempts": 3, "mode": "adaptive"})
+        config = Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 3, "mode": "adaptive"},
+            connect_timeout=30,
+            read_timeout=120,
+        )
 
         self.s3_client = boto3.client(
             "s3",
@@ -109,7 +114,7 @@ class R2StorageService:
             self.s3_client.upload_file(str(local_path), self.bucket_name, blob_path, ExtraArgs=extra_args)
 
             blob_url = self._get_blob_url(blob_path)
-            logger.info(f"Uploaded {local_path.name} to R2: {blob_path} (SHA256: {checksum[:8]}...)")
+            logger.debug(f"Uploaded {local_path.name} to R2: {blob_path} (SHA256: {checksum[:8]}...)")
 
             return {
                 "blob_path": blob_path,
@@ -157,7 +162,7 @@ class R2StorageService:
                         )
                         raise ValueError("Checksum verification failed")
 
-                    logger.info(f"Downloaded {blob_path} with verified checksum")
+                    logger.debug(f"Downloaded {blob_path} with verified checksum")
                 else:
                     result["checksum_verified"] = None
                     logger.warning(f"No checksum metadata found for {blob_path}")
