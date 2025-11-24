@@ -150,7 +150,7 @@ async def delete_session(session_id: str, current_user: Optional[User] = Depends
     finally:
         db_conn.close()
 
-    clean_checkpointer_state(session_id, "delete session")
+    await clean_checkpointer_state(session_id, "delete session")
 
     return {"success": True}
 
@@ -163,6 +163,8 @@ async def rename_session(
         new_title = request.get("title", "").strip()
         if not new_title:
             raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+        user_id = current_user.id if current_user else "anonymous"
 
         db_conn = get_session_db()
         try:
@@ -295,14 +297,15 @@ async def get_session_messages(session_id: str, current_user: Optional[User] = D
     logger.info(f"No messages in explicit storage, checking checkpoint for session {session_id}")
 
     try:
-        from data_scientist_chatbot.app.core.graph_builder import memory
+        from data_scientist_chatbot.app.core.graph_builder import DB_PATH
+        import aiosqlite
 
-        if memory:
-            cursor = memory.conn.execute(
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
                 "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
                 (session_id,),
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
             if row:
                 try:
                     if not row[0] or len(row[0]) < 10:
@@ -315,8 +318,8 @@ async def get_session_messages(session_id: str, current_user: Optional[User] = D
                     logger.error(f"Corrupted checkpoint data for session {session_id}: {pickle_error}")
                     logger.info("Attempting to clean corrupted checkpoint...")
                     try:
-                        cursor.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
-                        memory.conn.commit()
+                        await db.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+                        await db.commit()
                         logger.info(f"Cleaned corrupted checkpoint for session {session_id}")
                     except Exception as cleanup_error:
                         logger.error(f"Failed to clean checkpoint: {cleanup_error}")
@@ -337,8 +340,6 @@ async def get_session_messages(session_id: str, current_user: Optional[User] = D
                     logger.warning(f"No messages found in checkpoint for session {session_id}")
             else:
                 logger.warning(f"No checkpoint found for session {session_id}")
-        else:
-            logger.warning(f"Memory not initialized")
     except Exception as e:
         logger.error(f"Error loading messages from checkpointer: {e}", exc_info=True)
 
@@ -358,14 +359,15 @@ async def export_session(
 
     if not messages:
         try:
-            from data_scientist_chatbot.app.core.graph_builder import memory
+            from data_scientist_chatbot.app.core.graph_builder import DB_PATH
+            import aiosqlite
 
-            if memory:
-                cursor = memory.conn.execute(
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute(
                     "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
                     (session_id,),
                 )
-                row = cursor.fetchone()
+                row = await cursor.fetchone()
                 if row:
                     checkpoint_data = pickle.loads(row[0])
                     if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
@@ -610,14 +612,15 @@ async def revert_to_message(
 
         if not messages:
             try:
-                from data_scientist_chatbot.app.core.graph_builder import memory
+                from data_scientist_chatbot.app.core.graph_builder import DB_PATH
+                import aiosqlite
 
-                if memory:
-                    cursor = memory.conn.execute(
+                async with aiosqlite.connect(DB_PATH) as db:
+                    cursor = await db.execute(
                         "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
                         (session_id,),
                     )
-                    row = cursor.fetchone()
+                    row = await cursor.fetchone()
                     if row:
                         checkpoint_data = pickle.loads(row[0])
                         if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
@@ -640,8 +643,17 @@ async def revert_to_message(
         try:
             cursor = db_conn.execute("SELECT user_id FROM sessions WHERE session_id = ?", (session_id,))
             row = cursor.fetchone()
-            if not row or row[0] != user_id:
-                raise HTTPException(status_code=403, detail="Unauthorized")
+
+            if row:
+                if row[0] != user_id:
+                    raise HTTPException(status_code=403, detail="Unauthorized")
+            else:
+                logger.warning(f"Session {session_id} not in DB, creating entry for user {user_id}")
+                db_conn.execute(
+                    "INSERT INTO sessions (session_id, user_id, created_at, last_updated) VALUES (?, ?, ?, ?)",
+                    (session_id, user_id, datetime.now().isoformat(), datetime.now().isoformat()),
+                )
+                db_conn.commit()
         finally:
             db_conn.close()
 
@@ -650,14 +662,15 @@ async def revert_to_message(
         save_messages(session_id, kept_messages)
 
         try:
-            from data_scientist_chatbot.app.core.graph_builder import memory
+            from data_scientist_chatbot.app.core.graph_builder import DB_PATH
+            import aiosqlite
 
-            if memory:
-                cursor = memory.conn.execute(
+            async with aiosqlite.connect(DB_PATH) as db:
+                cursor = await db.execute(
                     "SELECT checkpoint_id, checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id ASC",
                     (session_id,),
                 )
-                checkpoints = cursor.fetchall()
+                checkpoints = await cursor.fetchall()
 
                 target_checkpoint_id = None
 
@@ -683,11 +696,11 @@ async def revert_to_message(
                         continue
 
                 if target_checkpoint_id:
-                    memory.conn.execute(
+                    await db.execute(
                         "DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_id > ?",
                         (session_id, target_checkpoint_id),
                     )
-                    memory.conn.commit()
+                    await db.commit()
                     logger.info(f"Deleted checkpoints after ID {target_checkpoint_id} for session {session_id}")
         except Exception as e:
             logger.error(f"Error reverting checkpoints: {e}")
@@ -735,29 +748,31 @@ async def search_conversations(q: str, current_user: Optional[User] = Depends(ge
         from ..api_utils.message_storage import load_messages
 
         for session_id, title, created_at in sessions:
-            from data_scientist_chatbot.app.core.graph_builder import memory
+            from data_scientist_chatbot.app.core.graph_builder import DB_PATH
+            import aiosqlite
 
             messages = load_messages(session_id)
 
-            if not messages and memory:
+            if not messages:
                 try:
-                    cursor = memory.conn.execute(
-                        "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
-                        (session_id,),
-                    )
-                    row = cursor.fetchone()
-                    if row:
-                        checkpoint_data = pickle.loads(row[0])
-                        if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
-                            for msg in checkpoint_data["channel_values"]["messages"]:
-                                if hasattr(msg, "type") and msg.type in ["human", "ai"]:
-                                    messages.append(
-                                        {
-                                            "type": msg.type,
-                                            "content": str(msg.content),
-                                            "timestamp": datetime.now().isoformat(),
-                                        }
-                                    )
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        cursor = await db.execute(
+                            "SELECT checkpoint FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1",
+                            (session_id,),
+                        )
+                        row = await cursor.fetchone()
+                        if row:
+                            checkpoint_data = pickle.loads(row[0])
+                            if "channel_values" in checkpoint_data and "messages" in checkpoint_data["channel_values"]:
+                                for msg in checkpoint_data["channel_values"]["messages"]:
+                                    if hasattr(msg, "type") and msg.type in ["human", "ai"]:
+                                        messages.append(
+                                            {
+                                                "type": msg.type,
+                                                "content": str(msg.content),
+                                                "timestamp": datetime.now().isoformat(),
+                                            }
+                                        )
                 except Exception as e:
                     logger.error(f"Error loading messages for search: {e}")
 
