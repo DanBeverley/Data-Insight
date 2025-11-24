@@ -1,9 +1,15 @@
 """State management and context building utilities"""
 
 from typing import Dict, Any
-import logging
 
-logger = logging.getLogger(__name__)
+try:
+    from .logger import logger
+except ImportError:
+    import sys
+    import os
+
+    sys.path.append(os.path.join(os.path.dirname(__file__)))
+    from logger import logger
 
 
 def create_workflow_status_context(workflow_context: Dict[str, Any], current_event: Dict[str, Any]) -> Dict[str, Any]:

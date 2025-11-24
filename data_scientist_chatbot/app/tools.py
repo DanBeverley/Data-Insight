@@ -7,6 +7,7 @@ import io
 from typing import Dict, Any, TYPE_CHECKING
 from pathlib import Path
 from dotenv import load_dotenv
+from langsmith import traceable
 
 if TYPE_CHECKING:
     from e2b_code_interpreter import Sandbox
@@ -145,6 +146,7 @@ print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
             print(f"DEBUG: Could not reload dataset for session {session_id}: {fallback_error}")
 
 
+@traceable(name="sandbox_execution", tags=["tool", "e2b"])
 @performance_monitor.cache_result(ttl=600, key_prefix="sandbox_exec")
 @performance_monitor.time_function("sandbox", "code_execution")
 def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:

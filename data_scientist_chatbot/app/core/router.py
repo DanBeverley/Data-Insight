@@ -2,11 +2,14 @@
 
 import sys
 import os
+from typing import Dict, Any, Literal
 from langgraph.graph import END
 from langchain_core.messages import AIMessage, ToolMessage
+from langsmith import traceable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from utils.helpers import get_last_message, get_message_content, has_tool_calls
+from core.logger import logger
 
 TOOL_ROUTING_MAP = {
     "delegate_coding_task": "hands",
@@ -17,7 +20,8 @@ TOOL_ROUTING_MAP = {
 }
 
 
-def route_to_agent(state):
+@traceable(name="router_decision", tags=["routing", "core"])
+def route_to_agent(state: Dict[str, Any]) -> str:
     last_message = get_last_message(state)
     if not last_message or isinstance(last_message, ToolMessage):
         return "brain"
@@ -28,7 +32,7 @@ def route_to_agent(state):
     return "brain"
 
 
-def should_continue(state):
+def should_continue(state: Dict[str, Any]) -> str:
     messages = state.get("messages", [])
     if messages is None or len(messages) == 0:
         return END
@@ -52,65 +56,84 @@ def should_continue(state):
                         consecutive_identical_calls += 1
                     break
             if consecutive_identical_calls >= 2:
-                print(
-                    f"DEBUG: Termination condition met: Detected recursive tool call for '{last_tool_call.get('name')}'."
+                logger.warning(
+                    f"Termination condition met: Detected recursive tool call for '{last_tool_call.get('name')}'"
                 )
                 return END
         tool_name = last_message.tool_calls[0].get("name", "")
         destination = TOOL_ROUTING_MAP.get(tool_name, "action")
-        print(f"DEBUG: Tool '{tool_name}' routing to: {destination}")
+        logger.debug(f"Tool '{tool_name}' routing to: {destination}")
         return destination
     return END
 
 
-def route_after_agent(state):
+def route_after_agent(state: Dict[str, Any]) -> str:
     """Route based on whether agent wants to use tools or just respond"""
+    logger.info("=" * 80)
+    logger.info("[ROUTING] ENTERED route_after_agent function")
+    logger.info("=" * 80)
+
     last_message = get_last_message(state)
     content = get_message_content(last_message)
     current_agent = state.get("current_agent", "")
 
-    print(f"DEBUG: Routing after {current_agent} agent")
-    print(f"DEBUG: Has tool_calls? {has_tool_calls(last_message)}")
+    logger.debug(f"Routing after {current_agent} agent")
+    logger.info(f"[ROUTING] Current agent: {current_agent}")
+    logger.debug(f"Last message type: {type(last_message).__name__}")
+    logger.info(f"[ROUTING] Last message type: {type(last_message).__name__}")
+    logger.debug(f"Has tool_calls? {has_tool_calls(last_message)}")
+    logger.info(f"[ROUTING] Has tool_calls: {has_tool_calls(last_message)}")
+    logger.debug(f"Has content? {bool(content)}")
+    logger.info(f"[ROUTING] Has content: {bool(content)}")
 
-    if current_agent == "hands" and content:
-        print("DEBUG: Hands completed execution, routing to brain for interpretation")
-        return "brain"
+    if current_agent == "hands":
+        if content or last_message:
+            logger.debug("Hands completed execution, routing to brain for interpretation")
+            logger.info("[ROUTING] Hands completed, routing to BRAIN")
+            logger.info("=" * 80)
+            return "brain"
 
     if has_tool_calls(last_message):
-        print("DEBUG: Routing to parser (tool_calls)")
+        logger.debug("Routing to parser (tool_calls)")
+        logger.info("[ROUTING] Routing to PARSER (tool_calls)")
+        logger.info("=" * 80)
         return "parser"
 
     if (content.startswith("{") and '"name":' in content) or (
         "python_code_interpreter" in content and '"code":' in content
     ):
-        print("DEBUG: Routing to parser (JSON format)")
+        logger.debug("Routing to parser (JSON format)")
+        logger.info("[ROUTING] Routing to PARSER (JSON format)")
+        logger.info("=" * 80)
         return "parser"
 
-    print("DEBUG: Routing to END")
+    logger.debug("Routing to END")
+    logger.info("[ROUTING] Routing to END")
+    logger.info("=" * 80)
     return END
 
 
-def route_from_router(state):
+def route_from_router(state: Dict[str, Any]) -> str:
     """Route based on router's binary decision"""
     decision = state.get("router_decision", "brain")
-    print(f"DEBUG: Router routing to: {decision}")
+    logger.debug(f"Router routing to: {decision}")
     return decision
 
 
-def route_from_brain(state):
-    retry_count = state.get("retry_count", 0)
+def route_from_brain(state: Dict[str, Any]) -> str:
+    retry_count = state.get("retry_count") or 0
     last_sequence = state.get("last_agent_sequence", [])
 
-    print(f"DEBUG: route_from_brain - retry_count: {retry_count}, sequence: {last_sequence}")
+    logger.debug(f"route_from_brain - retry_count: {retry_count}, sequence: {last_sequence}")
 
     if retry_count >= 3:
-        print(f"DEBUG: Max retries reached ({retry_count}), terminating")
+        logger.warning(f"Max retries reached ({retry_count}), terminating")
         return END
 
     if len(last_sequence) >= 4:
         recent_sequence = last_sequence[-4:]
         if recent_sequence == ["brain", "hands", "brain", "hands"]:
-            print(f"DEBUG: Detected brain->hands->brain->hands loop, terminating")
+            logger.warning("Detected brain->hands->brain->hands loop, terminating")
             return END
 
     last_message = state["messages"][-1] if state["messages"] else None
@@ -121,20 +144,20 @@ def route_from_brain(state):
     return END
 
 
-def route_after_action(state):
+def route_after_action(state: Dict[str, Any]) -> str:
     last_message = get_last_message(state)
     if last_message:
         content = get_message_content(last_message)
 
         if content and content.strip():
-            print("DEBUG: Technical output completed, routing to brain for interpretation")
+            logger.debug("Technical output completed, routing to brain for interpretation")
             return "brain"
 
-    print("DEBUG: No output from action, ending flow")
+    logger.debug("No output from action, ending flow")
     return END
 
 
-def subgraph_should_continue(state):
+def subgraph_should_continue(state: Dict[str, Any]) -> str:
     """Check if subgraph should continue executing"""
     messages = state.get("messages", [])
     if messages is None or len(messages) == 0:
@@ -145,6 +168,6 @@ def subgraph_should_continue(state):
     return END
 
 
-def subgraph_route_after_action(state):
+def subgraph_route_after_action(state: Dict[str, Any]) -> str:
     """Route after action in subgraph"""
     return "summarize"

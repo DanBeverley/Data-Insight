@@ -1,10 +1,13 @@
 """Session context utilities"""
 
-import logging
 import sys
 import os
 
-logger = logging.getLogger(__name__)
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "core"))
+try:
+    from core.logger import logger
+except ImportError:
+    from ..core.logger import logger
 
 
 def get_artifacts_context(session_id: str) -> str:

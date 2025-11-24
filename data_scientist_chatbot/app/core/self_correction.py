@@ -1,10 +1,16 @@
 """LLM-driven self-correction for code execution failures"""
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
-import logging
 
-logger = logging.getLogger(__name__)
+try:
+    from .logger import logger
+except ImportError:
+    import sys
+    import os
+
+    sys.path.append(os.path.join(os.path.dirname(__file__)))
+    from logger import logger
 
 
 @dataclass
@@ -53,19 +59,33 @@ class SelfCorrectingExecutor:
                 break
 
             logger.info(f"Attempt {attempt_num} failed, asking LLM to fix")
+            logger.error(f"E2B execution failed: {attempt.error}")
 
             fix_prompt = self._build_fix_prompt(attempts, context)
             from langchain_core.messages import HumanMessage
 
             fixed_response = llm_agent.invoke([HumanMessage(content=fix_prompt)])
+            logger.debug(f"LLM response received, length: {len(fixed_response.content)}")
 
-            diagnosis, fixed_code = self._extract_fix(fixed_response.content)
-            attempt.diagnosis = diagnosis
-
-            if not fixed_code or fixed_code == current_code:
-                logger.warning("LLM couldn't generate different code, stopping")
+            try:
+                diagnosis, fixed_code = self._extract_fix(fixed_response.content)
+                attempt.diagnosis = diagnosis
+            except Exception as e:
+                logger.error(f"Failed to extract fix from LLM response: {e}")
+                logger.debug(f"LLM response was: {fixed_response.content[:500]}")
                 break
 
+            if not fixed_code:
+                logger.warning("LLM couldn't extract fixed code from response, stopping")
+                logger.debug(f"LLM response was: {fixed_response.content[:500]}")
+                break
+
+            if fixed_code == current_code:
+                logger.warning("LLM returned identical code, no fix made")
+                logger.debug(f"Code unchanged after correction attempt {attempt_num}")
+                break
+
+            logger.info(f"Code changed, trying corrected version (attempt {attempt_num + 1})")
             current_code = fixed_code
             logger.info(f"LLM diagnosis: {diagnosis[:100]}...")
 
@@ -95,32 +115,41 @@ ERROR OUTPUT:
 {last_attempt.error}
 {failure_history}
 
-Respond with:
-1. DIAGNOSIS: One sentence explaining the root cause
-2. FIXED_CODE: The corrected Python code
-
-Format:
-DIAGNOSIS: [your analysis]
-
-FIXED_CODE:
-```python
-[corrected code]
-```
+Respond ONLY with valid JSON (no additional text):
+{{
+  "diagnosis": "one sentence explaining the root cause",
+  "fixed_code": "the complete corrected Python code"
+}}
 """
 
-    def _extract_fix(self, response: str) -> tuple[str, str]:
-        import re
+    def _extract_fix(self, response: str) -> Tuple[str, str]:
+        import json
 
-        diagnosis_match = re.search(r"DIAGNOSIS:\s*(.+?)(?=\n\n|FIXED_CODE:|$)", response, re.DOTALL)
-        diagnosis = diagnosis_match.group(1).strip() if diagnosis_match else "No diagnosis"
+        response = response.strip()
 
-        code_match = re.search(r"FIXED_CODE:\s*```python\s*(.+?)\s*```", response, re.DOTALL)
-        if not code_match:
-            code_match = re.search(r"```python\s*(.+?)\s*```", response, re.DOTALL)
+        json_start = response.find("{")
+        json_end = response.rfind("}")
 
-        fixed_code = code_match.group(1).strip() if code_match else ""
+        if json_start == -1 or json_end == -1 or json_start >= json_end:
+            logger.error("No JSON object found in LLM response")
+            return "No JSON in response", ""
 
-        return diagnosis, fixed_code
+        json_str = response[json_start : json_end + 1]
+
+        try:
+            data = json.loads(json_str)
+            diagnosis = data.get("diagnosis", "").strip()
+            fixed_code = data.get("fixed_code", "").strip()
+
+            if not diagnosis:
+                diagnosis = "No diagnosis provided"
+
+            return diagnosis, fixed_code
+
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing failed: {e}")
+            logger.debug(f"Attempted to parse: {json_str[:200]}")
+            return "Invalid JSON format", ""
 
     def _format_success(self, result: Dict, attempts: List[ExecutionAttempt]) -> Dict:
         retry_info = ""

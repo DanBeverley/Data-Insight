@@ -4,6 +4,14 @@ import os
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 
+try:
+    from .logger import logger
+except ImportError:
+    import sys
+
+    sys.path.append(os.path.join(os.path.dirname(__file__)))
+    from logger import logger
+
 
 class QuotaTracker:
     """
@@ -87,7 +95,7 @@ class QuotaTracker:
             return result
 
         except Exception as e:
-            print(f"[QuotaTracker] AWS quota check failed: {e}")
+            logger.warning(f"[QuotaTracker] AWS quota check failed: {e}")
             return {
                 "provider": "AWS",
                 "used": 0,
@@ -151,7 +159,7 @@ class QuotaTracker:
             return result
 
         except Exception as e:
-            print(f"[QuotaTracker] Azure quota check failed: {e}")
+            logger.warning(f"[QuotaTracker] Azure quota check failed: {e}")
             return {
                 "provider": "Azure",
                 "used": 0,

@@ -16,9 +16,13 @@ from functools import wraps
 import psutil
 import pickle
 import os
-import logging
+import sys
 
-logger = logging.getLogger(__name__)
+sys.path.append(os.path.join(os.path.dirname(__file__), "core"))
+try:
+    from core.logger import logger
+except ImportError:
+    from data_scientist_chatbot.app.core.logger import logger
 
 
 @dataclass
