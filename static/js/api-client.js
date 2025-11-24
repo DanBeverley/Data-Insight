@@ -221,7 +221,7 @@ class ApiClient {
     }
 
     // Chat & Streaming APIs
-    streamAgentResponse(message, sessionId, webSearchEnabled, onStatus, onFinalResponse, onError) {
+    streamAgentResponse(message, sessionId, webSearchEnabled, onStatus, onToken, onFinalResponse, onError) {
         if (this.currentEventSource) {
             this.currentEventSource.close();
         }
@@ -239,6 +239,15 @@ class ApiClient {
             switch (data.type) {
                 case 'status':
                     onStatus?.(data.message, 'active');
+                    break;
+                case 'start_tokens':
+                    onToken?.({ type: 'start' });
+                    break;
+                case 'token':
+                    onToken?.({ content: data.content });
+                    break;
+                case 'end_tokens':
+                    onToken?.({ type: 'end' });
                     break;
                 case 'final_response':
                     this.currentEventSource.close();

@@ -7,11 +7,22 @@ class ThreeRenderer {
         this.connectingLineMaterial = null;
         this.waveMaterial = null;
         this.cleanup = null;
+        this.resize = this.resize.bind(this);
     }
 
     init() {
         this.setupInteractiveCube();
         this.setupBackgroundParticles();
+        window.addEventListener('resize', this.resize);
+    }
+    resize() {
+        if (!this.camera || !this.renderer) return;
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+        this.renderer.setSize(width, height);
     }
 
     createDonutC3D(donutIndex) {

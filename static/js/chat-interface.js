@@ -188,10 +188,10 @@ class ChatInterface {
                 e.target.value = '';
             });
         }
-        document.addEventListener('click', (e)=>{
-            if (!settingsPanel || !settingsPanel.classList.contains('open')){return;}
+        document.addEventListener('click', (e) => {
+            if (!settingsPanel || !settingsPanel.classList.contains('open')) { return; }
             const isClickInside = settingsPanel.contains(e.target) || settingsToggleBtn.contains(e.target);
-            if (!isClickInside){this.closeSettingsPanel();}
+            if (!isClickInside) { this.closeSettingsPanel(); }
         });
     }
 
@@ -218,6 +218,10 @@ class ChatInterface {
                 if (tokenData.type === 'start') {
                     streamingContent = '';
                     streamingMessageElement = this.addChatMessage('bot', '');
+
+                    if (userMessageId && streamingMessageElement) {
+                        streamingMessageElement.dataset.linkedUserMessageId = userMessageId;
+                    }
                 } else if (tokenData.content) {
                     streamingContent += tokenData.content;
                     if (streamingMessageElement) {
@@ -435,6 +439,7 @@ class ChatInterface {
         }
     }
 
+
     showStreamingStatusPlaceholder() {
         const heroChatMessages = document.getElementById('heroChatMessages');
         const messageDiv = document.createElement('div');
@@ -450,7 +455,6 @@ class ChatInterface {
         heroChatMessages.appendChild(messageDiv);
 
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
-
         return messageDiv;
     }
 
@@ -620,7 +624,7 @@ class ChatInterface {
             content.innerHTML = this.convertMarkdownToHtml(messageText);
         }
         contentWrapper.appendChild(content);
-        
+
         if (plots && Array.isArray(plots) && plots.length > 0) {
             plots.forEach(plotUrl => {
                 const plotDiv = document.createElement('div');
@@ -642,35 +646,35 @@ class ChatInterface {
         // Find all elements that should become collapsible headers (e.g., h4 tags)
         const headers = messageDiv.querySelectorAll('h4');
         headers.forEach(header => {
-        // Check if it's already a header, if so, skip
-        if (header.closest('.collapsible-header')) return;
+            // Check if it's already a header, if so, skip
+            if (header.closest('.collapsible-header')) return;
 
-        const section = document.createElement('div');
-        section.className = 'collapsible-section open'; // Start open by default
+            const section = document.createElement('div');
+            section.className = 'collapsible-section open'; // Start open by default
 
-        // Wrap the header
-        const newHeader = document.createElement('div');
-        newHeader.className = 'collapsible-header';
-        newHeader.innerHTML = `<h4>${header.innerHTML}</h4><i class="fa-solid fa-chevron-down collapsible-toggle"></i>`;
-        
-        const content = document.createElement('div');
-        content.className = 'collapsible-content';
+            // Wrap the header
+            const newHeader = document.createElement('div');
+            newHeader.className = 'collapsible-header';
+            newHeader.innerHTML = `<h4>${header.innerHTML}</h4><i class="fa-solid fa-chevron-down collapsible-toggle"></i>`;
 
-        // Move all sibling elements until the next h4 into the content div
-        let currentElement = header.nextElementSibling;
-        while (currentElement && currentElement.tagName !== 'H4') {
-            content.appendChild(currentElement);
-            currentElement = header.nextElementSibling; // Re-evaluate next sibling
-        }
+            const content = document.createElement('div');
+            content.className = 'collapsible-content';
 
-        // Replace the original header with the new collapsible section
-        header.parentNode.replaceChild(section, header);
-        section.appendChild(newHeader);
-        section.appendChild(content);
+            // Move all sibling elements until the next h4 into the content div
+            let currentElement = header.nextElementSibling;
+            while (currentElement && currentElement.tagName !== 'H4') {
+                content.appendChild(currentElement);
+                currentElement = header.nextElementSibling; // Re-evaluate next sibling
+            }
 
-        // Add the click listener to the new header
-        newHeader.addEventListener('click', () => {
-            section.classList.toggle('open');
+            // Replace the original header with the new collapsible section
+            header.parentNode.replaceChild(section, header);
+            section.appendChild(newHeader);
+            section.appendChild(content);
+
+            // Add the click listener to the new header
+            newHeader.addEventListener('click', () => {
+                section.classList.toggle('open');
             });
         });
 
@@ -716,16 +720,48 @@ class ChatInterface {
         if (window.MathJax && window.MathJax.typesetPromise) {
             window.MathJax.typesetPromise([messageDiv]).catch(err => console.warn('MathJax error:', err));
         }
-        if (sender === "bot"){
+        if (sender === "bot") {
             const codeBlocks = messageDiv.querySelectorAll("pre code");
-            codeBlocks.forEach((block)=>{
-                if (window.Prism){
+            codeBlocks.forEach((block) => {
+                if (window.Prism) {
                     Prism.highlightElement(block);
                 }
             });
         }
         heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
+        if (sender === "bot") {
+            const codeBlocks = messageDiv.querySelectorAll("pre"); // Find <pre> elements
+            codeBlocks.forEach((preElement) => {
+                // Create the button
+                const copyBtn = document.createElement("button");
+                copyBtn.className = "copy-code-btn";
+                copyBtn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy';
+                preElement.appendChild(copyBtn);
 
+                // Add click event listener
+                copyBtn.addEventListener("click", () => {
+                    const codeToCopy = preElement.querySelector("code").innerText;
+                    navigator.clipboard.writeText(codeToCopy).then(() => {
+                        copyBtn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+                        setTimeout(() => {
+                            copyBtn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy';
+                        }, 2000);
+                    }).catch(err => {
+                        copyBtn.textContent = 'Failed to copy';
+                        console.error('Failed to copy text: ', err);
+                    });
+                });
+            });
+
+            const codeHighlightElements = messageDiv.querySelectorAll("pre code");
+            codeHighlightElements.forEach((block) => {
+                if (window.Prism) {
+                    Prism.highlightElement(block);
+                }
+            });
+        }
+
+        heroChatMessages.scrollTop = heroChatMessages.scrollHeight;
         return messageId;
     }
 
@@ -943,7 +979,8 @@ class ChatInterface {
 
         } catch (error) {
             console.error('Error reverting conversation:', error);
-            alert('Failed to revert conversation. Please try again.');
+            const errorMsg = error.message || 'Unknown error';
+            alert(`Failed to revert: ${errorMsg}\n\nIf this is an old session, try refreshing the page.`);
         }
     }
 
@@ -1150,16 +1187,16 @@ class ChatInterface {
 
     isDataFrameOutput(message) {
         return message.includes('pandas.DataFrame') ||
-               (message.includes('Index:') && message.includes('Columns:')) ||
-               (message.includes('rows') && message.includes('columns')) ||
-               (message.includes('Name:') && message.includes('dtype:')) ||
-               message.includes('pandas.Series');
+            (message.includes('Index:') && message.includes('Columns:')) ||
+            (message.includes('rows') && message.includes('columns')) ||
+            (message.includes('Name:') && message.includes('dtype:')) ||
+            message.includes('pandas.Series');
     }
 
     isFirstRowsResponse(message) {
         return message.includes('.head()') ||
-               (message.includes('first') && message.includes('rows')) ||
-               (message.includes('showing') && message.includes('rows'));
+            (message.includes('first') && message.includes('rows')) ||
+            (message.includes('showing') && message.includes('rows'));
     }
 
     formatBotResponse(message) {
@@ -1228,14 +1265,14 @@ class ChatInterface {
         const dirty = marked.parse(sanitizedMarkdown);
 
         const clean = DOMPurify.sanitize(dirty, {
-          ALLOWED_TAGS: ['p', 'br', 'strong', 'b', 'em', 'i', 'u', 'code', 'pre', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'span', 'iframe', 'img'],
-          ALLOWED_ATTR: ['href', 'target', 'rel', 'src', 'alt', 'allowfullscreen', 'class', 'align', 'style', 'width', 'height'],
-          KEEP_CONTENT: true
+            ALLOWED_TAGS: ['p', 'br', 'strong', 'b', 'em', 'i', 'u', 'code', 'pre', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'span', 'iframe', 'img'],
+            ALLOWED_ATTR: ['href', 'target', 'rel', 'src', 'alt', 'allowfullscreen', 'class', 'align', 'style', 'width', 'height'],
+            KEEP_CONTENT: true
         });
         const withEmojis = this.emojiConverter.replace_colons(clean);
-        return withEmojis.replace(/<table>/g,'<div class="table-wrapper"><table>')
-                         .replace(/<\/table>/g,'</table></div>');
-      }
+        return withEmojis.replace(/<table>/g, '<div class="table-wrapper"><table>')
+            .replace(/<\/table>/g, '</table></div>');
+    }
 
     convertInlineMarkdown(text) {
         return text
@@ -1380,7 +1417,7 @@ class ChatInterface {
         if (!heroChatMessages) return;
 
         const noticeDiv = document.createElement('div');
-        noticeDiv.className = 'pii-consent-notice';
+        noticeDiv.className = 'pii-notice';
 
         const detectedColumns = piiData.detected_columns || {};
         const columnCount = Object.keys(detectedColumns).length;
@@ -1521,6 +1558,8 @@ class ChatInterface {
             const data = await this.app.apiClient.uploadFile(file, sessionId);
 
             if (data.status === 'success') {
+                this.hideLoadingMessage();
+
                 this.app.currentSessionId = data.session_id;
                 this.app.agentSessionId = data.agent_session_id || data.session_id;
 
@@ -1532,10 +1571,20 @@ class ChatInterface {
                     this.showPIIConsentDialog(data.pii_detection);
                 }
 
+                if (data.report_created && data.report_id && window.createReport) {
+                    console.log('Opening report panel for upload:', data.report_id);
+                    window.createReport({
+                        id: data.report_id,
+                        dataset_name: file.name,
+                        session_id: this.app.agentSessionId
+                    });
+                }
+
                 if (message) {
                     this.streamAgentResponse(message);
                 }
             } else {
+                this.hideLoadingMessage();
                 this.addChatMessage('bot', `Upload error: ${data.detail || 'Unknown error'}`);
             }
         } catch (error) {

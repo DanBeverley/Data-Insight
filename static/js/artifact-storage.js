@@ -235,8 +235,10 @@ class ArtifactStorage {
                 this.showPreview(item, previewUrl, false);
             });
 
-            item.addEventListener('mouseleave', () => {
-                this.hidePreview();
+            item.addEventListener('mouseleave', (e) => {
+                if (!this.isMovingToPreviewItem(e.relatedTarget)) {
+                    this.hidePreview();
+                }
             });
         } else if (isModel) {
             item.setAttribute('data-preview', 'model');
@@ -246,8 +248,10 @@ class ArtifactStorage {
                 this.showPreview(item, null, true, modelInfo);
             });
 
-            item.addEventListener('mouseleave', () => {
-                this.hidePreview();
+            item.addEventListener('mouseleave', (e) => {
+                if (!this.isMovingToPreviewItem(e.relatedTarget)) {
+                    this.hidePreview();
+                }
             });
         }
 
@@ -404,7 +408,7 @@ class ArtifactStorage {
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.8);
             opacity: 0;
             pointer-events: none;
-            transition: opacity 0.2s ease;
+            transition: opacity 0.15s ease;
             z-index: 999999;
             background-size: contain;
             background-repeat: no-repeat;
@@ -412,17 +416,27 @@ class ArtifactStorage {
             display: none;
         `;
         document.body.appendChild(this.previewTooltip);
+        this.hideTimeout = null;
+        this.showTimeout = null;
         console.log('[ArtifactStorage] Preview tooltip created and appended to body');
     }
 
     showPreview(element, previewUrl, isModel = false, modelInfo = '') {
         if (!this.previewTooltip) return;
 
+        if (this.hideTimeout) {
+            clearTimeout(this.hideTimeout);
+            this.hideTimeout = null;
+        }
+
+        if (this.showTimeout) {
+            clearTimeout(this.showTimeout);
+        }
+
         const rect = element.getBoundingClientRect();
         const tooltipLeft = rect.left - 260;
         const tooltipTop = rect.top + (rect.height / 2) - 125;
 
-        this.previewTooltip.style.display = 'block';
         this.previewTooltip.style.left = `${tooltipLeft}px`;
         this.previewTooltip.style.top = `${tooltipTop}px`;
 
@@ -444,18 +458,49 @@ class ArtifactStorage {
             this.previewTooltip.textContent = '';
         }
 
-        setTimeout(() => {
+        if (this.previewTooltip.style.display === 'none') {
+            this.previewTooltip.style.display = 'block';
+            this.showTimeout = setTimeout(() => {
+                this.previewTooltip.style.opacity = '1';
+            }, 10);
+        } else {
             this.previewTooltip.style.opacity = '1';
-        }, 10);
+        }
+    }
+
+    isMovingToPreviewItem(element) {
+        if (!element) return false;
+
+        let current = element;
+        while (current && current !== document.body) {
+            if (current.hasAttribute && current.hasAttribute('data-preview')) {
+                return true;
+            }
+            current = current.parentElement;
+        }
+        return false;
     }
 
     hidePreview() {
         if (!this.previewTooltip) return;
 
-        this.previewTooltip.style.opacity = '0';
-        setTimeout(() => {
-            this.previewTooltip.style.display = 'none';
-        }, 200);
+        if (this.showTimeout) {
+            clearTimeout(this.showTimeout);
+            this.showTimeout = null;
+        }
+
+        if (this.hideTimeout) {
+            clearTimeout(this.hideTimeout);
+        }
+
+        this.hideTimeout = setTimeout(() => {
+            this.previewTooltip.style.opacity = '0';
+            setTimeout(() => {
+                if (this.previewTooltip.style.opacity === '0') {
+                    this.previewTooltip.style.display = 'none';
+                }
+            }, 150);
+        }, 50);
     }
 }
 

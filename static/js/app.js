@@ -2,7 +2,6 @@ class DataInsightApp {
     constructor() {
         this.currentSessionId = null;
         this.agentSessionId = null;
-        this.currentStep = 1;
         this.intelligence = {
             profile: null,
             relationships: null,
@@ -44,12 +43,10 @@ class DataInsightApp {
         this.threeRenderer = new ThreeRenderer();
         this.blackHole = new BlackHole('#blackhole');
         this.apiClient = new ApiClient();
-        this.uiManager = new UIManager();
         this.chatInterface = new ChatInterface();
         this.sessionManager = new SessionManager();
         this.themeManager = new ThemeManager();
 
-        this.uiManager.setApp(this);
         this.chatInterface.setApp(this);
         this.sessionManager.setApp(this);
         this.apiClient.setApp(this);
@@ -59,10 +56,6 @@ class DataInsightApp {
     setupEventListeners() {
         this.setupManualAnalysisButton();
         this.sessionManager.setupEventListeners();
-        this.uiManager.setupFileUpload();
-        this.uiManager.setupIntelligenceFeatures();
-        this.uiManager.setupContinueButton();
-        this.uiManager.setupDownloads();
         this.chatInterface.setupHeroChatInterface();
         this.themeManager.setupThemeToggle();
         this.threeRenderer.init();
@@ -86,47 +79,6 @@ class DataInsightApp {
         return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     }
 
-    showSection(sectionId) {
-        const sections = document.querySelectorAll('.section');
-        sections.forEach(section => {
-            if (section.id === sectionId) {
-                section.classList.remove('hidden');
-                section.classList.add('active');
-            } else {
-                section.classList.add('hidden');
-                section.classList.remove('active');
-            }
-        });
-
-        this.currentStep = this.getSectionStep(sectionId);
-        this.updateProgressIndicator();
-        this.updateSidebarProgress();
-    }
-
-    getSectionStep(sectionId) {
-        const steps = {
-            'dataInputSection': 1,
-            'intelligenceSection': 2,
-            'taskConfigSection': 3,
-            'processingSection': 4,
-            'resultsSection': 5
-        };
-        return steps[sectionId] || 1;
-    }
-
-    updateProgressIndicator() {
-        const progressSteps = document.querySelectorAll('.progress-step');
-        progressSteps.forEach((step, index) => {
-            if (index + 1 <= this.currentStep) {
-                step.classList.add('active');
-                step.classList.add('completed');
-            } else {
-                step.classList.remove('active');
-                step.classList.remove('completed');
-            }
-        });
-    }
-
     updateStatusIndicator(status, type = 'ready') {
         const indicator = document.getElementById('statusIndicator');
         const statusText = document.getElementById('statusText');
@@ -139,26 +91,6 @@ class DataInsightApp {
             } else {
                 indicator.style.animation = 'none';
             }
-        }
-    }
-
-    updateSidebarProgress() {
-        const stepItems = document.querySelectorAll('.step-item');
-        stepItems.forEach((item, index) => {
-            const stepNumber = parseInt(item.dataset.step);
-            if (stepNumber < this.currentStep) {
-                item.classList.add('completed');
-                item.classList.remove('active');
-            } else if (stepNumber === this.currentStep) {
-                item.classList.add('active');
-                item.classList.remove('completed');
-            } else {
-                item.classList.remove('active', 'completed');
-            }
-        });
-
-        if (this.currentStep >= 2 && this.currentSessionId) {
-            this.updateSidebarStats();
         }
     }
 
@@ -195,7 +127,6 @@ class DataInsightApp {
     restartWorkflow() {
         this.currentSessionId = null;
         this.agentSessionId = null;
-        this.currentStep = 1;
         this.intelligence = { profile: null, relationships: null, recommendations: null };
         this.originalDataShape = null;
         this.fullDataPreview = null;
@@ -205,27 +136,39 @@ class DataInsightApp {
             this.pipelineMonitor = null;
         }
 
-        this.uiManager.clearAllResults();
-        this.showSection('dataInputSection');
+        this.clearAllResults();
         this.updateStatusIndicator('Ready', 'ready');
-        this.uiManager.showElegantToast('Workflow restarted', 'success');
+        this.showToast('Workflow restarted', 'success');
     }
 
-    animateValueChange(elementId, newValue, className = '') {
-        const element = document.getElementById(elementId);
-        if (!element) return;
+    clearAllResults() {
+        const chatMessages = document.getElementById('heroChatMessages');
+        if (chatMessages) {
+            chatMessages.innerHTML = '<div class="chat-message bot"><div class="message-content"><p>Welcome to DataInsight AI. Please upload a dataset to begin.</p></div></div>';
+        }
+    }
 
-        element.style.opacity = '0.5';
-        element.style.transform = 'scale(0.95)';
-
+    showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        toast.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            background: ${type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#3b82f6'};
+            color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 10000;
+            animation: slideInRight 0.3s ease-out;
+        `;
+        document.body.appendChild(toast);
         setTimeout(() => {
-            element.textContent = newValue;
-            if (className) {
-                element.className = className;
-            }
-            element.style.opacity = '1';
-            element.style.transform = 'scale(1)';
-        }, 150);
+            toast.style.animation = 'slideOutRight 0.3s ease-in';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
     }
 }
 

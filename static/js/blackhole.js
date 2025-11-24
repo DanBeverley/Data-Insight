@@ -17,8 +17,30 @@ class BlackHole {
         this.expanse = false;
         this.returning = false;
         this.hasExpanded = false;
-
+        this.resize = this.resize.bind(this);
         this.init();
+    }
+
+    resize() {
+        this.w = this.container.offsetWidth;
+        this.h = this.container.offsetHeight;
+        this.cw = this.w;
+        this.ch = this.h;
+
+        if (this.context && this.context.canvas) {
+            const canvas = this.context.canvas;
+            canvas.width = this.cw;
+            canvas.height = this.ch;
+            
+            this.setDPI(canvas, 192);
+        }
+
+        this.centery = this.ch / 2;
+        this.centerx = this.cw / 2;
+
+        this.stars.forEach(star => {
+            star.x = this.centerx;
+        });
     }
 
     setDPI(canvas, dpi) {
@@ -189,6 +211,7 @@ class BlackHole {
 
     init() {
         const canvas = document.createElement('canvas');
+        canvas.id = 'bgParticles';
         canvas.width = this.cw;
         canvas.height = this.ch;
         this.container.appendChild(canvas);
@@ -204,6 +227,7 @@ class BlackHole {
         }
 
         this.loop();
+        window.addEventListener('resize', this.resize);
     }
 }
 
