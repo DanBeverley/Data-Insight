@@ -2,19 +2,27 @@
 
 import os
 import psutil
+from typing import Dict
+
+try:
+    from .logger import logger
+except ImportError:
+    import sys
+
+    sys.path.append(os.path.join(os.path.dirname(__file__)))
+    from logger import logger
 
 
 class ModelManager:
     """Manages model configurations and switching for different agent types"""
 
     def __init__(self):
-        # Use local model for testing environment to avoid cloud auth issues
         is_test_env = os.getenv("ENVIRONMENT") == "test"
-        print(f"DEBUG ModelManager: ENVIRONMENT={os.getenv('ENVIRONMENT')}, is_test_env={is_test_env}")
-        self.brain_model = "phi3:3.8b-mini-128k-instruct-q4_K_M" if is_test_env else "deepseek-v3.1:671b-cloud"
+        logger.debug(f"ModelManager: ENVIRONMENT={os.getenv('ENVIRONMENT')}, is_test_env={is_test_env}")
+        self.brain_model = "phi3:3.8b-mini-128k-instruct-q4_K_M" if is_test_env else "gpt-oss:120b-cloud"
         self.hands_model = "phi3:3.8b-mini-128k-instruct-q4_K_M" if is_test_env else "qwen3-coder:480b-cloud"
-        self.router_model = "phi3:3.8b-mini-128k-instruct-q4_K_M"
-        self.status_model = "phi3:3.8b-mini-128k-instruct-q4_K_M"
+        self.router_model = "gpt-oss:20b-cloud"
+        self.status_model = "gpt-oss:20b-cloud"
         self.current_model = self.router_model
         self.switch_count = 0
         self.num_cores = psutil.cpu_count(logical=False) or 8
@@ -39,12 +47,12 @@ class ModelManager:
         target_model = model_map.get(agent_type, self.brain_model)
 
         if self.current_model != target_model:
-            print(f"Switching model: {self.current_model} -> {target_model}")
+            logger.info(f"Switching model: {self.current_model} -> {target_model}")
             self.current_model = target_model
             self.switch_count += 1
         return self.current_model
 
-    def get_ollama_config(self, agent_type: str) -> dict:
+    def get_ollama_config(self, agent_type: str) -> Dict[str, any]:
         temp_map = {
             "router": self.temperature_router,
             "brain": self.temperature_brain,
@@ -78,7 +86,7 @@ class ModelManager:
             config["format"] = ""
             config["options"] = {"num_predict": predict_map.get(agent_type, 4096)}
             if agent_type == "hands":
-                print(f"DEBUG: Hands config with num_predict={config['options']['num_predict']}")
+                logger.debug(f"Hands config with num_predict={config['options']['num_predict']}")
             return config
 
         config = {
