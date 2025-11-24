@@ -59,7 +59,7 @@ async def get_current_user(
         raise credentials_exception
 
     try:
-        user = db.query(User).filter(User.id == user_id).first()
+        user = db.query(User).filter(User.user_id == user_id).first()
     except Exception:
         user = None
 
@@ -97,7 +97,7 @@ async def get_optional_current_user(
         return None
 
     try:
-        user = db.query(User).filter(User.id == user_id).first()
+        user = db.query(User).filter(User.user_id == user_id).first()
         if user and user.is_active:
             return user
     except Exception:

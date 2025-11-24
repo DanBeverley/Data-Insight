@@ -241,6 +241,80 @@ if SQLALCHEMY_AVAILABLE:
             Index("idx_model_lookup", "session_id", "dataset_hash", "model_type"),
         )
 
+    class User(Base):
+        """User authentication model"""
+
+        __tablename__ = "users"
+
+        user_id = Column(String(100), primary_key=True)
+        email = Column(String(255), unique=True, nullable=False)
+        hashed_password = Column(String(255), nullable=False)
+        full_name = Column(String(255), nullable=True)
+        is_active = Column(Boolean, default=True)
+        created_at = Column(DateTime, default=datetime.utcnow)
+        last_login = Column(DateTime, nullable=True)
+
+        __table_args__ = (
+            Index("idx_user_email", "email"),
+            Index("idx_user_active", "is_active"),
+        )
+
+    class Report(Base):
+        """Analysis reports generated from dataset exploration"""
+
+        __tablename__ = "reports"
+
+        id = Column(String(100), primary_key=True)
+        session_id = Column(String(100), nullable=False)
+        dataset_name = Column(String(255), nullable=False)
+        status = Column(String(50), nullable=False)
+        report_data = Column(JSONType, default=dict)
+        created_at = Column(DateTime, default=datetime.utcnow)
+        updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+        artifacts = relationship("ReportArtifact", back_populates="report", cascade="all, delete-orphan")
+
+        __table_args__ = (
+            Index("idx_reports_session", "session_id"),
+            Index("idx_reports_status", "status"),
+            Index("idx_reports_created", "created_at"),
+        )
+
+    class ReportArtifact(Base):
+        """Artifacts associated with analysis reports"""
+
+        __tablename__ = "report_artifacts"
+
+        id = Column(String(100), primary_key=True)
+        report_id = Column(String(100), ForeignKey("reports.id", ondelete="CASCADE"), nullable=False)
+        artifact_type = Column(String(50), nullable=False)
+        file_path = Column(Text, nullable=False)
+        file_size_bytes = Column(Integer, nullable=True)
+        artifact_metadata = Column(JSONType, default=dict)
+        created_at = Column(DateTime, default=datetime.utcnow)
+
+        report = relationship("Report", back_populates="artifacts")
+
+        __table_args__ = (
+            Index("idx_artifacts_report", "report_id"),
+            Index("idx_artifacts_type", "artifact_type"),
+        )
+
+    class CancelledTask(Base):
+        """Track cancelled agent tasks"""
+
+        __tablename__ = "cancelled_tasks"
+
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        session_id = Column(String(100), nullable=False)
+        cancelled_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+        reason = Column(String(255), nullable=True)
+
+        __table_args__ = (
+            Index("idx_cancelled_session", "session_id"),
+            Index("idx_cancelled_timestamp", "cancelled_at"),
+        )
+
 else:
     # Fallback classes when SQLAlchemy is not available
     class Base:
@@ -265,4 +339,16 @@ else:
         pass
 
     class ModelRegistry:
+        pass
+
+    class User:
+        pass
+
+    class Report:
+        pass
+
+    class ReportArtifact:
+        pass
+
+    class CancelledTask:
         pass

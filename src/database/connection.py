@@ -142,10 +142,14 @@ class DatabaseManager:
         try:
             with self.get_session() as session:
                 if self.config.is_postgresql():
-                    result = session.execute("SELECT version()").scalar()
+                    from sqlalchemy import text
+
+                    result = session.execute(text("SELECT version()")).scalar()
                     version = result.split()[0] if result else "Unknown"
                 else:
-                    result = session.execute("SELECT sqlite_version()").scalar()
+                    from sqlalchemy import text
+
+                    result = session.execute(text("SELECT sqlite_version()")).scalar()
                     version = f"SQLite {result}" if result else "Unknown"
 
                 return {
