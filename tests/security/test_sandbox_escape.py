@@ -24,7 +24,7 @@ class TestSandboxEscape:
     ]
 
     def test_code_execution_isolation(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         for code in self.ESCAPE_ATTEMPTS:
             result = execute_python_in_sandbox(code, sample_session_id)
@@ -35,7 +35,7 @@ class TestSandboxEscape:
             assert True
 
     def test_network_isolation(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         for code in self.NETWORK_ESCAPE_ATTEMPTS:
             result = execute_python_in_sandbox(code, sample_session_id)
@@ -43,7 +43,7 @@ class TestSandboxEscape:
             assert result["success"] is False or "evil.com" not in result.get("stdout", "")
 
     def test_file_system_restrictions(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         for code in self.FILE_SYSTEM_ESCAPES:
             result = execute_python_in_sandbox(code, sample_session_id)
@@ -55,7 +55,7 @@ class TestSandboxEscape:
             )
 
     def test_resource_limits(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         memory_bomb = """
 import numpy as np
@@ -66,7 +66,7 @@ huge_array = np.zeros((10000, 10000, 100))
         assert result["success"] is False or "memory" in result.get("stderr", "").lower()
 
     def test_infinite_loop_protection(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         infinite_loop = "while True: pass"
 
@@ -74,7 +74,7 @@ huge_array = np.zeros((10000, 10000, 100))
         assert result["success"] is False or "timeout" in result.get("stderr", "").lower()
 
     def test_privilege_escalation_prevention(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         privilege_escalation_attempts = [
             "import ctypes; ctypes.CDLL('libc.so.6').setuid(0)",
@@ -87,7 +87,7 @@ huge_array = np.zeros((10000, 10000, 100))
             assert True
 
     def test_module_import_restrictions(self, sample_session_id: str):
-        from data_scientist_chatbot.app.tools.executor import execute_python_in_sandbox
+        from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
         dangerous_imports = [
             "import pickle; pickle.loads(b'malicious')",

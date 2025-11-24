@@ -5,14 +5,14 @@ from unittest.mock import patch, MagicMock
 @pytest.mark.integration
 class TestSandboxCodeIsolation:
     def test_sandbox_prevents_file_system_access(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         malicious_code = """
 import os
 os.system('rm -rf /')
 """
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -25,14 +25,14 @@ os.system('rm -rf /')
             assert "Error" in result or "SecurityError" in result
 
     def test_sandbox_prevents_network_access(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         network_code = """
 import urllib.request
 urllib.request.urlopen('http://malicious-site.com')
 """
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -45,13 +45,13 @@ urllib.request.urlopen('http://malicious-site.com')
             assert "Error" in result or "Network" in result
 
     def test_sandbox_memory_limits(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         memory_intensive_code = """
 huge_list = [0] * (10**9)
 """
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -64,14 +64,14 @@ huge_list = [0] * (10**9)
             assert "Error" in result or "Memory" in result
 
     def test_sandbox_timeout_enforcement(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         infinite_loop_code = """
 while True:
     pass
 """
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {
                 "success": False,
                 "stdout": "",
@@ -84,7 +84,7 @@ while True:
             assert "Error" in result or "Timeout" in result
 
     def test_sandbox_safe_code_execution(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         safe_code = """
 import pandas as pd
@@ -92,7 +92,7 @@ result = 2 + 2
 print(result)
 """
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {"success": True, "stdout": "4\n", "stderr": "", "plots": []}
 
             result = execute_tool("python_code_interpreter", {"code": safe_code}, "test_session_safe")
@@ -101,9 +101,9 @@ print(result)
             assert "Error" not in result
 
     def test_sandbox_stateful_execution(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.side_effect = [
                 {"success": True, "stdout": "", "stderr": "", "plots": []},
                 {"success": True, "stdout": "10\n", "stderr": "", "plots": []},
@@ -117,7 +117,7 @@ print(result)
             assert mock_sandbox.call_count == 2
 
     def test_sandbox_plot_generation(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         plot_code = """
 import matplotlib.pyplot as plt
@@ -126,7 +126,7 @@ plt.plot([1, 2, 3], [4, 5, 6])
 plt.savefig('test_plot.png')
 """
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {"success": True, "stdout": "", "stderr": "", "plots": ["test_plot.png"]}
 
             result = execute_tool("python_code_interpreter", {"code": plot_code}, "test_session_plot")
@@ -134,9 +134,9 @@ plt.savefig('test_plot.png')
             assert "test_plot.png" in result or "visualization" in result.lower()
 
     def test_sandbox_dataframe_persistence(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
-        with patch("data_scientist_chatbot.app.tools.executor.execute_python_in_sandbox") as mock_sandbox:
+        with patch("data_scientist_chatbot.app.tools.execute_python_in_sandbox") as mock_sandbox:
             mock_sandbox.return_value = {"success": True, "stdout": "(5, 2)\n", "stderr": "", "plots": []}
 
             code = "print(df.shape)"
@@ -145,7 +145,7 @@ plt.savefig('test_plot.png')
             assert "(5, 2)" in result or "5" in result
 
     def test_sandbox_error_handling(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         error_code = """
 undefined_variable + 1
@@ -164,7 +164,7 @@ undefined_variable + 1
             assert "Error" in result or "NameError" in result
 
     def test_sandbox_package_installation_prevention(self):
-        from data_scientist_chatbot.app.tools.executor import execute_tool
+        from data_scientist_chatbot.app.tools import execute_tool
 
         install_code = """
 import subprocess

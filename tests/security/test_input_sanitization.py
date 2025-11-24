@@ -16,7 +16,7 @@ class TestInputSanitization:
     COMMAND_INJECTION_PAYLOADS = ["; ls -la", "| cat /etc/passwd", "`whoami`", "$(cat /etc/passwd)"]
 
     def test_sql_injection_protection(self, sample_session_id: str):
-        from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+        from data_scientist_chatbot.app.utils.text_processing import sanitize_input
 
         for payload in self.SQL_INJECTION_PAYLOADS:
             sanitized = sanitize_input(payload)
@@ -25,7 +25,7 @@ class TestInputSanitization:
             assert "--" not in sanitized
 
     def test_xss_protection(self, sample_session_id: str):
-        from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+        from data_scientist_chatbot.app.utils.text_processing import sanitize_input
 
         for payload in self.XSS_PAYLOADS:
             sanitized = sanitize_input(payload)
@@ -34,7 +34,7 @@ class TestInputSanitization:
             assert "onerror" not in sanitized.lower()
 
     def test_command_injection_protection(self, sample_session_id: str):
-        from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+        from data_scientist_chatbot.app.utils.text_processing import sanitize_input
 
         for payload in self.COMMAND_INJECTION_PAYLOADS:
             sanitized = sanitize_input(payload)
@@ -43,7 +43,7 @@ class TestInputSanitization:
             assert "|" not in sanitized or "pipe" in sanitized.lower()
 
     def test_path_traversal_protection(self, sample_session_id: str):
-        from data_scientist_chatbot.app.utils.sanitizers import sanitize_file_path
+        from data_scientist_chatbot.app.utils.text_processing import sanitize_file_path
 
         dangerous_paths = [
             "../../../etc/passwd",
@@ -88,7 +88,7 @@ class TestInputSanitization:
             list(stream_agent_response(extremely_long_query, sample_session_id, False))
 
     def test_no_code_execution_in_user_input(self, sample_session_id: str):
-        from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+        from data_scientist_chatbot.app.utils.text_processing import sanitize_input
 
         code_payloads = ["exec('import os; os.system(\"rm -rf /\")')", "eval('1+1')", "__import__('os').system('ls')"]
 

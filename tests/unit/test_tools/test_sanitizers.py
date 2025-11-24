@@ -1,5 +1,5 @@
 import pytest
-from data_scientist_chatbot.app.utils.sanitizers import sanitize_output
+from data_scientist_chatbot.app.utils.text_processing import sanitize_output
 
 
 @pytest.mark.unit
