@@ -11,6 +11,7 @@ from langchain_core.messages.ai import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END, MessagesState, add_messages
 from typing_extensions import Annotated
+from langsmith import traceable
 
 import sys
 import os
@@ -18,7 +19,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from tools import execute_python_in_sandbox
+    from tools import execute_python_in_sandbox, execute_tool
     from context_manager import ContextManager, ConversationContext
     from performance_monitor import PerformanceMonitor
     from core.model_manager import ModelManager
@@ -27,10 +28,8 @@ try:
         create_hands_agent,
         create_router_agent,
         create_status_agent,
-        create_hands_subgraph,
     )
-    from tools.executor import execute_tool
-    from tools.parsers import parse_message_to_tool_call
+    from utils.text_processing import parse_message_to_tool_call, sanitize_output, extract_format_from_request
     from tools.tool_definitions import (
         python_code_interpreter,
         retrieve_historical_patterns,
@@ -42,12 +41,10 @@ try:
     )
     from prompts import get_brain_prompt, get_hands_prompt, get_router_prompt, get_status_agent_prompt
     from utils.context import get_data_context
-    from utils.sanitizers import sanitize_output
-    from utils.format_parser import extract_format_from_request
     from utils.helpers import has_tool_calls
 except ImportError:
     try:
-        from .tools import execute_python_in_sandbox
+        from .tools import execute_python_in_sandbox, execute_tool
         from .context_manager import ContextManager, ConversationContext
         from .performance_monitor import PerformanceMonitor
         from .core.model_manager import ModelManager
@@ -56,10 +53,8 @@ except ImportError:
             create_hands_agent,
             create_router_agent,
             create_status_agent,
-            create_hands_subgraph,
         )
-        from .tools.executor import execute_tool
-        from .tools.parsers import parse_message_to_tool_call
+        from .utils.text_processing import parse_message_to_tool_call, sanitize_output, extract_format_from_request
         from .tools.tool_definitions import (
             python_code_interpreter,
             retrieve_historical_patterns,
@@ -71,17 +66,13 @@ except ImportError:
         )
         from .prompts import get_brain_prompt, get_hands_prompt, get_router_prompt, get_status_agent_prompt
         from .utils.context import get_data_context
-        from .utils.sanitizers import sanitize_output
-        from .utils.format_parser import extract_format_from_request
         from .utils.helpers import has_tool_calls
     except ImportError as e:
         raise ImportError(f"Could not import required modules: {e}")
 import re
-import logging
 from difflib import SequenceMatcher
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from core.logger import logger
+from core.exceptions import LLMGenerationError, CodeExecutionError, StateManagementError, ToolExecutionError
 
 project_root = Path(__file__).parent.parent.parent
 env_file = project_root / ".env"
@@ -137,13 +128,13 @@ def execute_tools_node(state: AgentState) -> dict:
     last_message = state["messages"][-1]
 
     if not has_tool_calls(last_message):
-        print("DEBUG execute_tools: No tool calls found")
+        logger.debug("execute_tools: No tool calls found")
         return {"messages": state["messages"]}
 
     tool_calls = last_message.tool_calls
     if tool_calls is None:
         tool_calls = []
-    print(f"DEBUG execute_tools: Found {len(tool_calls)} tool calls in message")
+    logger.debug(f"execute_tools: Found {len(tool_calls)} tool calls in message")
 
     tool_responses = []
     for tool_call in tool_calls:
@@ -159,21 +150,20 @@ def execute_tools_node(state: AgentState) -> dict:
             tool_args = tool_call.args
             tool_id = tool_call.id
 
-        print(f"DEBUG execute_tools: Processing {tool_name} with args: {tool_args}")
+        logger.debug(f"execute_tools: Processing {tool_name} with args: {tool_args}")
         if not session_id:
             content = "Error: Session ID is missing."
         else:
             try:
                 if tool_name == "python_code_interpreter":
-                    print(f"DEBUG: Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
+                    logger.debug(f"Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
 
                 content = execute_tool(tool_name, tool_args, session_id)
             except Exception as e:
-                content = f"Execution failed in tool node: {str(e)}"
+                logger.exception(f"Tool execution failed for {tool_name}")
+                raise ToolExecutionError(f"Execution failed in tool node: {tool_name}") from e
 
-        print(f"DEBUG execute_tools: Tool {tool_name} FULL result:")
-        print(content)
-        print("DEBUG execute_tools: End of tool result")
+        logger.debug(f"execute_tools: Tool {tool_name} result ({len(str(content))} chars)")
 
         # Apply semantic output sanitization to remove technical debug artifacts
         sanitized_content = sanitize_output(content)
@@ -193,8 +183,8 @@ def execute_tools_node(state: AgentState) -> dict:
         "retry_count": 0,  # Reset after successful tool execution
         "last_agent_sequence": (state.get("last_agent_sequence") or []) + ["action"],
     }
-    print(f"DEBUG execute_tools_node: Python executions count: {python_executions}")
-    print(f"DEBUG execute_tools_node: Returning state with {len(result_state['messages'])} messages")
+    logger.debug(f"execute_tools_node: Python executions count: {python_executions}")
+    logger.debug(f"execute_tools_node: Returning state with {len(result_state['messages'])} messages")
     return result_state
 
 
@@ -208,7 +198,7 @@ def run_router_agent(state: AgentState):
             break
 
     if not last_user_message:
-        print("DEBUG: No human message found, defaulting to brain")
+        logger.debug("No human message found, defaulting to brain")
         return {
             "messages": state["messages"],
             "router_decision": "brain",
@@ -222,7 +212,7 @@ def run_router_agent(state: AgentState):
     try:
         import builtins
 
-        print(f"DEBUG: Router checking session_id: {session_id}")
+        logger.debug(f"Router checking session_id: {session_id}")
         if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
             session_data = builtins._session_store[session_id]
             if "dataframe" in session_data:
@@ -230,7 +220,7 @@ def run_router_agent(state: AgentState):
                 dataset_info = f"Dataset loaded: {df.shape[0]} rows x {df.shape[1]} columns"
                 session_context = f"Session state: {dataset_info}"
                 has_dataset = True
-                print(f"DEBUG: Router found dataset: {dataset_info}")
+                logger.debug(f"Router found dataset: {dataset_info}")
             elif "data_profile" in session_data:
                 session_context = "Session state: Dataset loaded"
                 has_dataset = True
@@ -240,10 +230,10 @@ def run_router_agent(state: AgentState):
             session_context = "Session state: No dataset uploaded yet"
     except Exception as e:
         session_context = "Session state: No dataset uploaded yet"
-        print(f"DEBUG: Router exception: {e}")
+        logger.debug(f"Router exception: {e}")
 
-    print(f"DEBUG: Router context: {session_context}")
-    print(f"DEBUG: Router analyzing message: {str(last_user_message.content)[:100]}...")
+    logger.debug(f"Router context: {session_context}")
+    logger.debug(f"Router analyzing message: {str(last_user_message.content)[:100]}...")
 
     contextual_router_state = {"messages": [last_user_message], "session_context": session_context}
 
@@ -258,7 +248,7 @@ def run_router_agent(state: AgentState):
 
         json_match = re.search(r'\{[^}]*"routing_decision"[^}]*\}', content)
         if not json_match:
-            print("DEBUG: Router failed to produce JSON, defaulting to brain")
+            logger.warning("Router failed to produce JSON, defaulting to brain")
             return {
                 "messages": state["messages"],
                 "router_decision": "brain",
@@ -269,7 +259,7 @@ def run_router_agent(state: AgentState):
         router_data = json.loads(json_str)
         decision = router_data.get("routing_decision", "brain")
 
-        print(f"DEBUG: Router decision: {decision}")
+        logger.info(f"Router decision: {decision}")
 
         result_state = {
             "messages": state["messages"],
@@ -279,9 +269,9 @@ def run_router_agent(state: AgentState):
         return result_state
 
     except Exception as e:
-        print(f"Router error: {e}, defaulting to brain")
+        logger.error(f"Router error: {e}, defaulting to brain")
         if content is not None:
-            print(f"DEBUG: Router response content was: {repr(content)}")
+            logger.debug(f"Router response content was: {repr(content)}")
         return {
             "messages": state["messages"],
             "router_decision": "brain",
@@ -289,6 +279,7 @@ def run_router_agent(state: AgentState):
         }
 
 
+@traceable(name="brain_execution", tags=["agent", "llm"])
 def run_brain_agent(state: AgentState):
     from core.workflow_types import ExecutionResult, Artifact, WorkflowStage
 
@@ -303,8 +294,9 @@ def run_brain_agent(state: AgentState):
         enhanced_state["current_agent"] = "brain"
     if "business_context" not in enhanced_state:
         enhanced_state["business_context"] = {}
-    if "retry_count" not in enhanced_state:
-        enhanced_state["retry_count"] = 0
+
+    # Ensure retry_count is always an integer (never None)
+    enhanced_state["retry_count"] = enhanced_state.get("retry_count") or 0
     if "last_agent_sequence" not in enhanced_state or enhanced_state["last_agent_sequence"] is None:
         enhanced_state["last_agent_sequence"] = []
 
@@ -478,33 +470,59 @@ To zip artifacts: use zip_artifacts tool with the ID values"""
     agent_runnable = prompt | llm_with_tools
 
     try:
-        response = agent_runnable.invoke(enhanced_state_with_context)
+        # Retry logic for empty responses from LLM
+        max_retries = 2
+        response = None
 
-        logger.info(
-            f"[BRAIN RAW RESPONSE - length={len(response.content if hasattr(response, 'content') else 'no content')}]:\n{response.content if hasattr(response, 'content') else response}"
-        )
+        for attempt in range(max_retries + 1):
+            try:
+                logger.info(f"[BRAIN] Calling LLM (attempt {attempt + 1}/{max_retries + 1})...")
+                response = agent_runnable.invoke(enhanced_state_with_context)
+
+                response_content = response.content if hasattr(response, "content") else ""
+                logger.info(f"[BRAIN RAW RESPONSE - length={len(response_content)}]:\n{response_content[:200]}")
+
+                # Check if response is valid
+                if response_content and len(response_content.strip()) > 0:
+                    logger.info(f"[BRAIN] Got valid response on attempt {attempt + 1}")
+                    break
+                else:
+                    logger.warning(f"[BRAIN] Empty response on attempt {attempt + 1}, retrying...")
+                    if attempt < max_retries:
+                        import time
+
+                        time.sleep(1)  # Brief delay before retry
+            except Exception as llm_error:
+                logger.error(f"[BRAIN] LLM call failed on attempt {attempt + 1}: {llm_error}")
+                if attempt == max_retries:
+                    raise
+
+        if not response:
+            logger.error("[BRAIN] All retry attempts failed, using fallback")
+            response = type("obj", (object,), {"content": ""})()
 
         if hasattr(response, "content"):
             if execution_result and not execution_result.success:
                 response.content = f"I encountered an issue while executing the code:\n\n{execution_result.error_details}\n\nWould you like me to try a different approach?"
             elif not response.content or response.content == "":
+                logger.warning("[BRAIN] Empty response after all retries, using fallback message")
                 response.content = (
                     "I've received your request but couldn't generate a detailed response. Please try rephrasing."
                 )
 
         has_tools = hasattr(response, "tool_calls") and response.tool_calls
-        workflow_stage = WorkflowStage.IN_PROGRESS.value if has_tools else WorkflowStage.COMPLETED.value
+        workflow_stage = WorkflowStage.BRAIN_INTERPRETATION.value if has_tools else WorkflowStage.COMPLETED.value
 
         result_state = {
             "messages": [response],
             "current_agent": "brain",
             "last_agent_sequence": enhanced_state["last_agent_sequence"],
-            "retry_count": enhanced_state["retry_count"],
+            "retry_count": enhanced_state.get("retry_count") or 0,
             "workflow_stage": workflow_stage,
         }
 
         try:
-            from core.session_memory import record_execution
+            from context_manager import record_execution
 
             last_user_msg = next((m.content for m in messages if hasattr(m, "type") and m.type == "human"), "")
             record_execution(
@@ -525,66 +543,69 @@ To zip artifacts: use zip_artifacts tool with the ID values"""
 
         return result_state
     except Exception as e:
-        print(f"DEBUG: Brain agent full error: {str(e)}")
-        print(f"DEBUG: Brain agent error type: {type(e)}")
+        logger.exception("Brain agent failed to generate response")
+        logger.debug(f"Brain agent error type: {type(e)}")
         return {"messages": [AIMessage(content=f"Brain agent error: {e}")]}
 
 
+@traceable(name="hands_execution", tags=["agent", "code"])
 def run_hands_agent(state: AgentState):
+    """
+    Refactored hands agent - Direct execution without subgraph nesting
+    Eliminates async/sync blocking issue by executing logic inline
+    """
+    from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
+
+    logger.info("=" * 80)
+    logger.info("[HANDS] run_hands_agent ENTERED (Direct Execution - No Subgraph)")
+    logger.info("=" * 80)
+
     session_id = state.get("session_id")
+    logger.info(f"[HANDS] Session ID: {session_id}")
 
     # Track hands agent execution
     enhanced_state = state.copy()
     last_sequence = enhanced_state.get("last_agent_sequence") or []
     enhanced_state["last_agent_sequence"] = last_sequence + ["hands"]
+    logger.info(f"[HANDS] Updated agent sequence: {enhanced_state['last_agent_sequence']}")
 
     # Check for loop prevention
     retry_count = enhanced_state.get("retry_count") or 0
     if last_sequence and len(last_sequence) >= 4:
         recent_sequence = last_sequence[-4:]
         if recent_sequence == ["brain", "hands", "brain", "hands"]:
-            print(f"DEBUG: Hands agent - detected potential loop, incrementing retry count")
+            logger.warning("[HANDS] Detected potential loop, incrementing retry count")
             enhanced_state["retry_count"] = retry_count + 1
 
-    # Extract task: either from Brain's delegation or direct user command
+    # Extract task description
     last_message = state["messages"][-1] if state["messages"] else None
     task_description = "Perform data analysis task"
 
-    # Check if this is a delegation from brain or direct routing from router
-    current_agent = enhanced_state.get("current_agent", "")
-    last_agent_seq = enhanced_state.get("last_agent_sequence") or []
-    previous_agent = last_agent_seq[-1] if last_agent_seq else ""
+    previous_agent = last_sequence[-1] if last_sequence else ""
 
     if previous_agent == "router":
         user_messages = [msg for msg in state["messages"] if hasattr(msg, "type") and msg.type == "human"]
         if user_messages:
             task_description = user_messages[-1].content
-            print(f"DEBUG: Direct router->hands task: {task_description}")
+            logger.info(f"[HANDS] Router->hands task: {task_description[:100]}...")
     elif last_message and has_tool_calls(last_message):
-        # Delegation from brain
         tool_call = last_message.tool_calls[0]
         if tool_call.get("name") == "delegate_coding_task":
             task_description = tool_call.get("args", {}).get("task_description", task_description)
-            print(f"DEBUG: Brain delegation task: {task_description}")
+            logger.info(f"[HANDS] Brain delegation task: {task_description[:100]}...")
 
     data_context = get_data_context(session_id)
-    logger.debug(f"Hands agent starting with session_id: {session_id}")
 
-    # Check if task_description was already set by Brain delegation
-    # If so, don't overwrite it with router decision logic
     if task_description == "Perform data analysis task":
         router_decision = state.get("router_decision")
         if router_decision == "hands":
             user_messages = [msg for msg in state["messages"] if hasattr(msg, "type") and msg.type == "human"]
             if user_messages:
                 task_description = user_messages[-1].content
-                print(f"DEBUG: Direct router->hands task: {task_description}")
-            else:
-                task_description = "Perform data analysis task"
 
-    print(f"DEBUG: Using subgraph for hands execution: {task_description}")
+    logger.info(f"[HANDS] Executing directly (no subgraph): {task_description[:100]}...")
 
-    # Detect if this is a training task and predict execution environment
+    # [Rest of context building logic - training decision, format detection, etc.]
     is_training_task = any(
         keyword in task_description.lower()
         for keyword in ["train", "model", "fit", "predict", "classify", "regression", "cluster"]
@@ -594,71 +615,42 @@ def run_hands_agent(state: AgentState):
     environment_context = ""
 
     if is_training_task:
-        # Get dataset info for decision
         try:
             import builtins
 
-            dataset_rows, feature_count = 1000, 10  # defaults
-
+            dataset_rows, feature_count = 1000, 10
             if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
                 session_data = builtins._session_store[session_id]
                 df = session_data.get("dataframe")
                 if df is not None:
                     dataset_rows, feature_count = len(df), len(df.columns)
-                    print(f"DEBUG: Dataset size: {dataset_rows} rows × {feature_count} features")
         except Exception as e:
-            print(f"DEBUG: Could not get dataset info: {e}")
+            logger.debug(f"[HANDS] Could not get dataset info: {e}")
+
         try:
             from core.training_decision import TrainingDecisionEngine
         except ImportError:
             from .core.training_decision import TrainingDecisionEngine
+
         decision_engine = TrainingDecisionEngine()
         decision = decision_engine.decide(
             dataset_rows=dataset_rows, feature_count=feature_count, model_type="", code=None
         )
         execution_environment = decision.environment
-        print(f"DEBUG: Training decision - {decision.environment.upper()} ({decision.reasoning})")
-        # Add environment-specific context for Hands
+        logger.info(f"[HANDS] Training decision: {decision.environment.upper()} ({decision.reasoning})")
+
         if execution_environment == "gpu":
             environment_context = f"""
-                                    **EXECUTION ENVIRONMENT: GPU (Azure ML / AWS SageMaker)**
-                                    Your code will run on cloud GPU infrastructure, not local sandbox.
-
-                                    **CRITICAL - DATA ACCESS FOR GPU:**
-                                    - Dataset is NOT pre-loaded as `df`
-                                    - You MUST load data from storage at the start of your script
-                                    - Example pattern:
-                                    ```python
-                                    import pandas as pd
-                                    import joblib
-                                    from pathlib import Path
-
-                                    # Load dataset (will be provided in environment)
-                                    df = pd.read_csv('/mnt/data/dataset.csv')
-
-                                    # Your training code here
-                                    X = df[features]
-                                    y = df[target]
-                                    model.fit(X, y)
-
-                                    # Save model
-                                    joblib.dump(model, 'model.pkl')
-                                    print("MODEL_SAVED:model.pkl")
-                                    ```
-
-                                    Decision reasoning: {decision.reasoning}
-                                    """
+**EXECUTION ENVIRONMENT: GPU (Azure ML / AWS SageMaker)**
+Decision reasoning: {decision.reasoning}
+"""
         else:
             environment_context = f"""
-                                    **EXECUTION ENVIRONMENT: CPU (E2B Sandbox)**
-                                    Your code will run in the standard sandbox environment.
+**EXECUTION ENVIRONMENT: CPU (E2B Sandbox)**
+Dataset is pre-loaded as `df` variable - use it directly.
+Decision reasoning: {decision.reasoning}
+"""
 
-                                    **DATA ACCESS:**
-                                    - Dataset is pre-loaded as `df` variable - use it directly
-                                    - No need to load data, just use: df.head(), df['column'], etc.
-
-                                    Decision reasoning: {decision.reasoning}
-                                    """
     detected_format = extract_format_from_request(task_description)
     format_context = ""
     if detected_format:
@@ -666,23 +658,17 @@ def run_hands_agent(state: AgentState):
             "onnx": "Use torch.onnx.export() or skl2onnx for ONNX format",
             "joblib": "Use joblib.dump() for saving",
             "pickle": "Use pickle.dump() for saving",
-            "pytorch": "Use torch.save() for PyTorch .pt/.pth format",
-            "h5": "Use model.save() for Keras .h5 format",
-            "savedmodel": "Use tf.saved_model.save() for TensorFlow SavedModel",
-            "json": 'Use model.save_model() with format="json" for XGBoost',
         }
         format_hint = format_hints.get(detected_format, f"Save in {detected_format} format")
         format_context = f"\n\n**USER REQUESTED FORMAT:** {detected_format.upper()}\n{format_hint}"
-        print(f"DEBUG: Detected model format preference: {detected_format}")
 
-    # Combine all context enhancements
     enhanced_data_context = data_context
     if environment_context:
         enhanced_data_context = f"{data_context}\n{environment_context}"
     if format_context:
         enhanced_data_context = f"{enhanced_data_context}{format_context}"
 
-    # Store execution environment decision in session for later use
+    # Store training decision
     if is_training_task:
         import builtins
 
@@ -693,51 +679,218 @@ def run_hands_agent(state: AgentState):
                 "reasoning": decision.reasoning,
                 "confidence": decision.confidence,
             }
-            print(
-                f"DEBUG: Stored training decision: {execution_environment.upper()} (confidence: {decision.confidence:.2f})"
+
+    # ========================================================================
+    # DIRECT EXECUTION - Replaces subgraph logic
+    # ========================================================================
+    try:
+        logger.info("[HANDS] STEP 1: Generate code with pattern matching and learning context")
+
+        # Get pattern context (from run_hands_subgraph_agent logic)
+        pattern_context = ""
+        try:
+            import sys, os
+
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from utils.semantic_matcher import get_semantic_matcher
+
+            sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
+            from src.learning.adaptive_system import AdaptiveLearningSystem
+
+            matcher = get_semantic_matcher()
+            adaptive_system = AdaptiveLearningSystem()
+            execution_history = adaptive_system.get_execution_history(success_only=True)
+
+            if execution_history and task_description:
+                pattern_context = matcher.find_relevant_patterns(task_description, execution_history, top_k=3)
+        except Exception as e:
+            logger.debug(f"[HANDS] Pattern retrieval skipped: {e}")
+
+        # Get learning context
+        learning_context = ""
+        try:
+            import sys, os
+
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from context_manager import get_session_memory
+
+            memory = get_session_memory(session_id)
+            learning_context = memory.get_learning_context()
+        except Exception as e:
+            logger.debug(f"[HANDS] Learning context skipped: {e}")
+
+        # Generate code using hands LLM
+        llm = create_hands_agent()
+        import sys, os
+
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from prompts import get_hands_prompt
+
+        prompt = get_hands_prompt()
+        agent_runnable = prompt | llm
+
+        # Create state with contexts
+        hands_state = {
+            "messages": [HumanMessage(content=task_description)],
+            "data_context": enhanced_data_context,
+            "pattern_context": pattern_context,
+            "learning_context": learning_context,
+        }
+
+        logger.info("[HANDS] Invoking LLM for code generation...")
+        llm_response = agent_runnable.invoke(hands_state)
+        logger.info(f"[HANDS] LLM response type: {type(llm_response).__name__}")
+
+        # ========================================================================
+        # STEP 2: Parse tool calls (replaces parse_subgraph_tool_calls logic)
+        # ========================================================================
+        logger.info("[HANDS] STEP 2: Parse tool calls from LLM response")
+        parse_message_to_tool_call(llm_response, "hands_direct")
+
+        if not (hasattr(llm_response, "tool_calls") and llm_response.tool_calls):
+            logger.warning("[HANDS] No tool calls found in LLM response")
+            summary_content = llm_response.content if hasattr(llm_response, "content") else str(llm_response)
+
+            state_messages = state.get("messages") or []
+            last_msg = state_messages[-1] if state_messages else None
+            is_delegation = (
+                last_msg and has_tool_calls(last_msg) and last_msg.tool_calls[0].get("name") == "delegate_coding_task"
             )
 
-    # Create subgraph state with task as user message
-    subgraph_state = {
-        "messages": [("human", task_description)],
-        "session_id": session_id,
-        "python_executions": state.get("python_executions") or 0,
-        "data_context": enhanced_data_context,
-        "pattern_context": "",
-        "learning_context": "",
-        "retry_count": state.get("retry_count") or 0,
-    }
-
-    # Execute hands subgraph to isolate execution
-    try:
-        hands_subgraph = create_hands_subgraph()
-        result = hands_subgraph.invoke(subgraph_state)
-
-        print(f"DEBUG: Subgraph result keys: {result.keys() if result else 'None'}")
-        print(f"DEBUG: execution_result present: {bool(result.get('execution_result'))}")
-        print(f"DEBUG: artifacts count: {len(result.get('artifacts', []))}")
-
-        if result and "messages" in result and result["messages"]:
-            final_message = result["messages"][-1]
-            if hasattr(final_message, "content"):
-                summary_content = final_message.content
+            if is_delegation:
+                summary_response = ToolMessage(content=summary_content, tool_call_id=last_msg.tool_calls[0].get("id"))
             else:
-                summary_content = str(final_message)
-        else:
-            summary_content = "Task completed but no result returned."
-        print(f"DEBUG: Hands summary content: {summary_content[:20] if summary_content else 'None'}...")
+                summary_response = AIMessage(content=summary_content)
 
+            return {
+                "messages": [summary_response],
+                "current_agent": "hands",
+                "last_agent_sequence": enhanced_state.get("last_agent_sequence") or [],
+                "retry_count": enhanced_state.get("retry_count") or 0,
+                "artifacts": [],
+            }
+
+        # ========================================================================
+        # STEP 3: Execute tools with self-correction (replaces execute_subgraph_tools logic)
+        # ========================================================================
+        logger.info("[HANDS] STEP 3: Execute code with self-correction")
+
+        tool_call = llm_response.tool_calls[0]
+        if isinstance(tool_call, dict):
+            tool_name = tool_call["name"]
+            tool_args = tool_call.get("args", {})
+            tool_id = tool_call.get("id", f"call_{tool_name}")
+        else:
+            tool_name = tool_call.name
+            tool_args = tool_call.args
+            tool_id = tool_call.id
+
+        artifacts = []
+        execution_summary = ""
+
+        if tool_name == "python_code_interpreter":
+            import sys, os
+
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from core.self_correction import SelfCorrectingExecutor
+            from context_manager import record_execution
+
+            executor = SelfCorrectingExecutor(max_attempts=3)
+            code = tool_args.get("code", "")
+
+            logger.info(f"[HANDS] Executing code ({len(code)} chars) with self-correction...")
+            logger.debug(f"[HANDS] Code preview:\n{code[:500]}...")
+
+            result = executor.execute_with_learning(
+                initial_code=code, session_id=session_id, context=enhanced_data_context, llm_agent=llm
+            )
+
+            # Record execution
+            record_execution(
+                session_id,
+                {
+                    "user_request": task_description,
+                    "code": result.get("final_code", code),
+                    "success": result.get("success", False),
+                    "output": result.get("stdout", ""),
+                    "error": result.get("stderr", ""),
+                    "artifacts": result.get("plots", []) + result.get("models", []),
+                    "self_corrected": result.get("self_corrected", False),
+                    "attempts": result.get("attempts", 1),
+                },
+            )
+
+            stdout_output = result.get("stdout", "")
+            stderr_output = result.get("stderr", "")
+            plots = result.get("plots", [])
+            models = result.get("models", [])
+
+            logger.info(
+                f"[HANDS] Execution complete: success={result.get('success')}, plots={len(plots)}, models={len(models)}"
+            )
+
+            # Build execution summary
+            if plots or models:
+                summary_parts = []
+                if plots:
+                    summary_parts.append(f"Created {len(plots)} visualization(s):")
+                    for plot_url in plots:
+                        summary_parts.append(f"  - {plot_url}")
+                if models:
+                    summary_parts.append(f"Saved {len(models)} model(s):")
+                    for model_url in models:
+                        summary_parts.append(f"  - {model_url}")
+                execution_summary = "\n".join(summary_parts)
+                if stdout_output.strip():
+                    execution_summary = f"{stdout_output}\n\n{execution_summary}"
+                if stderr_output.strip():
+                    execution_summary = f"{execution_summary}\n\n{stderr_output}"
+
+                # Build artifacts list (format matches Artifact model in workflow_types.py)
+                if plots:
+                    artifacts.extend(
+                        [{"filename": os.path.basename(p), "category": "visualization", "local_path": p} for p in plots]
+                    )
+                if models:
+                    artifacts.extend(
+                        [{"filename": os.path.basename(m), "category": "model", "local_path": m} for m in models]
+                    )
+            elif not stdout_output.strip() and not stderr_output.strip() and result.get("success"):
+                execution_summary = "⚠️ Code executed successfully but produced no output."
+            else:
+                execution_summary = f"{stdout_output}\n{stderr_output}"
+
+            # Add completion marker
+            if result.get("success") and (plots or models or (stdout_output and len(stdout_output) > 100)):
+                completion_details = []
+                if plots:
+                    completion_details.append(f"{len(plots)} visualization(s)")
+                if models:
+                    completion_details.append(f"{len(models)} model(s)")
+                completion_marker = f"\n\nTASK_COMPLETED: Generated {', '.join(completion_details) if completion_details else 'analysis results'} successfully."
+                execution_summary += completion_marker
+                logger.info(f"[HANDS] {completion_marker.strip()}")
+        else:
+            # Non-code tool execution
+            execution_summary = execute_tool(tool_name, tool_args, session_id)
+            logger.info(f"[HANDS] Executed tool: {tool_name}")
+
+        # ========================================================================
+        # STEP 4: Create final response (replaces summarize_hands_result logic)
+        # ========================================================================
+        logger.info("[HANDS] STEP 4: Create final response")
+
+        summary_content = sanitize_output(execution_summary) if execution_summary else "Task completed."
+
+        # Check if this was a delegation from brain
         state_messages = state.get("messages") or []
-        last_message = state_messages[-1] if state_messages else None
+        last_msg = state_messages[-1] if state_messages else None
         is_delegation = (
-            last_message
-            and has_tool_calls(last_message)
-            and last_message.tool_calls[0].get("name") == "delegate_coding_task"
+            last_msg and has_tool_calls(last_msg) and last_msg.tool_calls[0].get("name") == "delegate_coding_task"
         )
 
         if is_delegation:
-            tool_call_id = last_message.tool_calls[0].get("id", "unknown")
-            summary_response = ToolMessage(content=summary_content, tool_call_id=tool_call_id)
+            summary_response = ToolMessage(content=summary_content, tool_call_id=last_msg.tool_calls[0].get("id"))
         else:
             summary_response = AIMessage(content=summary_content)
 
@@ -746,15 +899,37 @@ def run_hands_agent(state: AgentState):
             "current_agent": "hands",
             "last_agent_sequence": enhanced_state.get("last_agent_sequence") or [],
             "retry_count": enhanced_state.get("retry_count") or 0,
-            "execution_result": result.get("execution_result"),
-            "artifacts": result.get("artifacts", []),
-            "workflow_stage": result.get("workflow_stage"),
+            "execution_result": None,
+            "artifacts": artifacts,
+            "workflow_stage": None,
+            "python_executions": (state.get("python_executions") or 0) + 1,
         }
+
+        logger.info("=" * 80)
+        logger.info("[HANDS] Execution complete - Preparing to return result")
+        logger.info(f"[HANDS] current_agent: {result_state['current_agent']}")
+        logger.info(f"[HANDS] last_agent_sequence: {result_state['last_agent_sequence']}")
+        logger.info(f"[HANDS] artifacts count: {len(result_state['artifacts'])}")
+        logger.info(f"[HANDS] messages count: {len(result_state['messages'])}")
+        logger.info(f"[HANDS] message type: {type(result_state['messages'][0]).__name__}")
+        logger.info("[HANDS] RETURNING result_state now...")
+        logger.info("=" * 80)
+
         return result_state
 
     except Exception as e:
-        print(f"DEBUG: Hands subgraph execution failed: {e}")
-        return {"messages": [AIMessage(content=f"Hands execution failed: {e}")]}
+        logger.error(f"[HANDS] Execution FAILED: {e}")
+        import traceback
+
+        logger.error(f"[HANDS] Traceback:\n{traceback.format_exc()}")
+        traceback.print_exc()
+
+        return {
+            "messages": [AIMessage(content=f"Hands execution failed: {e}")],
+            "current_agent": "hands",
+            "last_agent_sequence": enhanced_state.get("last_agent_sequence") or [],
+            "retry_count": enhanced_state.get("retry_count") or 0,
+        }
 
 
 async def warmup_models_parallel():
@@ -815,6 +990,6 @@ async def warmup_models_parallel():
 
     try:
         await asyncio.gather(warmup_brain(), warmup_hands(), warmup_router(), warmup_status())
-        print("All models warmed in parallel")
+        logger.info("All models warmed in parallel")
     except Exception as e:
-        print(f"WARNING: Parallel warmup error: {e}")
+        logger.warning(f"Parallel warmup error: {e}")
