@@ -7,7 +7,15 @@ import sys
 import pickle
 import json
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Dict
+
+try:
+    from .logger import logger
+except ImportError:
+    import os
+
+    sys.path.append(os.path.join(os.path.dirname(__file__)))
+    from logger import logger
 
 
 class ModelFormatDetector:
@@ -40,13 +48,13 @@ class ModelFormatDetector:
         model_module = type(model).__module__
         model_class = type(model).__name__
 
-        print(f"[ModelDetector] Model type: {model_module}.{model_class}")
+        logger.info(f"[ModelDetector] Model type: {model_module}.{model_class}")
 
         # Parse user format override
         if user_format:
             detected_format = self._parse_user_format(user_format)
             if detected_format:
-                print(f"[ModelDetector] User specified format: {detected_format}")
+                logger.info(f"[ModelDetector] User specified format: {detected_format}")
                 ext, save_func = detected_format
                 final_path = f"{output_path}{ext}"
                 save_func(model, final_path)
@@ -55,13 +63,13 @@ class ModelFormatDetector:
         # Auto-detect based on module
         for module_key, (ext, save_func) in self.format_map.items():
             if module_key in model_module:
-                print(f"[ModelDetector] Auto-detected format: {ext} (from {module_key})")
+                logger.info(f"[ModelDetector] Auto-detected format: {ext} (from {module_key})")
                 final_path = f"{output_path}{ext}"
                 save_func(model, final_path)
                 return final_path, ext
 
         # Fallback to pickle
-        print(f"[ModelDetector] Unknown model type, using pickle fallback")
+        logger.info("[ModelDetector] Unknown model type, using pickle fallback")
         ext = ".pkl"
         final_path = f"{output_path}{ext}"
         self._save_pickle(model, final_path)
@@ -86,52 +94,52 @@ class ModelFormatDetector:
 
         return None
 
-    def _save_sklearn(self, model: Any, path: str):
+    def _save_sklearn(self, model: Any, path: str) -> None:
         """Save sklearn model with joblib"""
         import joblib
 
         joblib.dump(model, path)
-        print(f"[ModelDetector] Saved with joblib: {path}")
+        logger.info(f"[ModelDetector] Saved with joblib: {path}")
 
-    def _save_pytorch(self, model: Any, path: str):
+    def _save_pytorch(self, model: Any, path: str) -> None:
         """Save PyTorch model state dict"""
         import torch
 
         torch.save(model.state_dict(), path)
-        print(f"[ModelDetector] Saved PyTorch state_dict: {path}")
+        logger.info(f"[ModelDetector] Saved PyTorch state_dict: {path}")
 
-    def _save_tensorflow(self, model: Any, path: str):
+    def _save_tensorflow(self, model: Any, path: str) -> None:
         """Save TensorFlow/Keras model"""
         model.save(path)
-        print(f"[ModelDetector] Saved TensorFlow model: {path}")
+        logger.info(f"[ModelDetector] Saved TensorFlow model: {path}")
 
-    def _save_keras(self, model: Any, path: str):
+    def _save_keras(self, model: Any, path: str) -> None:
         """Save Keras model"""
         model.save(path)
-        print(f"[ModelDetector] Saved Keras model: {path}")
+        logger.info(f"[ModelDetector] Saved Keras model: {path}")
 
-    def _save_xgboost(self, model: Any, path: str):
+    def _save_xgboost(self, model: Any, path: str) -> None:
         """Save XGBoost model"""
         model.save_model(path)
-        print(f"[ModelDetector] Saved XGBoost model: {path}")
+        logger.info(f"[ModelDetector] Saved XGBoost model: {path}")
 
-    def _save_lightgbm(self, model: Any, path: str):
+    def _save_lightgbm(self, model: Any, path: str) -> None:
         """Save LightGBM model"""
         model.save_model(path)
-        print(f"[ModelDetector] Saved LightGBM model: {path}")
+        logger.info(f"[ModelDetector] Saved LightGBM model: {path}")
 
-    def _save_catboost(self, model: Any, path: str):
+    def _save_catboost(self, model: Any, path: str) -> None:
         """Save CatBoost model"""
         model.save_model(path)
-        print(f"[ModelDetector] Saved CatBoost model: {path}")
+        logger.info(f"[ModelDetector] Saved CatBoost model: {path}")
 
-    def _save_pickle(self, model: Any, path: str):
+    def _save_pickle(self, model: Any, path: str) -> None:
         """Fallback pickle save"""
         with open(path, "wb") as f:
             pickle.dump(model, f)
-        print(f"[ModelDetector] Saved with pickle: {path}")
+        logger.info(f"[ModelDetector] Saved with pickle: {path}")
 
-    def _save_onnx(self, model: Any, path: str):
+    def _save_onnx(self, model: Any, path: str) -> None:
         """Save model as ONNX format"""
         try:
             import onnx
@@ -144,15 +152,15 @@ class ModelFormatDetector:
             onnx_model = convert_sklearn(model, initial_types=initial_type)
             with open(path, "wb") as f:
                 f.write(onnx_model.SerializeToString())
-            print(f"[ModelDetector] Saved as ONNX: {path}")
+            logger.info(f"[ModelDetector] Saved as ONNX: {path}")
         except Exception as e:
-            print(f"[ModelDetector] ONNX conversion failed: {e}, falling back to pickle")
+            logger.warning(f"[ModelDetector] ONNX conversion failed: {e}, falling back to pickle")
             self._save_pickle(model, path.replace(".onnx", ".pkl"))
 
-    def _save_tensorflow_savedmodel(self, model: Any, path: str):
+    def _save_tensorflow_savedmodel(self, model: Any, path: str) -> None:
         """Save TensorFlow SavedModel format"""
         model.save(path, save_format="tf")
-        print(f"[ModelDetector] Saved TensorFlow SavedModel: {path}")
+        logger.info(f"[ModelDetector] Saved TensorFlow SavedModel: {path}")
 
 
 def find_trained_model(exec_globals: dict) -> Optional[Any]:
@@ -167,13 +175,15 @@ def find_trained_model(exec_globals: dict) -> Optional[Any]:
             obj = exec_globals[var_name]
             # Check if it has fit method (likely a model)
             if hasattr(obj, "fit") or hasattr(obj, "predict"):
-                print(f"[Wrapper] Found model in variable: {var_name}")
+                logger.info(f"[Wrapper] Found model in variable: {var_name}")
                 return obj
 
     return None
 
 
-def train_wrapper(user_code: str, output_dir: str = "/opt/ml/model", user_format: Optional[str] = None) -> dict:
+def train_wrapper(
+    user_code: str, output_dir: str = "/opt/ml/model", user_format: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Execute user training code and save model with auto format detection
 
@@ -185,23 +195,20 @@ def train_wrapper(user_code: str, output_dir: str = "/opt/ml/model", user_format
     Returns:
         Dict with model_path, format, and metadata
     """
-    print("[Wrapper] Starting smart training wrapper")
-    print(f"[Wrapper] User format specification: {user_format or 'Auto-detect'}")
+    logger.info("[Wrapper] Starting smart training wrapper")
+    logger.info(f"[Wrapper] User format specification: {user_format or 'Auto-detect'}")
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     exec_globals = {}
 
     try:
-        print("[Wrapper] Executing user training code...")
+        logger.info("[Wrapper] Executing user training code...")
         exec(user_code, exec_globals)
-        print("[Wrapper] Training code executed successfully")
+        logger.info("[Wrapper] Training code executed successfully")
 
     except Exception as e:
-        print(f"[Wrapper] Training execution failed: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.exception("[Wrapper] Training execution failed")
         raise
 
     model = find_trained_model(exec_globals)
@@ -231,9 +238,9 @@ def train_wrapper(user_code: str, output_dir: str = "/opt/ml/model", user_format
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"[Wrapper] MODEL_SAVED:{model_path}")
-    print(f"[Wrapper] MODEL_FORMAT:{format_used}")
-    print(f"[Wrapper] METADATA_SAVED:{metadata_path}")
+    logger.info(f"[Wrapper] MODEL_SAVED:{model_path}")
+    logger.info(f"[Wrapper] MODEL_FORMAT:{format_used}")
+    logger.info(f"[Wrapper] METADATA_SAVED:{metadata_path}")
 
     return {"model_path": model_path, "format": format_used, "metadata": metadata}
 
@@ -263,5 +270,5 @@ if __name__ == "__main__":
 
     result = train_wrapper(user_code=training_code, output_dir=args.output_dir, user_format=args.format)
 
-    print("[Wrapper] Training completed successfully")
-    print(json.dumps(result, indent=2))
+    logger.info("[Wrapper] Training completed successfully")
+    logger.info(json.dumps(result, indent=2))
