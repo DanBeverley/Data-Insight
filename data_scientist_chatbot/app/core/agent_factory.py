@@ -27,15 +27,16 @@ except ImportError as e:
 model_manager = ModelManager()
 
 
-def create_router_agent():
-    """Create Router agent for fast binary routing decisions"""
-    config = model_manager.get_ollama_config("router")
-    return ChatOllama(**config)
-
-
-def create_brain_agent():
-    """Create Brain agent for business reasoning and planning"""
+def create_brain_agent(mode: str = "chat"):
     config = model_manager.get_ollama_config("brain")
+    if mode == "report":
+        config["reasoning"] = True
+        config["temperature"] = 0.35
+        if "options" not in config:
+            config["options"] = {}
+        config["options"]["num_predict"] = 8192
+    else:
+        config["reasoning"] = False
     return ChatOllama(**config)
 
 
@@ -48,4 +49,16 @@ def create_hands_agent():
 def create_status_agent():
     """Create Status agent for real-time progress updates"""
     config = model_manager.get_ollama_config("status")
+    return ChatOllama(**config)
+
+
+def create_vision_agent():
+    """Create Vision agent for image analysis"""
+    config = model_manager.get_ollama_config("vision")
+    return ChatOllama(**config)
+
+
+def create_verifier_agent():
+    """Create Verifier agent for task validation"""
+    config = model_manager.get_ollama_config("verifier")
     return ChatOllama(**config)

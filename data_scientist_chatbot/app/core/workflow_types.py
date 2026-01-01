@@ -24,6 +24,8 @@ class WorkflowStage(Enum):
     ROUTING = "routing"
     HANDS_EXECUTION = "hands"
     BRAIN_INTERPRETATION = "brain"
+    REPORTING_ANALYSIS = "reporting_analysis"
+    REPORTING = "reporting"
     COMPLETED = "completed"
     ERROR = "error"
 

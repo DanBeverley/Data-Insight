@@ -62,6 +62,19 @@ def create_workflow_status_context(workflow_context: Dict[str, Any], current_eve
     if tool_calls:
         active_tool = f"{tool_calls[-1]} on {session_context}"
 
+    # [STATUS INJECTION] Get plan from workflow context
+    plan = workflow_context.get("plan", [])
+    plan_context = "No active plan"
+    if plan:
+        # Format plan for the prompt
+        tasks_str = []
+        for i, task in enumerate(plan):
+            status_icon = "[x]" if task.get("status") == "completed" else "[ ]"
+            if task.get("status") == "in_progress":
+                status_icon = "[>]"
+            tasks_str.append(f"{status_icon} Step {i+1}: {task.get('description', 'Unknown task')}")
+        plan_context = "\n".join(tasks_str)
+
     context = {
         "user_goal": user_goal[:150],
         "current_agent": current_agent,
@@ -71,6 +84,7 @@ def create_workflow_status_context(workflow_context: Dict[str, Any], current_eve
         "execution_progress": execution_progress.get(current_agent, session_context),
         "event_type": current_event.get("event", ""),
         "session_state": session_context,
+        "plan_context": plan_context,  # Add plan context
     }
     return context
 

@@ -13,15 +13,24 @@ except ImportError:
     from logger import logger
 
 try:
-    from ..core.router import (
-        route_from_router,
-        route_from_brain,
-        route_after_agent,
-        should_continue,
-        route_after_action,
-    )
+    from .state import GlobalState
+
+    AgentState = GlobalState
 except ImportError:
-    from core.router import route_from_router, route_from_brain, route_after_agent, should_continue, route_after_action
+    from data_scientist_chatbot.app.core.state import GlobalState
+
+    AgentState = GlobalState
+
+from ..agent import (
+    run_brain_agent,
+    run_hands_agent,
+    run_analyst_node,
+    run_architect_node,
+    run_presenter_node,
+    parse_tool_calls,
+    execute_tools_node,
+    run_verifier_agent,
+)
 
 try:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -32,7 +41,7 @@ except ImportError as e:
     AsyncSqliteSaver = None
     CHECKPOINTER_AVAILABLE = False
 
-DB_PATH = "context.db"
+DB_PATH = "data/databases/checkpoints.db"
 _checkpointer: Optional[AsyncSqliteSaver] = None
 
 
@@ -74,31 +83,90 @@ async def perform_checkpoint_maintenance(force_cleanup=False):
         return {"status": "error", "message": str(e)}
 
 
+def route_from_brain(state: AgentState):
+    messages = state.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            return "parser"
+    return END
+
+
+def route_after_action(state: AgentState) -> str:
+    """Route after tool execution"""
+    stage = state.get("workflow_stage")
+    if stage == "reporting":
+        return "analyst"
+    if stage == "delegating":
+        return "hands"
+    return "brain"
+
+
+def should_continue(state: AgentState):
+    # Parser logic
+    return "action"
+
+
 def create_agent_executor(memory=None):
-    """Creates the multi-agent system with Brain and Hands specialization"""
     logger.info("[GRAPH] Building agent executor graph...")
 
-    from ..agent import (
-        AgentState,
-        run_router_agent,
-        run_brain_agent,
-        run_hands_agent,
-        parse_tool_calls,
-        execute_tools_node,
-    )
-
     graph = StateGraph(AgentState)
-    graph.add_node("router", run_router_agent)
+
+    # Add Nodes
     graph.add_node("brain", run_brain_agent)
     graph.add_node("hands", run_hands_agent)
+    graph.add_node("verifier", run_verifier_agent)
+
+    # Tool Execution Nodes
     graph.add_node("parser", parse_tool_calls)
     graph.add_node("action", execute_tools_node)
-    graph.set_entry_point("router")
-    graph.add_conditional_edges("router", route_from_router, {"brain": "brain", "hands": "hands"})
-    graph.add_conditional_edges("brain", route_from_brain, {"hands": "hands", "parser": "parser", END: END})
-    graph.add_conditional_edges("hands", route_after_agent, {"parser": "parser", "brain": "brain", END: END})
-    graph.add_conditional_edges("parser", should_continue, {"action": "action", "hands": "hands", END: END})
-    graph.add_conditional_edges("action", route_after_action, {"brain": "brain", END: END})
+
+    # Newsroom Nodes
+    graph.add_node("analyst", run_analyst_node)
+    graph.add_node("architect", run_architect_node)
+    graph.add_node("presenter", run_presenter_node)
+
+    # Set Entry Point
+    graph.set_entry_point("brain")
+
+    # Edges
+
+    # Brain -> Tools, Hands, or End
+    graph.add_conditional_edges("brain", route_from_brain, {"parser": "parser", END: END})
+
+    # Tool Execution Loop
+    graph.add_edge("parser", "action")
+
+    # Action Routing
+    graph.add_conditional_edges(
+        "action", route_after_action, {"brain": "brain", "analyst": "analyst", "hands": "hands"}
+    )
+
+    # Hands -> Verifier (QA Layer)
+    graph.add_edge("hands", "verifier")
+
+    def route_from_verifier(state: AgentState):
+        """Route based on verification result"""
+        plan = state.get("plan", [])
+        current_index = state.get("current_task_index", 0)
+
+        if plan and current_index < len(plan):
+            next_task = plan[current_index]
+            if next_task.get("status") == "pending":
+                retry_count = state.get("retry_count", 0)
+                logger.info(f"[GRAPH] Verifier rejected. Routing to HANDS for correction (Attempt {retry_count + 1}).")
+                return "hands"
+
+        logger.info("[GRAPH] Verification successful. Returning to Brain.")
+        return "brain"
+
+    # Verifier -> Conditional Routing
+    graph.add_conditional_edges("verifier", route_from_verifier, {"hands": "hands", "brain": "brain"})
+
+    # Newsroom Pipeline
+    graph.add_edge("analyst", "architect")
+    graph.add_edge("architect", "presenter")
+    graph.add_edge("presenter", END)
 
     checkpointer = memory if memory else _checkpointer
     if CHECKPOINTER_AVAILABLE and checkpointer:
