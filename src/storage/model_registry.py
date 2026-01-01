@@ -2,6 +2,7 @@
 
 import uuid
 import hashlib
+import json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from pathlib import Path
@@ -69,15 +70,15 @@ class ModelRegistryService:
             "user_id": user_id,
             "dataset_hash": dataset_hash,
             "model_type": model_type,
-            "hyperparameters": hyperparameters or {},
+            "hyperparameters": json.dumps(hyperparameters or {}),  # Serialize dict to JSON string
             "blob_path": blob_path,
             "blob_url": blob_url,
             "file_checksum": file_checksum,
             "file_size_bytes": file_size_bytes,
-            "training_metrics": training_metrics or {},
+            "training_metrics": json.dumps(training_metrics or {}),  # Serialize dict to JSON string
             "model_version": version,
             "framework": framework,
-            "dependencies": dependencies or [],
+            "dependencies": json.dumps(dependencies or []),  # Serialize list to JSON string
             "is_active": True,
             "created_at": datetime.utcnow(),
             "access_count": 0,

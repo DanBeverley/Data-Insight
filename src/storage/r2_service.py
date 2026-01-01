@@ -296,6 +296,42 @@ class R2StorageService:
                 raise FileNotFoundError(f"Object not found in R2: {blob_path}")
             raise
 
+    def get_bucket_stats(self) -> Dict[str, Any]:
+        """
+        Get bucket usage statistics.
+
+        Returns:
+            Dict with used_gb, total_gb, file_count, bucket_name
+        """
+        try:
+            # List all objects to calculate total size
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            pages = paginator.paginate(Bucket=self.bucket_name)
+
+            total_bytes = 0
+            file_count = 0
+
+            for page in pages:
+                if "Contents" in page:
+                    for obj in page["Contents"]:
+                        total_bytes += obj["Size"]
+                        file_count += 1
+
+            # Convert bytes to GB
+            used_gb = total_bytes / (1024**3)
+
+            return {
+                "used_gb": round(used_gb, 2),
+                "total_gb": 100,  # Can be configured based on plan
+                "file_count": file_count,
+                "bucket_name": self.bucket_name,
+                "total_bytes": total_bytes,
+            }
+
+        except ClientError as e:
+            logger.error(f"Failed to get bucket stats: {e}")
+            raise
+
     @staticmethod
     def _compute_sha256(file_path: Path) -> str:
         """Compute SHA256 checksum of file"""
@@ -304,3 +340,6 @@ class R2StorageService:
             for byte_block in iter(lambda: f.read(65536), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
+
+
+R2Service = R2StorageService  # Alias for backwards compatibility
