@@ -7,6 +7,17 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 import logging
 
+import logging
+import sys
+
+# Add src to path to allow imports if running from different context
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.dirname(os.path.dirname(current_dir))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+from src.data_ingestion.hierarchical_scanner import HierarchicalDatasetScanner
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,7 +98,39 @@ def handle_file_upload(file_path: Path, filename: str, session_id: str) -> Dict[
             extract_path = Path(tempfile.gettempdir()) / "datainsight" / session_id / "extracted"
             extracted_root = extract_zip(file_path, extract_path)
 
-            manifest = create_manifest(extracted_root, session_id)
+            # Use HierarchicalDatasetScanner for richer manifest
+            try:
+                scanner = HierarchicalDatasetScanner()
+                index = scanner.scan_folder(extracted_root, max_depth=3, include_schema=True)
+
+                # Convert index to manifest format expected by frontend/agent
+                manifest = {
+                    "session_id": session_id,
+                    "root_path": str(extracted_root),
+                    "structure": {name: info.file_count for name, info in index.folders.items()},
+                    "files": [],  # Populated below if needed, or we rely on the index
+                    "total_files": index.total_files,
+                    "total_size_mb": index.total_size_mb,
+                    "hierarchy_index": scanner.to_dict(index),  # Embed full index
+                    "type": "hierarchical",
+                }
+
+                # Populate flat file list for backward compatibility
+                for folder_name, folder_info in index.folders.items():
+                    for file_name in folder_info.sample_files:  # Note: this is just samples
+                        manifest["files"].append(
+                            {
+                                "path": f"{folder_name}/{file_name}",
+                                "name": file_name,
+                                "parent_folder": folder_name,
+                                "size_bytes": 0,  # We don't have individual size in this view easily
+                            }
+                        )
+
+            except Exception as scan_error:
+                logger.error(f"Hierarchical scan failed, falling back to basic: {scan_error}")
+                manifest = create_manifest(extracted_root, session_id)
+
             result["success"] = True
             result["type"] = "archive"
             result["manifest"] = manifest

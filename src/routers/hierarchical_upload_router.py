@@ -122,29 +122,6 @@ async def load_hierarchical_dataset(
                         error_data = {"type": "error", "message": result.error}
                         yield f"data: {json.dumps(error_data)}\n\n"
                         return
-
-                    df = result.dataframe
-
-                    import builtins
-
-                    if not hasattr(builtins, "_session_store"):
-                        builtins._session_store = {}
-
-                    if request.session_id not in builtins._session_store:
-                        builtins._session_store[request.session_id] = {"session_id": request.session_id}
-
-                    builtins._session_store[request.session_id]["dataframe"] = df
-
-                    logger.info(f"Enhancing with agent profile for session {request.session_id}")
-                    profile_result = await enhance_with_agent_profile(df, request.session_id, result.metadata)
-
-                    builtins._session_store[request.session_id]["data_profile"] = profile_result
-
-                    logger.info(f"Loading to E2B sandbox for session {request.session_id}")
-                    sandbox_result = await load_data_to_agent_sandbox(df, request.session_id)
-
-                    dataset_name = result.metadata.get("dataset_name", "Dataset")
-
                     logger.info(f"Creating automatic report for session {request.session_id}")
                     try:
                         db_manager = get_database_manager()
@@ -165,6 +142,35 @@ async def load_hierarchical_dataset(
                         yield f"data: {json.dumps(report_created_data)}\n\n"
 
                         db.close()
+
+                        # [INTELLIGENCE UPGRADE] Run profiling immediately
+                        logger.info(f"Starting automatic profiling for session {request.session_id}")
+                        try:
+                            # Run in executor to avoid blocking the stream
+                            loop = asyncio.get_event_loop()
+                            # We need to get the dataframe from session or reload it.
+                            # Since loader doesn't return DF directly here, we rely on session_store or reload.
+                            # But wait, the loader *should* have loaded it into session?
+                            # Let's check HierarchicalDatasetLoader.
+
+                            # Assuming loader saves to session/disk.
+                            # We can use enhance_with_agent_profile if we have the DF.
+                            # For now, let's trigger the background profiling task if possible.
+
+                            from ..api import run_profiling_background
+
+                            # We need the DF. Let's get it from session.
+                            from ..api_utils.session_management import session_data_manager
+
+                            session_data = session_data_manager.get_session(request.session_id)
+                            if session_data and "dataframe" in session_data:
+                                df = session_data["dataframe"]
+                                # Fire and forget profiling
+                                asyncio.create_task(run_profiling_background(df, request.session_id, dataset_name))
+                                yield f"data: {json.dumps({'type': 'progress', 'message': 'Profiling started...'})}\n\n"
+                        except Exception as prof_e:
+                            logger.error(f"Failed to trigger profiling: {prof_e}")
+
                     except Exception as report_error:
                         logger.error(f"Failed to create report: {report_error}")
 

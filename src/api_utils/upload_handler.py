@@ -53,11 +53,14 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
             "profiling_time": round(data_profile.profile_metadata.get("profiling_duration", 0), 2),
         }
 
-        import builtins
+        from src.api_utils.session_management import session_data_manager
         from .session_persistence import session_data_store
 
-        session_data = {"dataframe": df, "data_profile": data_profile, "filename": filename}
-        builtins._session_store[session_id] = session_data
+        session_data = session_data_manager.get_session(session_id)
+        if not session_data:
+            session_data = session_data_manager.create_session(session_id)
+
+        session_data.update({"dataframe": df, "data_profile": data_profile, "filename": filename})
 
         session_data_store.save_session_data(session_id, session_data)
 
@@ -65,11 +68,14 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
 
     except Exception as e:
         logging.warning(f"Failed to generate dataset profile: {e}")
-        import builtins
+        from src.api_utils.session_management import session_data_manager
         from .session_persistence import session_data_store
 
-        session_data = {"dataframe": df}
-        builtins._session_store[session_id] = session_data
+        session_data = session_data_manager.get_session(session_id)
+        if not session_data:
+            session_data = session_data_manager.create_session(session_id)
+
+        session_data.update({"dataframe": df})
         session_data_store.save_session_data(session_id, session_data)
 
 
@@ -173,10 +179,11 @@ def validate_file_upload(file_content: BinaryIO, filename: str) -> bool:
 
 
 def handle_upload(df: pd.DataFrame, session_id: str, filename: str = "dataset.csv") -> Dict[str, Any]:
-    import builtins
+    from src.api_utils.session_management import session_data_manager
 
-    if not hasattr(builtins, "_session_store"):
-        builtins._session_store = {}
+    # Ensure session exists
+    if not session_data_manager.get_session(session_id):
+        session_data_manager.create_session(session_id)
 
     response_data = {
         "status": "success",

@@ -96,7 +96,9 @@ def process_dataframe_ingestion(
                 "relationships_found": 0,
             }
 
-    session_store[session_id] = session_data
+    if session_id not in session_store:
+        session_store[session_id] = {}
+    session_store[session_id].update(session_data)
 
     return response_data
 

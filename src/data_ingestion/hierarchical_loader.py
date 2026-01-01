@@ -340,23 +340,26 @@ class HierarchicalDatasetLoader:
     def _load_single_file(self, file_path: Path, sample_size: Optional[int] = None) -> Optional[pd.DataFrame]:
         """Load a single file with appropriate reader"""
         ext = file_path.suffix.lower()
+        from src.utils.dataframe_factory import DataFrameFactory
+
+        pd_lib = DataFrameFactory.get_library_for_file(str(file_path))
 
         try:
             if ext == ".csv":
                 if sample_size:
-                    return pd.read_csv(file_path, nrows=sample_size)
-                return pd.read_csv(file_path)
+                    return pd_lib.read_csv(file_path, nrows=sample_size)
+                return pd_lib.read_csv(file_path)
 
             elif ext == ".parquet":
-                df = pd.read_parquet(file_path)
+                df = pd_lib.read_parquet(file_path)
                 if sample_size:
                     return df.head(sample_size)
                 return df
 
             elif ext in {".xlsx", ".xls"}:
                 if sample_size:
-                    return pd.read_excel(file_path, nrows=sample_size)
-                return pd.read_excel(file_path)
+                    return pd_lib.read_excel(file_path, nrows=sample_size)
+                return pd_lib.read_excel(file_path)
 
             else:
                 self.logger.warning(f"Unsupported file type: {ext}")
