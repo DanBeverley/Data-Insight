@@ -1,0 +1,165 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  pre-deployment-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify version tag exists
+        run: |
+          git fetch --tags
+          git tag | grep -q "${{ inputs.version }}" || (echo "Version tag not found" && exit 1)
+
+      - name: Run security scan
+        run: |
+          docker build -t datainsight:prod -f docker/Dockerfile .
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image datainsight:prod --severity CRITICAL,HIGH --exit-code 1
+
+      - name: Check test coverage
+        run: |
+          pip install pytest pytest-cov
+          pytest --cov=src --cov-report=term --cov-fail-under=70
+
+  deploy-production:
+    needs: pre-deployment-checks
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://datainsight.app
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build production Docker image
+        run: |
+          docker build \
+            -t datainsight:${{ inputs.version }} \
+            -t datainsight:latest \
+            -f docker/Dockerfile .
+
+      - name: Run comprehensive smoke tests
+        run: |
+          docker run -d --name prod-test -p 8000:8000 datainsight:${{ inputs.version }}
+          sleep 15
+
+          echo "Testing health endpoint..."
+          curl -f http://localhost:8000/ || exit 1
+
+          echo "Testing API endpoints..."
+          curl -f http://localhost:8000/api/sessions || exit 1
+
+          echo "Testing session creation..."
+          curl -X POST -f http://localhost:8000/api/sessions/new || exit 1
+
+          docker stop prod-test
+
+      - name: Push to production registry
+        run: |
+          echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+          docker tag datainsight:${{ inputs.version }} ${{ secrets.DOCKER_REGISTRY }}/datainsight:${{ inputs.version }}
+          docker tag datainsight:latest ${{ secrets.DOCKER_REGISTRY }}/datainsight:latest
+          docker push ${{ secrets.DOCKER_REGISTRY }}/datainsight:${{ inputs.version }}
+          docker push ${{ secrets.DOCKER_REGISTRY }}/datainsight:latest
+
+      - name: Create backup of current production
+        run: |
+          echo "Creating backup before deployment..."
+          # Add backup commands here
+
+      - name: Deploy to production (Blue-Green)
+        run: |
+          echo "Deploying version ${{ inputs.version }} to production..."
+          # Add your production deployment command here
+
+      - name: Wait for deployment stabilization
+        run: sleep 60
+
+      - name: Run production health checks
+        run: |
+          for i in {1..5}; do
+            curl -f ${{ vars.PRODUCTION_URL }} && break || sleep 10
+          done
+
+      - name: Run critical E2E tests on production
+        run: |
+          pip install pytest requests
+          pytest tests/e2e/test_api_contracts.py \
+            --base-url=${{ vars.PRODUCTION_URL }} \
+            -v \
+            -m "not slow"
+
+      - name: Monitor initial metrics
+        run: |
+          echo "Monitoring error rates and latency..."
+          # Add monitoring checks here
+          sleep 30
+
+      - name: Notify successful deployment
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "✅ Production Deployment Successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment Complete*\nVersion: `${{ inputs.version }}`\nDeployed by: @${{ github.actor }}\nURL: ${{ vars.PRODUCTION_URL }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  rollback:
+    needs: deploy-production
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rollback deployment
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          # Add rollback commands here
+
+      - name: Notify rollback
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "⚠️ Production Deployment Failed - Rollback Initiated",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Rollback Initiated*\nFailed version: `${{ inputs.version }}`\nRolling back to previous stable version"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
