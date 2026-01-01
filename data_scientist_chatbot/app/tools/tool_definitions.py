@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field
 from langchain.tools import tool
 from typing import List, Optional
+from .report_generation_tool import generate_comprehensive_report, ReportGenerationInput
 
 
 class CodeInput(BaseModel):
@@ -54,9 +55,14 @@ def python_code_interpreter(code: str) -> str:
     Executes Python code in a stateful sandbox to perform data analysis,
     manipulation, and visualization. The sandbox maintains state, so you can
     define a variable or load data in one call and use it in the next.
-    Always use this tool to inspect, transform, and visualize data.
-    When creating plots, they will be saved automatically. Make sure to
-    inform the user that you have generated a plot.
+
+    CRITICAL RULES:
+    1. NEVER use `plt.show()` or `fig.show()`. They do not work.
+    2. YOU MUST SAVE PLOTS EXPLICITLY:
+       - Matplotlib: `plt.savefig('filename.png')`
+       - Plotly: `fig.write_html('filename.html')`
+    3. DO NOT wrap your code in a `def main():` function. Execute logic at the top level
+       so variables remain available in the global scope for the next step.
     """
     return "This is a placeholder. Execution happens in the graph node."
 

@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from src.reporting.report_generator import ReportGenerator
+
 from src.reporting.report_repository import ReportRepository
 from src.database.connection import get_database_manager
 
@@ -21,6 +21,7 @@ class CreateReportRequest(BaseModel):
     session_id: str
     dataset_path: str
     dataset_name: str
+    user_request: Optional[str] = None
 
 
 class ModelTrainingRequest(BaseModel):
@@ -30,11 +31,8 @@ class ModelTrainingRequest(BaseModel):
 def get_db():
     """Dependency to get database session"""
     db_manager = get_database_manager()
-    db = db_manager.get_session()
-    try:
+    with db_manager.get_session() as db:
         yield db
-    finally:
-        db.close()
 
 
 @router.post("/create")
@@ -66,6 +64,7 @@ async def stream_report_generation(report_id: str, db: Session = Depends(get_db)
     Stream report sections as they are generated.
 
     Server-Sent Events endpoint that yields report sections progressively.
+    Uses UnifiedReportGenerator for multimodal analysis (Vision + Data).
     """
     repo = ReportRepository(db)
     report = repo.get_report(report_id)
@@ -74,17 +73,46 @@ async def stream_report_generation(report_id: str, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Report not found")
 
     async def generate():
-        """Generate and stream report sections"""
+        """Generate and stream report sections using UnifiedReportGenerator"""
         import json
-        from src.reporting.report_generator import ReportGenerator
+        from src.reporting.unified_report_generator import UnifiedReportGenerator
 
-        generator = ReportGenerator()
+        generator = UnifiedReportGenerator()
 
         try:
-            dataset_path = f"/tmp/datasets/{report.session_id}/data.csv"
+            # Get dataset path from session store
+            dataset_path = None
+            image_paths = []
+            artifacts = []
 
+            try:
+                import builtins
+                from src.api_utils.session_management import session_data_manager
+
+                session_data = session_data_manager.get_session(report.session_id)
+                if session_data:
+                    dataset_path = session_data.get("dataset_path")
+                    # Assuming images might be stored in session or passed differently
+                    # For now, we'll check for an 'images' key in session data
+                    image_paths = session_data.get("uploaded_images", [])
+                    artifacts = session_data.get("artifacts", [])
+            except Exception as e:
+                logger.warning(f"[REPORT] Could not retrieve session data: {e}")
+                dataset_path = f"/tmp/datasets/{report.session_id}/data.csv"  # Fallback
+
+            logger.info(
+                f"[REPORT] Generating Unified Report with {len(artifacts)} artifacts and {len(image_paths)} images"
+            )
+
+            # Stream comprehensive report sections
             async for section in generator.generate(
-                session_id=report.session_id, dataset_path=dataset_path, dataset_name=report.dataset_name
+                session_id=report.session_id,
+                report_type="unified_multimodal",
+                dataset_path=dataset_path,
+                artifacts=artifacts,
+                image_paths=image_paths,
+                analysis_focus=None,
+                user_request=session_data.get("user_request") if session_data else None,
             ):
                 repo.update_report_data(report_id=report_id, section=section["section"], content=section["html"])
 
@@ -135,6 +163,107 @@ async def get_session_reports(session_id: str, db: Session = Depends(get_db)):
         {"id": r.id, "dataset_name": r.dataset_name, "status": r.status, "created_at": r.created_at.isoformat()}
         for r in reports
     ]
+
+
+@router.get("/{session_id}/export/{format}")
+async def export_report_by_session(session_id: str, format: str, db: Session = Depends(get_db)):
+    from fastapi.responses import Response
+    from pathlib import Path
+    import glob
+    from src.reporting.report_exporter import get_report_exporter
+
+    data_reports_dir = Path("data/reports")
+    html_content = None
+    dataset_name = "Analysis"
+
+    if data_reports_dir.exists():
+        session_prefix = session_id[:8]
+        html_files = sorted(
+            [f for f in data_reports_dir.glob("*.html") if session_prefix in f.name],
+            key=lambda x: x.stat().st_mtime,
+            reverse=True,
+        )
+        if html_files:
+            with open(html_files[0], "r", encoding="utf-8") as f:
+                html_content = f.read()
+            dataset_name = html_files[0].stem.replace("Analysis_Report_", "").replace("_", " ")
+
+    if not html_content:
+        repo = ReportRepository(db)
+        reports = repo.get_reports_by_session(session_id)
+        if reports:
+            report = reports[0]
+            report_data = report.report_data or {}
+            sections = []
+            section_order = ["executive_dashboard", "visual_analysis", "key_drivers", "model_arena", "artifact_gallery"]
+            section_titles = {
+                "executive_dashboard": "Executive Summary",
+                "visual_analysis": "Visual Analysis",
+                "key_drivers": "Key Drivers",
+                "model_arena": "Model Performance",
+                "artifact_gallery": "Generated Artifacts",
+            }
+            for section_key in section_order:
+                if section_key in report_data:
+                    sections.append(
+                        {
+                            "title": section_titles.get(section_key, section_key.replace("_", " ").title()),
+                            "content": report_data[section_key],
+                        }
+                    )
+            exporter = get_report_exporter()
+            html_content = exporter.export_html(
+                sections, title=f"Analysis Report - {report.dataset_name}", session_id=session_id
+            )
+            dataset_name = report.dataset_name
+
+    if not html_content:
+        raise HTTPException(status_code=404, detail="No reports found for this session")
+
+    exporter = get_report_exporter()
+    title = f"Analysis Report - {dataset_name}"
+
+    if format == "html":
+        from src.reporting.report_exporter import make_standalone_html
+
+        standalone_content = make_standalone_html(html_content)
+        return Response(
+            content=standalone_content.encode("utf-8"),
+            media_type="text/html",
+            headers={"Content-Disposition": f"attachment; filename=report_{session_id[:8]}.html"},
+        )
+
+    sections = [{"title": "Report", "content": html_content}]
+
+    format_handlers = {
+        "pdf": (exporter.export_pdf, "application/pdf", "pdf"),
+        "docx": (
+            exporter.export_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "docx",
+        ),
+        "txt": (exporter.export_txt, "text/plain", "txt"),
+        "zip": (exporter.export_zip, "application/zip", "zip"),
+    }
+
+    if format not in format_handlers:
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported format: {format}. Supported: pdf, docx, html, txt, zip"
+        )
+
+    handler, media_type, ext = format_handlers[format]
+
+    try:
+        content = handler(sections, title=title, session_id=session_id)
+        filename = f"report_{session_id[:8]}.{ext}"
+        return Response(
+            content=content, media_type=media_type, headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except ImportError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 
 @router.post("/{report_id}/train-models")
@@ -208,3 +337,108 @@ async def delete_report(report_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Report not found")
 
     return {"message": "Report deleted successfully"}
+
+
+@router.get("/{report_id}/export/{format}")
+async def export_report(report_id: str, format: str, db: Session = Depends(get_db)):
+    from fastapi.responses import Response
+    from src.reporting.report_exporter import get_report_exporter
+
+    repo = ReportRepository(db)
+    report = repo.get_report(report_id)
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    report_data = report.report_data or {}
+    sections = []
+
+    section_order = ["executive_dashboard", "visual_analysis", "key_drivers", "model_arena", "artifact_gallery"]
+    section_titles = {
+        "executive_dashboard": "Executive Summary",
+        "visual_analysis": "Visual Analysis",
+        "key_drivers": "Key Drivers",
+        "model_arena": "Model Performance",
+        "artifact_gallery": "Generated Artifacts",
+    }
+
+    for section_key in section_order:
+        if section_key in report_data:
+            sections.append(
+                {
+                    "title": section_titles.get(section_key, section_key.replace("_", " ").title()),
+                    "content": report_data[section_key],
+                }
+            )
+
+    exporter = get_report_exporter()
+    title = f"Analysis Report - {report.dataset_name}"
+
+    format_handlers = {
+        "pdf": (exporter.export_pdf, "application/pdf", "pdf"),
+        "docx": (
+            exporter.export_docx,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "docx",
+        ),
+        "xlsx": (exporter.export_xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+        "pptx": (
+            exporter.export_pptx,
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "pptx",
+        ),
+        "html": (exporter.export_html, "text/html", "html"),
+        "txt": (exporter.export_txt, "text/plain", "txt"),
+        "zip": (exporter.export_zip, "application/zip", "zip"),
+    }
+
+    if format not in format_handlers:
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported format: {format}. Supported: pdf, docx, xlsx, pptx, html, txt, zip"
+        )
+
+    handler, media_type, ext = format_handlers[format]
+
+    try:
+        content = handler(sections, title=title, session_id=report.session_id)
+        filename = f"report_{report_id[:8]}.{ext}"
+        return Response(
+            content=content, media_type=media_type, headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except ImportError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+@router.get("/{report_id}/export-formats")
+async def get_export_formats(report_id: str, db: Session = Depends(get_db)):
+    repo = ReportRepository(db)
+    report = repo.get_report(report_id)
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    return {
+        "report_id": report_id,
+        "formats": [
+            {
+                "id": "html",
+                "label": "HTML (Interactive)",
+                "icon": "globe",
+                "description": "For web viewing with interactivity",
+            },
+            {"id": "pdf", "label": "PDF Document", "icon": "file-text", "description": "For sharing and printing"},
+            {
+                "id": "docx",
+                "label": "Word Document",
+                "icon": "file-edit",
+                "description": "For editing in Microsoft Word",
+            },
+            {"id": "xlsx", "label": "Excel Spreadsheet", "icon": "table", "description": "For data analysis"},
+            {"id": "pptx", "label": "PowerPoint", "icon": "presentation", "description": "For presentations"},
+            {"id": "txt", "label": "Plain Text", "icon": "file", "description": "For simple text viewing"},
+            {"id": "zip", "label": "ZIP Bundle", "icon": "archive", "description": "HTML + artifacts bundled"},
+        ],
+    }
