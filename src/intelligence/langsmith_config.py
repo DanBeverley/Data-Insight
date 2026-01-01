@@ -25,6 +25,7 @@ def initialize_langsmith() -> Optional[Client]:
 
     try:
         client = Client(api_key=api_key, api_url=os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"))
+        print(f"✅ LangSmith Tracing Initialized (Project: {os.getenv('LANGSMITH_PROJECT', 'default')})")
         return client
     except Exception as e:
         print(f"Failed to initialize LangSmith: {e}")

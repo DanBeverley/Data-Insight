@@ -14,6 +14,10 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 
+from src.utils.dataframe_factory import DataFrameFactory
+
+pd_lib = DataFrameFactory.get_library()
+
 from .domain_detector import DomainDetector
 from .relationship_discovery import RelationshipDiscovery
 
@@ -112,7 +116,20 @@ class IntelligentDataProfiler:
     def profile_dataset(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Complete intelligent profiling of dataset"""
         n_columns = len(df.columns)
-        use_parallel = n_columns > 8
+        n_columns = len(df.columns)
+
+        # Disable manual parallelization for cuDF/Modin as they are already parallelized
+        lib_name = DataFrameFactory.get_library_name()
+
+        if lib_name == "pandas":
+            total_cells = len(df) * n_columns
+            text_cols = len(df.select_dtypes(include=["object", "string"]).columns)
+            complexity_score = total_cells + (text_cols * len(df) * 5)
+
+            threshold = 1_000_000 if os.name == "nt" else 200_000
+            use_parallel = complexity_score > threshold
+        else:
+            use_parallel = False
 
         if use_parallel:
             logging.info(f"Using parallel profiling for {n_columns} columns")
@@ -176,7 +193,13 @@ class IntelligentDataProfiler:
         non_null_count = series.count()
         total_count = len(series)
         null_ratio = 1 - (non_null_count / total_count)
-        unique_count = series.nunique()
+        try:
+            unique_count = series.nunique()
+        except TypeError:
+            # Handle unhashable types (lists, dicts) by converting to string
+            series = series.astype(str)
+            unique_count = series.nunique()
+
         cardinality = unique_count / non_null_count if non_null_count > 0 else 0
 
         evidence = {
@@ -279,14 +302,38 @@ class IntelligentDataProfiler:
         return SemanticType.PRIMARY_KEY, 0.6
 
     def _detect_pattern_type(self, series: pd.Series) -> Tuple[SemanticType, float, Dict]:
-        """Detect semantic type based on string patterns"""
-        sample_values = series.dropna().astype(str).head(100)
+        """Detect semantic type based on string patterns (Vectorized)"""
+        # Optimization: Use larger sample for vectorized operations as they are fast
+        sample_size = min(1000, len(series))
+
+        # Handle different dataframe libraries
+        if hasattr(series, "to_pandas"):  # cuDF / Modin
+            try:
+                # Convert sample to pandas for consistent regex handling if needed,
+                # or use native .str accessor if fully compatible.
+                # For safety and consistency with regex patterns, we'll use pandas for the sample check
+                # unless the dataset is massive, but here we only check 1000 rows.
+                sample_series = series.head(sample_size).to_pandas().astype(str).str.strip()
+            except:
+                sample_series = series.head(sample_size).astype(str).str.strip()
+        else:
+            sample_series = series.dropna().astype(str).str.strip().head(sample_size)
+
         pattern_matches = {}
 
         for pattern_name, pattern in self.patterns.items():
-            matches = sum(1 for val in sample_values if pattern.match(val.strip()))
-            match_ratio = matches / len(sample_values) if len(sample_values) > 0 else 0
-            pattern_matches[pattern_name] = match_ratio
+            # Vectorized regex matching
+            # pattern is compiled, so we use pattern.pattern for pandas str.match if needed,
+            # but pandas accepts compiled regex too.
+            try:
+                matches = sample_series.str.match(pattern).sum()
+                match_ratio = matches / len(sample_series) if len(sample_series) > 0 else 0
+                pattern_matches[pattern_name] = match_ratio
+            except Exception:
+                # Fallback to loop if vectorization fails
+                matches = sum(1 for val in sample_series if pattern.match(val))
+                match_ratio = matches / len(sample_series) if len(sample_series) > 0 else 0
+                pattern_matches[pattern_name] = match_ratio
 
         # Find best match
         best_pattern = max(pattern_matches.items(), key=lambda x: x[1])

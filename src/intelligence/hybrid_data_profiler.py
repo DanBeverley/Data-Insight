@@ -23,6 +23,10 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+from src.utils.dataframe_factory import DataFrameFactory
+
+pd_lib = DataFrameFactory.get_library()
+
 from intelligence.data_profiler import IntelligentDataProfiler
 from intelligence.domain_detector import DomainDetector
 from intelligence.relationship_discovery import RelationshipDiscovery
@@ -30,13 +34,6 @@ from data_quality.anomaly_detector import MultiLayerAnomalyDetector
 from data_quality.quality_assessor import ContextAwareQualityAssessor
 from data_quality.drift_monitor import ComprehensiveDriftMonitor
 from data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
-
-try:
-    from security.privacy_engine import PrivacyEngine
-    from security.compliance_manager import ComplianceManager
-except ImportError:
-    PrivacyEngine = None
-    ComplianceManager = None
 
 
 class ProfilerStatus(Enum):
@@ -85,7 +82,9 @@ class HybridDataProfiler:
     _model_cache = None  # Class-level cache for embedding model
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or self._get_default_config()
+        self.config = self._get_default_config()
+        if config:
+            self.config.update(config)
 
         # Initialize all intelligence modules
         self.intelligent_profiler = IntelligentDataProfiler()
@@ -122,7 +121,7 @@ class HybridDataProfiler:
             str(df.shape),
             str(sorted(df.columns.tolist())),
             str(df.dtypes.to_dict()),
-            str(hash(tuple(df.iloc[0].values))) if len(df) > 0 else "empty",
+            str(hash(tuple(str(v) for v in df.iloc[0].values))) if len(df) > 0 else "empty",
         ]
         return hashlib.md5("|".join(key_parts).encode()).hexdigest()
 
@@ -140,12 +139,7 @@ class HybridDataProfiler:
     def _get_adaptive_sample(self, df: pd.DataFrame, target_size: Optional[int] = None) -> tuple[pd.DataFrame, int]:
         """
         Intelligently sample dataset based on size for optimal performance.
-
-        Sampling Strategy:
-        - <100K rows: Full profiling
-        - 100K-500K rows: 50K sample (stratified) for Phase 1, configurable for others
-        - 500K-1M rows: 30K sample (stratified)
-        - >1M rows: 20K sample (stratified)
+        Optimized for speed: Uses random sampling for large datasets to avoid O(N log N) stratification.
         """
         n_rows = len(df)
 
@@ -162,27 +156,13 @@ class HybridDataProfiler:
         else:
             sample_size = min(target_size, n_rows)
 
+        # Optimization: Use simple random sampling for large datasets
+        # Stratification is expensive and unnecessary for initial profiling of >100k rows
         try:
-            categorical_cols = df.select_dtypes(include=["object", "category"]).columns
-
-            if len(categorical_cols) > 0:
-                stratify_col = categorical_cols[0]
-                value_counts = df[stratify_col].value_counts()
-
-                if len(value_counts) < 1000 and value_counts.min() >= 2:
-                    from sklearn.model_selection import train_test_split
-
-                    df_sample, _ = train_test_split(
-                        df, train_size=sample_size, stratify=df[stratify_col], random_state=42
-                    )
-                    return df_sample, sample_size
-
-            df_sample = df.sample(n=sample_size, random_state=42)
-            return df_sample, sample_size
-
+            return df.sample(n=sample_size, random_state=42), sample_size
         except Exception:
-            df_sample = df.sample(n=sample_size, random_state=42)
-            return df_sample, sample_size
+            # Fallback for libraries that might not support random_state or other args identically
+            return df.sample(n=sample_size), sample_size
 
     def generate_comprehensive_profile(
         self,
@@ -222,6 +202,21 @@ class HybridDataProfiler:
             f"Starting comprehensive profiling of dataset with {len(df)} samples and {len(df.columns)} features"
         )
 
+        # Hardware Acceleration: Convert to optimized dataframe if available
+        lib_name = DataFrameFactory.get_library_name()
+        if lib_name == "cudf" and not isinstance(df, pd_lib.DataFrame):
+            try:
+                logging.info("Converting DataFrame to cuDF for GPU acceleration")
+                df = pd_lib.from_pandas(df)
+            except Exception as e:
+                logging.warning(f"Failed to convert to cuDF: {e}")
+        elif lib_name == "modin" and not isinstance(df, pd_lib.DataFrame):
+            try:
+                logging.info("Converting DataFrame to Modin for multi-core acceleration")
+                df = pd_lib.DataFrame(df)
+            except Exception as e:
+                logging.warning(f"Failed to convert to Modin: {e}")
+
         if len(df) < self.config["min_samples_for_full_profile"]:
             logging.warning(
                 f"Dataset has fewer than {self.config['min_samples_for_full_profile']} samples. Profile may be limited."
@@ -232,95 +227,50 @@ class HybridDataProfiler:
             logging.info(f"Phase 1 sampling: {sample_size_phase1:,} rows from {len(df):,} total rows")
 
         try:
+            # Phase 1: Semantic Profiling
+            logging.info("Phase 1: Intelligent data profiling...")
+            if progress_callback:
+                progress_callback(20, "Analyzing column semantics...")
+            semantic_profile = self.intelligent_profiler.profile_dataset(df_phase1)
 
-            def run_phase1():
-                logging.info("Phase 1: Intelligent data profiling...")
+            # Phase 4: Missing Value Intelligence (Optimized)
+            missing_analysis = None
+            if self.config["enable_missing_value_analysis"]:
+                logging.info("Phase 4: Missing value intelligence analysis...")
                 if progress_callback:
-                    progress_callback(20, "Analyzing column semantics...")
-                return self.intelligent_profiler.profile_dataset(df_phase1)
+                    progress_callback(40, "Analyzing missing values...")
+                missing_analysis = self.missing_value_intelligence.analyze_missing_patterns(df_phase1)
 
-            def run_phase4():
-                if self.config["enable_missing_value_analysis"]:
-                    logging.info("Phase 4: Missing value intelligence analysis...")
-                    if progress_callback:
-                        progress_callback(60, "Analyzing missing values...")
-                    return self.missing_value_intelligence.analyze_missing_patterns(df_phase1)
-                return None
-
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                phase1_future = executor.submit(run_phase1)
-                phase4_future = executor.submit(run_phase4)
-
-                semantic_profile = phase1_future.result()
-                missing_analysis = phase4_future.result()
-
-            def run_phase2():
-                if self.config["enable_anomaly_detection"]:
-                    df_phase2, sample_size_phase2 = self._get_adaptive_sample(df, target_size=10000)
-                    if sample_size_phase2 < len(df):
-                        logging.info(f"Phase 2 sampling: {sample_size_phase2:,} rows for anomaly detection")
-
-                    logging.info("Phase 2: Multi-layer anomaly detection...")
-                    if progress_callback:
-                        progress_callback(35, "Detecting anomalies...")
-                    results = self.anomaly_detector.detect_anomalies(df_phase2, reference_df)
-                    summary = self.anomaly_detector.get_anomaly_summary()
-                    return results, summary
-                return None, {}
-
-            def run_phase3(anomaly_results):
-                if self.config["enable_quality_assessment"]:
-                    df_phase3, sample_size_phase3 = self._get_adaptive_sample(df, target_size=20000)
-                    if sample_size_phase3 < len(df):
-                        logging.info(f"Phase 3 sampling: {sample_size_phase3:,} rows for quality assessment")
-
-                    logging.info("Phase 3: Data quality assessment...")
-                    if progress_callback:
-                        progress_callback(50, "Assessing data quality...")
-                    return self.quality_assessor.assess_quality(df_phase3, reference_df, context, anomaly_results)
-                return None
-
-            import threading
-
+            # Phase 2: Anomaly Detection
             anomaly_results = None
             anomaly_summary = {}
-            quality_report = None
+            if self.config["enable_anomaly_detection"]:
+                df_phase2, sample_size_phase2 = self._get_adaptive_sample(df, target_size=5000)
+                if sample_size_phase2 < len(df):
+                    logging.info(f"Phase 2 sampling: {sample_size_phase2:,} rows for anomaly detection")
 
-            def run_phase2_and_3_async():
-                try:
-                    nonlocal anomaly_results, anomaly_summary, quality_report
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        phase2_future = executor.submit(run_phase2)
-                        anomaly_results, anomaly_summary = phase2_future.result()
-
-                        phase3_future = executor.submit(run_phase3, anomaly_results)
-                        quality_report = phase3_future.result()
-
-                    logging.info("Background profiling (Phase 2, 3) completed")
-                except Exception as e:
-                    logging.error(f"Background profiling failed: {e}")
-
-            background_thread = threading.Thread(target=run_phase2_and_3_async, daemon=True)
-            background_thread.start()
-
-            logging.info("Phase 2, 3 deferred to background thread")
-
-            pii_detection = None
-            if self.config.get("enable_privacy_analysis", True):
-                logging.info("Phase 5: PII detection and privacy assessment...")
+                logging.info("Phase 2: Multi-layer anomaly detection...")
                 if progress_callback:
-                    progress_callback(70, "Scanning for PII...")
-                try:
-                    privacy_engine = PrivacyEngine()
-                    pii_detection = privacy_engine.assess_privacy_risk(df_phase1)
-                except Exception as e:
-                    logging.warning(f"PII detection failed: {e}")
+                    progress_callback(60, "Detecting anomalies...")
+                anomaly_results = self.anomaly_detector.detect_anomalies(df_phase2, reference_df)
+                anomaly_summary = self.anomaly_detector.get_anomaly_summary()
 
+            # Phase 3: Quality Assessment
+            quality_report = None
+            if self.config["enable_quality_assessment"]:
+                df_phase3, sample_size_phase3 = self._get_adaptive_sample(df, target_size=5000)
+                if sample_size_phase3 < len(df):
+                    logging.info(f"Phase 3 sampling: {sample_size_phase3:,} rows for quality assessment")
+
+                logging.info("Phase 3: Data quality assessment...")
+                if progress_callback:
+                    progress_callback(80, "Assessing data quality...")
+                quality_report = self.quality_assessor.assess_quality(df_phase3, reference_df, context, anomaly_results)
+
+            # Phase 6: Drift Monitoring
             drift_results = []
             if self.config["enable_drift_monitoring"] and reference_df is not None:
                 logging.info("Phase 6: Data drift monitoring...")
-                if progress_callback:
-                    progress_callback(75, "Monitoring drift...")
                 try:
                     self.drift_monitor.fit_reference(reference_df)
                     drift_results = self.drift_monitor.detect_drift(
@@ -328,6 +278,9 @@ class HybridDataProfiler:
                     )
                 except Exception as e:
                     logging.warning(f"Drift analysis failed: {e}")
+
+            pii_detection = None
+            logging.info("All profiling phases completed sequentially")
 
             if progress_callback:
                 progress_callback(85, "Generating insights...")
@@ -382,7 +335,7 @@ class HybridDataProfiler:
                         "anomaly_detection": self.config["enable_anomaly_detection"],
                         "missing_analysis": self.config["enable_missing_value_analysis"],
                         "drift_monitoring": self.config["enable_drift_monitoring"] and reference_df is not None,
-                        "privacy_analysis": self.config.get("enable_privacy_analysis", True),
+                        # "privacy_analysis": self.config.get("enable_privacy_analysis", True),
                     },
                     "pii_detection": pii_detection,
                 },

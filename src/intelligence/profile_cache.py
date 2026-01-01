@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class ProfileCache:
     """Cache data profiling results by dataset hash"""
 
-    def __init__(self, cache_db: str = "data_profile_cache.db"):
+    def __init__(self, cache_db: str = "data/databases/data_profile_cache.db"):
         self.cache_db = Path(cache_db)
         self._initialize_db()
 
