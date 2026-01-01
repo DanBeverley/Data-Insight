@@ -1,6 +1,8 @@
 import os
 import sys
 import uuid
+import ast
+import builtins
 import json
 import logging
 import io
@@ -36,7 +38,7 @@ except ImportError:
     except ImportError:
         raise ImportError("Could not import PerformanceMonitor")
 
-# Use builtins for persistent storage across module reloads
+# builtins for persistent storage across module reloads
 import builtins
 
 if not hasattr(builtins, "_persistent_sandboxes"):
@@ -46,36 +48,188 @@ session_sandboxes = builtins._persistent_sandboxes
 print(f"DEBUG: tools.py module loaded, using persistent sandboxes: {id(session_sandboxes)}")
 performance_monitor = PerformanceMonitor()
 
+session_installed_packages: Dict[str, set] = {}
+
+# E2B template name - build with: e2b template build --dockerfile e2b.Dockerfile --name data-insight-sandbox
+E2B_TEMPLATE_NAME = os.getenv("E2B_TEMPLATE_NAME", "data-insight-sandbox")
+
+
+def _wait_for_kernel(sandbox, max_retries: int = 6, delay: float = 5.0) -> bool:
+    """Wait for Jupyter kernel to be ready by running a simple health check."""
+    import time
+
+    for attempt in range(max_retries):
+        try:
+            result = sandbox.run_code("print('kernel_ready')", timeout=10)
+            if result and hasattr(result, "logs") and "kernel_ready" in str(result.logs):
+                print(f"DEBUG: Kernel ready after {attempt + 1} attempts")
+                return True
+            if result:
+                print(f"DEBUG: Kernel ready after {attempt + 1} attempts")
+                return True
+        except Exception as e:
+            print(f"DEBUG: Kernel not ready (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+    return False
+
 
 def get_sandbox(session_id: str) -> "Sandbox":
     from e2b_code_interpreter import Sandbox
 
+    active_count = len(session_sandboxes)
+    logger.info(f"[SANDBOX] get_sandbox called for session {session_id[:8]}... (active sandboxes: {active_count})")
+
     if session_id not in session_sandboxes:
-        print(f"DEBUG: Creating new sandbox for session {session_id}")
-        sandbox = Sandbox.create(timeout=600)
+        logger.info(f"[SANDBOX] Creating NEW sandbox for session {session_id[:8]}...")
+
+        try:
+            sandbox = Sandbox.create(template=E2B_TEMPLATE_NAME, timeout=600)
+            logger.info(f"[SANDBOX] Created with template '{E2B_TEMPLATE_NAME}'")
+        except Exception as template_err:
+            logger.warning(f"[SANDBOX] Template failed, using default: {template_err}")
+            sandbox = Sandbox.create(timeout=600)
+            sandbox.run_code(
+                "import subprocess; subprocess.run(['pip', 'install', '-q', 'statsmodels', 'flaml'], capture_output=True)",
+                timeout=120,
+            )
+
+        if not _wait_for_kernel(sandbox):
+            logger.warning("[SANDBOX] Kernel may not be fully ready")
+
+        try:
+            result = sandbox.run_code("import statsmodels; print('statsmodels OK')", timeout=10)
+            result_text = ""
+            if result:
+                if hasattr(result, "text") and result.text:
+                    result_text = str(result.text)
+                elif hasattr(result, "logs"):
+                    if hasattr(result.logs, "stdout") and result.logs.stdout:
+                        result_text = "".join(result.logs.stdout)
+                    else:
+                        result_text = str(result.logs)
+                else:
+                    result_text = str(result)
+
+            if result and not (hasattr(result, "error") and result.error):
+                logger.info("[SANDBOX] statsmodels verified")
+            elif "statsmodels OK" in result_text:
+                logger.info("[SANDBOX] statsmodels verified in template")
+            else:
+                raise ImportError("statsmodels not found")
+        except Exception as e:
+            logger.warning(f"[SANDBOX] Installing missing packages: {e}")
+            sandbox.run_code(
+                "import subprocess; subprocess.run(['pip', 'install', '-q', 'statsmodels', 'flaml'], capture_output=True)",
+                timeout=120,
+            )
+
         session_sandboxes[session_id] = sandbox
+        session_installed_packages[session_id] = {"statsmodels", "flaml"}
         _reload_dataset_if_available(sandbox, session_id)
+        logger.info(
+            f"[SANDBOX] NEW sandbox ready for session {session_id[:8]}... (total active: {len(session_sandboxes)})"
+        )
     else:
-        print(f"DEBUG: Reusing existing sandbox for session {session_id}")
+        logger.info(f"[SANDBOX] REUSING existing sandbox for session {session_id[:8]}...")
         try:
             session_sandboxes[session_id].run_code("print('health_check')", timeout=5)
+            logger.info(f"[SANDBOX] Health check PASSED for session {session_id[:8]}...")
         except Exception as e:
-            print(f"DEBUG: Sandbox health check failed, recreating: {e}")
+            logger.warning(f"[SANDBOX] Health check FAILED, recreating: {e}")
             try:
                 session_sandboxes[session_id].close()
             except:
                 pass
-            sandbox = Sandbox.create()
+
+            try:
+                sandbox = Sandbox.create(template=E2B_TEMPLATE_NAME, timeout=600)
+            except:
+                sandbox = Sandbox.create(timeout=600)
+                sandbox.run_code(
+                    "import subprocess; subprocess.run(['pip', 'install', '-q', 'statsmodels', 'flaml'], capture_output=True)",
+                    timeout=120,
+                )
+
+            if not _wait_for_kernel(sandbox):
+                logger.warning("[SANDBOX] Recreated kernel may not be fully ready")
+
             session_sandboxes[session_id] = sandbox
+            session_installed_packages[session_id] = {"statsmodels", "flaml"}
             _reload_dataset_if_available(sandbox, session_id)
+            logger.info(f"[SANDBOX] Sandbox RECREATED for session {session_id[:8]}...")
     return session_sandboxes[session_id]
+
+
+def ensure_packages_installed(session_id: str, task_description: str):
+    """Lazily install packages based on task requirements or code content"""
+    if session_id not in session_sandboxes:
+        return
+
+    if session_id not in session_installed_packages:
+        session_installed_packages[session_id] = {"statsmodels", "flaml"}
+
+    installed = session_installed_packages[session_id]
+    sandbox = session_sandboxes[session_id]
+    packages_to_install = []
+
+    task_lower = task_description.lower()
+
+    if "statsmodels" not in installed:
+        statsmodels_keywords = [
+            "trendline",
+            "ols",
+            "regression",
+            "arima",
+            "seasonal",
+            "decompose",
+            "stationary",
+            "adf test",
+            "granger",
+        ]
+        statsmodels_code_patterns = ["trendline=", "trendline_color", "statsmodels", "sm.ols", "sm.OLS"]
+        needs_statsmodels = any(kw in task_lower for kw in statsmodels_keywords) or any(
+            pattern in task_description for pattern in statsmodels_code_patterns
+        )
+        if needs_statsmodels:
+            packages_to_install.append("statsmodels")
+            installed.add("statsmodels")
+
+    if "flaml" not in installed:
+        flaml_keywords = [
+            "automl",
+            "flaml",
+            "auto ml",
+            "automatic machine learning",
+            "hyperparameter",
+            "model selection",
+        ]
+        flaml_code_patterns = ["from flaml", "import flaml", "AutoML()"]
+        needs_flaml = any(kw in task_lower for kw in flaml_keywords) or any(
+            pattern in task_description for pattern in flaml_code_patterns
+        )
+        if needs_flaml:
+            packages_to_install.append("flaml")
+            installed.add("flaml")
+
+    if packages_to_install:
+        print(f"DEBUG: Lazy installing packages: {packages_to_install}")
+        pkg_str = " ".join(packages_to_install)
+        sandbox.run_code(
+            f"import subprocess; subprocess.run(['pip', 'install', '-q', '{pkg_str}'], capture_output=True)", timeout=90
+        )
 
 
 def _reload_dataset_if_available(sandbox: "Sandbox", session_id: str):
     try:
-        import builtins
+        # session_data_manager to access the unified store
+        import sys
+        import os
 
-        session_store = getattr(builtins, "_session_store", None)
+        sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        from src.api_utils.session_management import session_data_manager
+
+        session_store = session_data_manager.store
         if session_store and session_id in session_store and "dataframe" in session_store[session_id]:
             df_original = session_store[session_id]["dataframe"]
 
@@ -96,8 +250,7 @@ def _reload_dataset_if_available(sandbox: "Sandbox", session_id: str):
             except AttributeError:
                 sandbox.files.write("/tmp/dataset.parquet", parquet_bytes)
 
-            check_and_install_code = """
-import subprocess
+            check_and_install_code = """import subprocess
 import sys
 from packaging import version
 
@@ -110,11 +263,11 @@ try:
     if not (pandas_ok and pyarrow_ok):
         raise ImportError("Versions too old")
 except ImportError:
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', '-q', 'pandas==2.2.3', 'pyarrow==17.0.0'])
-    print("DEBUG: Upgraded pandas to 2.2.3 and pyarrow to 17.0.0")
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', '-q', 'pandas==2.2.3', 'pyarrow==17.0.0', 'plotly', 'kaleido==0.2.1', 'scikit-learn', 'matplotlib', 'seaborn', 'wordcloud', 'tabulate'])
+    print("DEBUG: Upgraded pandas, pyarrow and installed plotting libraries")
 else:
     print(f"DEBUG: Pandas {pd.__version__} and PyArrow {pa.__version__} already installed")
-"""
+                                    """
             sandbox.run_code(check_and_install_code, timeout=60)
 
     except Exception as e:
@@ -128,8 +281,7 @@ else:
                 df_sample = df.sample(n=min(20000, len(df)), random_state=42) if len(df) > 20000 else df
                 csv_data = df_sample.to_csv(index=False)
 
-                reload_code = f"""
-import pandas as pd
+                reload_code = f"""import pandas as pd
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -140,29 +292,64 @@ from io import StringIO
 csv_data = '''{csv_data}'''
 df = pd.read_csv(StringIO(csv_data))
 print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
-"""
+                                """
                 result = sandbox.run_code(reload_code, timeout=60)
         except Exception as fallback_error:
             print(f"DEBUG: Could not reload dataset for session {session_id}: {fallback_error}")
+
+
+def refresh_sandbox_data(session_id: str, df: "pd.DataFrame" = None) -> bool:
+    import io
+
+    try:
+        if session_id not in session_sandboxes:
+            return False
+
+        sandbox = session_sandboxes[session_id]
+
+        if df is None:
+            import sys
+            import os
+
+            sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+            from src.api_utils.session_management import session_data_manager
+
+            session_store = session_data_manager.store
+            if not (session_store and session_id in session_store and "dataframe" in session_store[session_id]):
+                return False
+            df = session_store[session_id]["dataframe"]
+
+        df_to_upload = df.sample(n=min(50000, len(df)), random_state=42) if len(df) > 50000 else df
+
+        parquet_buffer = io.BytesIO()
+        df_to_upload.to_parquet(parquet_buffer, engine="pyarrow", compression="snappy")
+        parquet_bytes = parquet_buffer.getvalue()
+
+        print(f"DEBUG: Refreshing sandbox with {len(df_to_upload)} rows, {len(df_to_upload.columns)} cols")
+
+        try:
+            sandbox.filesystem.write_bytes("/tmp/dataset.parquet", parquet_bytes)
+        except AttributeError:
+            sandbox.files.write("/tmp/dataset.parquet", parquet_bytes)
+
+        return True
+    except Exception as e:
+        print(f"DEBUG: refresh_sandbox_data failed: {e}")
+        return False
 
 
 @traceable(name="sandbox_execution", tags=["tool", "e2b"])
 @performance_monitor.cache_result(ttl=600, key_prefix="sandbox_exec")
 @performance_monitor.time_function("sandbox", "code_execution")
 def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
-    """
-    Executes Python code in a stateful, secure sandbox for a specific session.
-    Enhanced with performance monitoring and intelligent caching.
-    Routes training code to GPU when appropriate.
-    """
+    """Executes Python code in a stateful, secure sandbox for a specific session."""
     if not session_id:
         performance_monitor.record_metric(
             session_id="unknown", metric_name="sandbox_error", value=1.0, context={"error": "missing_session_id"}
         )
         return {"success": False, "stderr": "Session ID is missing."}
 
-    # Check if training decision exists for this session
-    import builtins
+    ensure_packages_installed(session_id, code)
 
     if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
         session_data = builtins._session_store[session_id]
@@ -171,15 +358,12 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
         if training_decision and training_decision.get("environment") == "gpu":
             print(f"[execute_python_in_sandbox] Using pre-decided GPU execution: {training_decision.get('reasoning')}")
 
-            # Import training executor
             sys.path.append(os.path.join(os.path.dirname(__file__), "core"))
             from core.training_executor import training_executor
 
-            # Clear the decision to avoid re-use
             session_data["training_decision"] = None
             session_data["training_environment"] = None
 
-            # Execute using the pre-made decision (skip re-deciding)
             from core.training_decision import TrainingDecision
 
             decision_obj = TrainingDecision(
@@ -188,7 +372,6 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
                 confidence=training_decision["confidence"],
             )
 
-            # Route directly based on decision
             if decision_obj.environment == "gpu":
                 result = training_executor._execute_on_gpu(
                     code=code, session_id=session_id, user_format=None, decision=decision_obj
@@ -218,12 +401,41 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
         initial_cpu = process.cpu_percent()
 
-        import builtins
-
         session_store = getattr(builtins, "_session_store", None)
 
-        is_plotting = any(pattern in code for pattern in ["plt.", "sns.", ".plot(", ".hist(", "matplotlib", "seaborn"])
-        patterns_found = [p for p in ["plt.", "sns.", ".plot(", ".hist(", "matplotlib", "seaborn"] if p in code]
+        is_plotting = any(
+            pattern in code
+            for pattern in [
+                "plt.",
+                "sns.",
+                ".plot(",
+                ".hist(",
+                "matplotlib",
+                "seaborn",
+                "plotly",
+                "px.",
+                "go.",
+                "write_html",
+                "write_image",
+            ]
+        )
+        patterns_found = [
+            p
+            for p in [
+                "plt.",
+                "sns.",
+                ".plot(",
+                ".hist(",
+                "matplotlib",
+                "seaborn",
+                "plotly",
+                "px.",
+                "go.",
+                "write_html",
+                "write_image",
+            ]
+            if p in code
+        ]
         print(f"DEBUG: Plot detection - code contains: {patterns_found}")
         if "df.corr()" in code:
             code = code.replace("df.corr()", "df.select_dtypes(include=[np.number]).corr()")
@@ -236,19 +448,6 @@ def execute_python_in_sandbox(code: str, session_id: str) -> Dict[str, Any]:
         i = 0
         while i < len(lines):
             line = lines[i]
-
-            if "import pandas" in line or "from pandas" in line:
-                cleaned_lines.append("# pandas already imported as pd")
-                verbose_patterns_found.append("import pandas")
-                i += 1
-                continue
-
-            if re.match(r"^\s*df\s*=\s*pd\.read_", line):
-                cleaned_lines.append("# df already loaded from /tmp/dataset.parquet")
-                verbose_patterns_found.append("df = pd.read_*()")
-                i += 1
-                continue
-
             if ".value_counts()" in line and "print" in line and ".head(" not in line:
                 cleaned_lines.append(line.replace(".value_counts()", ".value_counts().head(10)"))
                 verbose_patterns_found.append("value_counts()")
@@ -293,11 +492,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
 import sys
 import os
 import glob
+import uuid
 
-# Apply pandas output limits
 pd.set_option('display.max_rows', 20)
 pd.set_option('display.max_columns', 20)
 pd.set_option('display.width', 120)
@@ -308,6 +509,7 @@ df = pd.read_parquet('/tmp/dataset.parquet')
 {sampling_code}
 
 before_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
+before_htmls = set(glob.glob('*.html') + glob.glob('/tmp/*.html'))
 
 model_exts = ['*.pkl', '*.joblib', '*.h5', '*.pt', '*.pth', '*.json', '*.txt', '*.cbm', '*.onnx']
 before_models = set()
@@ -321,15 +523,9 @@ except Exception as e:
     print("Execution error: " + type(e).__name__ + ": " + str(e))
     import traceback
     traceback.print_exc()
-
-try:
-    unsaved_figures = plt.get_fignums()
-    if unsaved_figures:
-        print(f"WARNING: {{len(unsaved_figures)}} matplotlib figure(s) created but not saved. Use plt.savefig('descriptive_name.png') to save plots.")
-        for fig_num in unsaved_figures:
-            plt.close(fig_num)
-except:
+finally:
     pass
+
 
 after_pngs = set(glob.glob('*.png') + glob.glob('/tmp/*.png'))
 new_pngs = after_pngs - before_pngs
@@ -337,6 +533,13 @@ new_pngs = after_pngs - before_pngs
 for png in new_pngs:
     if os.path.exists(png) and os.path.getsize(png) > 100:
         print("PLOT_SAVED:" + os.path.basename(png))
+
+after_htmls = set(glob.glob('*.html') + glob.glob('/tmp/*.html'))
+new_htmls = after_htmls - before_htmls
+
+for html in new_htmls:
+    if os.path.exists(html) and os.path.getsize(html) > 100:
+        print("PLOT_SAVED:" + os.path.basename(html))
 
 after_models = set()
 for ext in model_exts:
@@ -352,6 +555,12 @@ for model_file in new_models:
         timeout = 600 if df_rows > 200000 else 300 if df_rows > 100000 else 180 if df_rows > 10000 else 90
 
         print(f"DEBUG: Executing code with timeout={timeout}s")
+        log_code = (
+            enhanced_code[:500] + "\n... [Code Truncated] ...\n" + enhanced_code[-500:]
+            if len(enhanced_code) > 1000
+            else enhanced_code
+        )
+        print(f"DEBUG: GENERATED CODE START\n{log_code}\nDEBUG: GENERATED CODE END")
 
         try:
             result = sandbox.run_code(enhanced_code, timeout=timeout)
@@ -365,10 +574,10 @@ for model_file in new_models:
                 print(f"DEBUG: Falling back to minimal output code...")
 
                 minimal_code = """
-print("Code execution completed but output was too large to stream.")
-print("Dataset shape:", df.shape if 'df' in locals() else 'N/A')
-print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
-"""
+                                print("Code execution completed but output was too large to stream.")
+                                print("Dataset shape:", df.shape if 'df' in locals() else 'N/A')
+                                print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
+                                """
                 try:
                     result = sandbox.run_code(minimal_code, timeout=30)
                 except:
@@ -453,19 +662,19 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
 
             static_dir = project_root / "static" / "plots"
             static_dir.mkdir(parents=True, exist_ok=True)
-            print(f"DEBUG: Static dir set to: {static_dir}")
 
             for line in stdout_content.split("\n"):
                 if line.startswith("PLOT_SAVED:"):
-                    sandbox_filename = line.split(":")[1].strip()
+                    raw_filename = line.split(":")[1].strip()
+                    sandbox_filename = raw_filename.split("?")[0].strip()
 
                     if sandbox_filename in processed_files:
-                        print(f"Skipping duplicate: {sandbox_filename}")
                         continue
                     processed_files.add(sandbox_filename)
 
                     local_path = static_dir / sandbox_filename
-                    print(f"Attempting to download {sandbox_filename} to {local_path}")
+
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
 
                     potential_paths = [
                         sandbox_filename,
@@ -477,88 +686,91 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
                     file_downloaded = False
                     for path in potential_paths:
                         try:
-                            print(f"Trying to download from sandbox path: {path}")
-                            # Use the correct E2B method for binary file operations
                             file_content_bytes = sandbox.files.read(path, format="bytes")
-                            print(f"Downloaded {len(file_content_bytes) if file_content_bytes else 0} bytes")
+                            # print(f"Downloaded {len(file_content_bytes) if file_content_bytes else 0} bytes")
 
-                            if file_content_bytes and len(file_content_bytes) > 8:
-                                # Check PNG header
-                                if file_content_bytes[:8] == b"\x89PNG\r\n\x1a\n":
-                                    with open(local_path, "wb") as f:
-                                        f.write(file_content_bytes)
-                                    print(f"Successfully wrote to {local_path}")
-                                    if local_path.exists() and local_path.stat().st_size > 0:
-                                        web_url = f"/static/plots/{sandbox_filename}"
-                                        plot_url = web_url
-                                        file_downloaded = True
-                                        logger.info(f"File verified: {sandbox_filename}")
+                            if file_content_bytes and len(file_content_bytes) > 0:
+                                is_png = sandbox_filename.lower().endswith(".png")
+                                is_html = sandbox_filename.lower().endswith(".html")
 
-                                        blob_path = None
-                                        blob_url = None
-                                        presigned_url = None
+                                if is_png and len(file_content_bytes) > 8:
+                                    if file_content_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+                                        print(f"Invalid PNG header: {file_content_bytes[:8]}")
+                                        continue
 
-                                        try:
-                                            import sys
+                                with open(local_path, "wb") as f:
+                                    f.write(file_content_bytes)
+                                # print(f"Wrote to {local_path}")
+                                if local_path.exists() and local_path.stat().st_size > 0:
+                                    web_url = f"/static/plots/{sandbox_filename}"
+                                    plot_url = web_url
+                                    file_downloaded = True
+                                    logger.info(f"File verified: {sandbox_filename}")
 
-                                            src_path = str(project_root / "src")
-                                            if src_path not in sys.path:
-                                                sys.path.insert(0, src_path)
+                                    blob_path = None
+                                    blob_url = None
+                                    presigned_url = None
 
-                                            from src.config import settings
-                                            from src.storage.cloud_storage import get_cloud_storage
+                                    try:
+                                        import sys
 
-                                            storage_config = settings.get("object_storage", {})
-                                            if storage_config.get("enabled") and storage_config.get("upload_to_cloud"):
-                                                bucket_name = storage_config.get("bucket_name", "datainsight-artifacts")
-                                                folder_prefix = storage_config.get("folders", {}).get("plots", "plots")
-                                                cloud_storage = get_cloud_storage(bucket_name=bucket_name)
+                                        src_path = str(project_root / "src")
+                                        if src_path not in sys.path:
+                                            sys.path.insert(0, src_path)
 
-                                                if cloud_storage:
-                                                    blob_path = f"{folder_prefix}/{session_id}/{sandbox_filename}"
-                                                    upload_result = cloud_storage.upload_file(
-                                                        local_path=local_path,
-                                                        blob_path=blob_path,
-                                                        metadata={"session_id": session_id, "type": "plot"},
-                                                    )
-                                                    blob_url = upload_result["blob_url"]
-                                                    presigned_url = cloud_storage.get_blob_url(
-                                                        blob_path=blob_path,
-                                                        expires_in=storage_config.get("presigned_url_expiry_hours", 24)
-                                                        * 3600,
-                                                    )
-                                                plot_url = presigned_url
-                                                logger.info(f"Uploaded plot to cloud: {blob_path}")
+                                        from src.config import settings
+                                        from src.storage.cloud_storage import get_cloud_storage
 
-                                                if not storage_config.get("keep_local_copy"):
-                                                    local_path.unlink()
-                                        except Exception as cloud_error:
-                                            logger.warning(f"Cloud upload failed: {cloud_error}, using local URL")
+                                        storage_config = settings.get("object_storage", {})
+                                        if storage_config.get("enabled") and storage_config.get("upload_to_cloud"):
+                                            bucket_name = storage_config.get("bucket_name", "datainsight-artifacts")
+                                            folder_prefix = storage_config.get("folders", {}).get("plots", "plots")
+                                            cloud_storage = get_cloud_storage(bucket_name=bucket_name)
 
-                                        plot_urls.append(plot_url)
+                                            if cloud_storage:
+                                                blob_path = f"{folder_prefix}/{session_id}/{sandbox_filename}"
+                                                upload_result = cloud_storage.upload_file(
+                                                    local_path=local_path,
+                                                    blob_path=blob_path,
+                                                    metadata={"session_id": session_id, "type": "plot"},
+                                                )
+                                                blob_url = upload_result["blob_url"]
+                                                presigned_url = cloud_storage.get_blob_url(
+                                                    blob_path=blob_path,
+                                                    expires_in=storage_config.get("presigned_url_expiry_hours", 24)
+                                                    * 3600,
+                                                )
+                                            plot_url = presigned_url
+                                            # logger.info(f"Uploaded plot to cloud: {blob_path}")
 
-                                        try:
-                                            from src.api_utils.artifact_tracker import get_artifact_tracker
+                                            if not storage_config.get("keep_local_copy"):
+                                                local_path.unlink()
+                                    except Exception as cloud_error:
+                                        logger.warning(f"Cloud upload failed: {cloud_error}, using local URL")
 
-                                            tracker = get_artifact_tracker()
-                                            tracker.add_artifact(
-                                                session_id=session_id,
-                                                filename=sandbox_filename,
-                                                file_path=web_url,
-                                                description="Generated visualization",
-                                                metadata={"type": "plot", "format": "png"},
-                                                blob_path=blob_path,
-                                                blob_url=blob_url,
-                                                presigned_url=presigned_url,
-                                            )
-                                            logger.info(f"Artifact tracked: {sandbox_filename}")
-                                        except Exception as e:
-                                            logger.error(f"Artifact tracking error: {e}")
-                                        break
-                                    else:
-                                        print(f"File verification failed for {local_path}")
+                                    plot_urls.append(f"![Generated Plot]({plot_url})")
+
+                                    try:
+                                        from src.api_utils.artifact_tracker import get_artifact_tracker
+
+                                        tracker = get_artifact_tracker()
+                                        tracker.add_artifact(
+                                            session_id=session_id,
+                                            filename=sandbox_filename,
+                                            file_path=str(local_path),
+                                            description="Generated visualization",
+                                            metadata={"type": "plot", "format": "png", "web_url": web_url},
+                                            blob_path=blob_path,
+                                            blob_url=blob_url,
+                                            presigned_url=presigned_url,
+                                        )
+                                        # logger.info(f"Artifact tracked: {sandbox_filename}")
+                                    except Exception as e:
+                                        logger.error(f"Artifact tracking error: {e}")
+                                    break
                                 else:
-                                    print(f"Invalid PNG header: {file_content_bytes[:8]}")
+                                    print(f"File verification failed for {local_path}")
+
                             else:
                                 print(f"No valid content downloaded from {path}")
                         except Exception as e:
@@ -568,7 +780,6 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
                         print(f"Failed to download {sandbox_filename} from any path")
                     pass
 
-            # Extract model files
             models_dir = project_root / "static" / "models" / session_id
             models_dir.mkdir(parents=True, exist_ok=True)
             print(f"DEBUG: Models dir set to: {models_dir}")
@@ -658,8 +869,6 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
 
                                             dataset_hash = "unknown"
                                             try:
-                                                import builtins
-
                                                 session_store = getattr(builtins, "_session_store", None)
                                                 if session_store and session_id in session_store:
                                                     dataset_path = session_store[session_id].get("dataset_path")
@@ -699,7 +908,7 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
                                         tracker.add_artifact(
                                             session_id=session_id,
                                             filename=sandbox_filename,
-                                            file_path=web_url,
+                                            file_path=str(local_path),
                                             description=f"Trained model (CPU)",
                                             metadata={
                                                 "type": "model",
@@ -820,7 +1029,7 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
                                         tracker.add_artifact(
                                             session_id=session_id,
                                             filename=sandbox_filename,
-                                            file_path=web_url,
+                                            file_path=str(local_path),
                                             description=f"Processed dataset",
                                             metadata={
                                                 "type": "processed_dataset",
@@ -846,55 +1055,6 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
 
                     if not file_downloaded:
                         print(f"Failed to download dataset {sandbox_filename} from any path")
-
-            # Filesystem fallback: Scan for orphaned dataset files without markers
-            try:
-                print(f"DEBUG: Scanning for orphaned dataset files...")
-                downloaded_files = set([url.split("/")[-1] for url in dataset_urls])
-
-                for ext in [".csv", ".parquet", ".xlsx"]:
-                    try:
-                        sandbox_files = sandbox.files.list(f"/tmp/*{ext}")
-                        if sandbox_files:
-                            for file_info in sandbox_files:
-                                filename = file_info if isinstance(file_info, str) else file_info.get("name", "")
-                                if filename and filename not in downloaded_files and filename != "dataset.parquet":
-                                    print(f"DEBUG: Found orphaned dataset: {filename}")
-                                    local_path = datasets_dir / filename
-                                    try:
-                                        file_content = sandbox.files.read(f"/tmp/{filename}", format="bytes")
-                                        if file_content and len(file_content) > 0:
-                                            with open(local_path, "wb") as f:
-                                                f.write(file_content)
-
-                                            if local_path.exists() and local_path.stat().st_size > 0:
-                                                web_url = f"/static/datasets/{session_id}/{filename}"
-                                                dataset_urls.append(web_url)
-                                                print(f"DEBUG: Orphaned dataset downloaded: {filename}")
-
-                                                try:
-                                                    from src.api_utils.artifact_tracker import get_artifact_tracker
-
-                                                    tracker = get_artifact_tracker()
-                                                    tracker.add_artifact(
-                                                        session_id=session_id,
-                                                        filename=filename,
-                                                        file_path=web_url,
-                                                        description="Processed dataset (auto-detected)",
-                                                        metadata={
-                                                            "type": "processed_dataset",
-                                                            "format": ext,
-                                                            "auto_detected": True,
-                                                        },
-                                                    )
-                                                except Exception as e:
-                                                    print(f"DEBUG: Orphaned dataset tracking failed: {e}")
-                                    except Exception as e:
-                                        print(f"DEBUG: Failed to download orphaned dataset {filename}: {e}")
-                    except Exception as e:
-                        print(f"DEBUG: Filesystem scan for {ext} failed: {e}")
-            except Exception as e:
-                print(f"DEBUG: Filesystem fallback scanning failed: {e}")
 
         if isinstance(stdout_lines, str):
             clean_stdout = "\n".join(
@@ -943,6 +1103,23 @@ print("Columns:", list(df.columns) if 'df' in locals() else 'N/A')
         execution_success = not (
             has_python_traceback or has_explicit_error or (hasattr(result, "error") and result.error)
         )
+
+        if execution_success and code.strip():
+            try:
+                from src.api_utils.code_registry import get_code_registry
+
+                code_registry = get_code_registry()
+                artifact_files = [p.split("(")[-1].rstrip(")") for p in plot_urls if "![" in p]
+                artifact_filename = artifact_files[0] if artifact_files else None
+                code_registry.add_code(
+                    session_id=session_id,
+                    code=code,
+                    description="Data analysis and visualization",
+                    artifact_filename=artifact_filename,
+                    execution_result=clean_stdout[:500] if clean_stdout else None,
+                )
+            except Exception:
+                pass
 
         return {
             "success": execution_success,
@@ -1054,22 +1231,22 @@ def azure_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
             wrapper_code = f.read()
 
         wrapped_script = f"""
-{wrapper_code}
+                        {wrapper_code}
 
-# User training code
-user_code = '''
-{code}
-'''
+                        # User training code
+                        user_code = '''
+                        {code}
+                        '''
 
-# Execute with train wrapper
-result = train_wrapper(
-    user_code=user_code,
-    output_dir='/opt/ml/model',
-    user_format={repr(user_format)}
-)
+                        # Execute with train wrapper
+                        result = train_wrapper(
+                            user_code=user_code,
+                            output_dir='/opt/ml/model',
+                            user_format={repr(user_format)}
+                        )
 
-print(f"Training complete: {{result}}")
-"""
+                        print(f"Training complete: {{result}}")
+                        """
 
         script_path = f"/tmp/azure_train_{uuid.uuid4()}.py"
         with open(script_path, "w") as f:
@@ -1163,12 +1340,10 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
         s3 = boto3.client("s3")
         session = Session()
 
-        # Read gpu_wrapper.py for bundling
         wrapper_path = os.path.join(os.path.dirname(__file__), "core", "gpu_wrapper.py")
         with open(wrapper_path, "r") as f:
             wrapper_code = f.read()
 
-        # Create wrapper script
         wrapped_script = f"""
                         {wrapper_code}
 
@@ -1187,11 +1362,9 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
                         print(f"Training complete: {{result}}")
                         """
 
-        # Upload script to S3
         script_key = f"scripts/train_{session_id}_{uuid.uuid4()}.py"
         s3.put_object(Bucket=s3_bucket, Key=script_key, Body=wrapped_script.encode("utf-8"))
 
-        # Configure SageMaker processor
         processor = ScriptProcessor(
             command=["python3"],
             image_uri=os.getenv(
@@ -1204,7 +1377,6 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
             volume_size_in_gb=30,
         )
 
-        # Run training job
         processor.run(
             code=f"s3://{s3_bucket}/{script_key}",
             outputs=[
@@ -1214,7 +1386,6 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
             ],
         )
 
-        # Download metadata to find actual model format
         metadata_key = f"models/{session_id}/metadata.json"
         metadata_local = f"/tmp/metadata_{session_id}.json"
         s3.download_file(s3_bucket, metadata_key, metadata_local)
@@ -1225,12 +1396,10 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
         model_format = metadata.get("format", ".pkl")
         model_filename = f"model{model_format}"
 
-        # Download model with detected format
         model_key = f"models/{session_id}/{model_filename}"
         local_model_path = f"/tmp/{session_id}_{model_filename}"
         s3.download_file(s3_bucket, model_key, local_model_path)
 
-        # Move to static/models for artifact system
         import shutil
 
         static_models_dir = Path(__file__).resolve().parent.parent.parent / "static" / "models" / session_id
@@ -1238,7 +1407,6 @@ def aws_gpu_train(code: str, session_id: str, user_format: str = None) -> str:
         static_model_path = static_models_dir / model_filename
         shutil.copy(local_model_path, static_model_path)
 
-        # Track in artifact system
         try:
             import sys
 
