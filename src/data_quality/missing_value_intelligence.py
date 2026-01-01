@@ -312,29 +312,31 @@ class AdvancedMissingValueIntelligence:
             return MissingPattern.MCAR, 0.3  # Default to MCAR with low confidence
 
     def _find_missing_correlations(self, df: pd.DataFrame, column: str) -> Dict[str, float]:
-        """Find correlations between missingness patterns."""
         missing_mask = df[column].isnull()
-        correlations = {}
+        if missing_mask.sum() == 0 or missing_mask.sum() == len(df):
+            return {}
 
-        for other_col in df.columns:
-            if other_col == column:
-                continue
+        # Vectorized correlation calculation
+        # Create binary matrix of missingness for all columns
+        missing_matrix = df.isnull().astype(int)
 
-            other_missing_mask = df[other_col].isnull()
+        # Calculate correlation matrix
+        # We only care about correlation with the target column
+        try:
+            corr_matrix = missing_matrix.corrwith(missing_matrix[column])
 
-            # Skip if no variation in missing patterns
-            if other_missing_mask.sum() == 0 or other_missing_mask.sum() == len(df):
-                continue
+            # Filter results
+            correlations = {}
+            for other_col, corr in corr_matrix.items():
+                if other_col == column:
+                    continue
 
-            try:
-                # Calculate correlation between missing patterns
-                corr = np.corrcoef(missing_mask.astype(int), other_missing_mask.astype(int))[0, 1]
                 if not np.isnan(corr) and abs(corr) > self.config["min_correlation_threshold"]:
-                    correlations[other_col] = corr
-            except:
-                continue
+                    correlations[other_col] = float(abs(corr))
 
-        return correlations
+            return correlations
+        except Exception:
+            return {}
 
     def _recommend_imputation_strategy(
         self, df: pd.DataFrame, column: str, pattern_type: MissingPattern, correlations: Dict[str, float]
