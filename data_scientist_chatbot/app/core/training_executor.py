@@ -126,65 +126,38 @@ class TrainingExecutor:
 
     def _execute_on_gpu(self, code: str, session_id: str, user_format: Optional[str], decision) -> Dict[str, Any]:
         """Execute on GPU (Azure primary, AWS fallback)"""
-        from .quota_tracker import quota_tracker
 
-        # Step 1: Pre-check Azure quota
-        azure_has_quota = quota_tracker.has_available_quota("azure")
+        # Try Azure first
+        logger.info("[TrainingExecutor] Attempting Azure ML GPU execution")
+        try:
+            sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+            from tools import azure_gpu_train
 
-        if azure_has_quota:
-            logger.info("[TrainingExecutor] Azure quota available, attempting Azure ML")
-            try:
-                sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-                from tools import azure_gpu_train
+            result_str = azure_gpu_train(code, session_id, user_format)
+            success = "successfully" in result_str.lower()
 
-                result_str = azure_gpu_train(code, session_id, user_format)
-                success = "successfully" in result_str.lower()
+            if success:
+                model_files = self._extract_model_files_from_result(result_str, session_id)
+                return {
+                    "success": True,
+                    "stdout": result_str,
+                    "stderr": "",
+                    "execution_environment": "gpu_azure",
+                    "decision_reasoning": decision.reasoning,
+                    "plots": [],
+                    "model_files": model_files,
+                }
+            else:
+                raise Exception(result_str)
 
-                if success:
-                    model_files = self._extract_model_files_from_result(result_str, session_id)
-                    return {
-                        "success": True,
-                        "stdout": result_str,
-                        "stderr": "",
-                        "execution_environment": "gpu_azure",
-                        "decision_reasoning": decision.reasoning,
-                        "plots": [],
-                        "model_files": model_files,
-                    }
-                else:
-                    # Azure job failed
-                    raise Exception(result_str)
-
-            except Exception as e:
-                error_msg = str(e)
-                logger.warning(f"[TrainingExecutor] Azure GPU failed: {error_msg}")
-
-                # Check if quota-related error
-                if any(
-                    keyword in error_msg.lower() for keyword in ["quota", "limit exceeded", "resourcequotaexceeded"]
-                ):
-                    logger.info("[TrainingExecutor] Quota error detected, falling back to AWS")
-                    return self._fallback_to_aws(code, session_id, user_format, decision)
-                else:
-                    # Non-quota error, still try AWS
-                    logger.info("[TrainingExecutor] Non-quota error, attempting AWS fallback")
-                    return self._fallback_to_aws(code, session_id, user_format, decision)
-        else:
-            # Azure quota exhausted, go straight to AWS
-            logger.info("[TrainingExecutor] Azure quota exhausted, using AWS directly")
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning(f"[TrainingExecutor] Azure GPU failed: {error_msg}")
+            logger.info("[TrainingExecutor] Attempting AWS fallback")
             return self._fallback_to_aws(code, session_id, user_format, decision)
 
     def _fallback_to_aws(self, code: str, session_id: str, user_format: Optional[str], decision) -> Dict[str, Any]:
         """Fallback to AWS SageMaker"""
-        from .quota_tracker import quota_tracker
-
-        # Check AWS quota
-        aws_has_quota = quota_tracker.has_available_quota("aws")
-
-        if not aws_has_quota:
-            logger.info("[TrainingExecutor] AWS quota also exhausted, falling back to CPU")
-            return self._execute_on_cpu(code, session_id, decision)
-
         logger.info("[TrainingExecutor] Executing on AWS SageMaker")
         try:
             sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -194,7 +167,6 @@ class TrainingExecutor:
             success = "successfully" in result_str.lower()
 
             if success:
-                # Store fallback info in session
                 import builtins
 
                 if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
