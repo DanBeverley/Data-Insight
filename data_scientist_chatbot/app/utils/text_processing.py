@@ -35,6 +35,32 @@ def parse_message_to_tool_call(message, tool_id_prefix="call"):
     return False
 
 
+def parse_deepseek_xml_tools(content: str) -> list:
+    tool_calls = []
+    try:
+        invoke_pattern = r"<｜DSML｜invoke name=\"(.*?)\">(.*?)</｜DSML｜invoke>"
+        invokes = re.findall(invoke_pattern, content, re.DOTALL)
+
+        for name, params_block in invokes:
+            args = {}
+            param_pattern = r"<｜DSML｜parameter name=\"(.*?)\"(?: string=\"(.*?)\")?>(.*?)</｜DSML｜parameter>"
+            params = re.findall(param_pattern, params_block, re.DOTALL)
+
+            for param_name, is_string, param_value in params:
+                if is_string == "false":
+                    try:
+                        args[param_name] = json.loads(param_value)
+                    except:
+                        args[param_name] = param_value
+                else:
+                    args[param_name] = param_value
+
+            tool_calls.append({"name": name, "arguments": args})
+    except Exception:
+        pass
+    return tool_calls
+
+
 def sanitize_output(content: str) -> str:
     """Semantic output sanitization using similarity-based filtering to remove technical debug artifacts"""
     if not content or not isinstance(content, str):
@@ -99,7 +125,21 @@ def sanitize_output(content: str) -> str:
         "Exception handled",
         "Cleanup completed",
         "Shutdown initiated",
+        "PROFILING_INSIGHTS_START",
+        "PROFILING_INSIGHTS_END",
+        "REPORT_SUMMARY_START",
+        "REPORT_SUMMARY_END",
     ]
+
+    # Strip structured blocks first
+    block_patterns = [
+        r"(?:\*\*PROFILING_INSIGHTS_START\*\*(.*?)\*\*PROFILING_INSIGHTS_END\*\*)",
+        r"(?:PROFILING_INSIGHTS_START(.*?)PROFILING_INSIGHTS_END)",
+        r"(?:\*\*REPORT_SUMMARY_START\*\*(.*?)\*\*REPORT_SUMMARY_END\*\*)",
+        r"(?:REPORT_SUMMARY_START(.*?)REPORT_SUMMARY_END)",
+    ]
+    for pattern in block_patterns:
+        content = re.sub(pattern, "", content, flags=re.DOTALL)
 
     lines = content.split("\n")
     filtered_lines = []
