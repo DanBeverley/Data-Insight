@@ -26,7 +26,7 @@ class AppConfig:
     def _load_config(self) -> None:
         """Loads config from YAML file and set up paths"""
         base_dir = Path(__file__).resolve().parent.parent
-        config_path = base_dir / "config.yaml"
+        config_path = base_dir / "config" / "config.yaml"
         if not config_path.is_file():
             raise FileNotFoundError(f"Configuration file not found at: {config_path}")
         with open(config_path, "r") as f:
@@ -38,7 +38,12 @@ class AppConfig:
         if "paths" in self._config_data:
             for key, value in self._config_data["paths"].items():
                 self._config_data["paths"][key] = base_dir / value
-                self._config_data["paths"][key].mkdir(parents=True, exist_ok=True)
+                # self._config_data["paths"][key].mkdir(parents=True, exist_ok=True)
+
+            # Ensure databases directory exists
+            db_dir = base_dir / "data" / "databases"
+            db_dir.mkdir(parents=True, exist_ok=True)
+            self._config_data["paths"]["databases_dir"] = db_dir
 
     def get(self, key: str, default: Any = None) -> Any:
         """Retrives a configuration section / value"""

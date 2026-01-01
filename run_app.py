@@ -4,7 +4,9 @@ import threading
 import webbrowser
 import uvicorn
 from pathlib import Path
+from dotenv import load_dotenv
 
+load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 

@@ -29,6 +29,7 @@ def configure_logging(name: str = "DataInsight") -> logging.Logger:
 
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+    logger.propagate = False
 
     logging.getLogger("boto3").setLevel(logging.WARNING)
     logging.getLogger("botocore").setLevel(logging.WARNING)
