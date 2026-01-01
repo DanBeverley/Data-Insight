@@ -44,7 +44,14 @@ class DatabaseConfig:
 
             return f"postgresql://{username}:{password}@{host}:{port}/{database}"
 
-        return "sqlite:///data_insight_meta.db"
+        # Convert relative path to absolute to avoid CWD ambiguity
+        # Use path relative to this file's location (src/database/connection.py -> src/../data/databases/data_insight_meta.db)
+        from pathlib import Path
+
+        # db_path = (Path(__file__).parent.parent.parent / "data_insight_meta.db").resolve()
+        db_path = (Path(__file__).parent.parent.parent / "data" / "databases" / "data_insight_meta.db").resolve()
+        # print(f"DEBUG: Database Path Resolved to: {db_path}")
+        return f"sqlite:///{db_path}"
 
     def is_postgresql(self) -> bool:
         """Check if configured for PostgreSQL"""

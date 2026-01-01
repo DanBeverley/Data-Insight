@@ -13,7 +13,7 @@ try:
 except ImportError:
     ALEMBIC_AVAILABLE = False
 
-from .models import Base
+from .models import Base, Report, ReportArtifact
 from .connection import DatabaseManager
 
 
@@ -47,6 +47,7 @@ def create_tables_direct(database_manager: DatabaseManager) -> bool:
     """Create database tables directly using SQLAlchemy"""
 
     try:
+        logging.info(f"DEBUG: Base.metadata has tables: {list(Base.metadata.tables.keys())}")
         Base.metadata.create_all(bind=database_manager.engine)
         logging.info("Database tables created successfully")
         return True
@@ -70,6 +71,11 @@ def check_database_schema(database_manager: DatabaseManager) -> dict:
             "execution_feedback",
             "system_metrics",
             "model_registry",
+            "reports",
+            "report_artifacts",
+            "performance_metrics",
+            "users",
+            "cancelled_tasks",
         ]
 
         missing_tables = [table for table in expected_tables if table not in existing_tables]
@@ -99,6 +105,11 @@ def initialize_database_schema(database_manager: DatabaseManager) -> bool:
         if health_check["status"] != "healthy":
             logger.error(f"Database connection failed: {health_check.get('error', 'Unknown error')}")
             return False
+
+        # Force check for critical tables
+        inspector = inspect(database_manager.engine)
+        existing_tables = inspector.get_table_names()
+        # logger.info(f"DEBUG: Inspector found tables: {existing_tables}")
 
         logger.info("Checking existing database schema...")
         schema_status = check_database_schema(database_manager)

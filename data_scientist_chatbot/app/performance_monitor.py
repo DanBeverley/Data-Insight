@@ -26,7 +26,7 @@ except ImportError:
 
 
 @dataclass
-class PerformanceMetric:
+class PerformanceMetricData:
     """Performance metric data structure"""
 
     session_id: str
@@ -135,83 +135,57 @@ class PerformanceMonitor:
     Comprehensive performance monitoring system
     """
 
-    def __init__(self, db_path: str = "data_scientist_chatbot/memory/performance.db"):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self):
+        try:
+            from src.database.connection import get_database_manager
+            from src.database.models import PerformanceMetric, SystemMetrics
+
+            self.db_manager = get_database_manager()
+            self.PerformanceMetricModel = PerformanceMetric
+            self.SystemMetricsModel = SystemMetrics
+        except ImportError:
+            logger.warning("Could not import DatabaseManager, performance monitoring may be disabled")
+            self.db_manager = None
+
         self.cache = IntelligentCache(max_size=500, default_ttl=1800)
         self.metrics_buffer = []
         self.buffer_lock = threading.Lock()
-        self._init_database()
-        # Start background metrics flushing
-        self._start_metrics_flush_thread()
 
-    def _init_database(self):
-        """Initialize performance metrics database"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS performance_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                metric_name TEXT NOT NULL,
-                metric_value REAL NOT NULL,
-                timestamp DATETIME NOT NULL,
-                context TEXT, -- JSON
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS system_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                cpu_percent REAL,
-                memory_percent REAL,
-                disk_usage_percent REAL,
-                active_sessions INTEGER,
-                cache_hit_rate REAL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """
-        )
-        # Create indexes for performance
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_session ON performance_metrics(session_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_timestamp ON performance_metrics(timestamp)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_perf_metric ON performance_metrics(metric_name)")
-        conn.commit()
-        conn.close()
+        self._start_metrics_flush_thread()
 
     def record_metric(self, session_id: str, metric_name: str, value: float, context: Dict[str, Any] = None) -> None:
         """Record a performance metric"""
-        metric = PerformanceMetric(
+        metric = PerformanceMetricData(
             session_id=session_id, metric_name=metric_name, value=value, timestamp=datetime.now(), context=context or {}
         )
 
         with self.buffer_lock:
             self.metrics_buffer.append(metric)
-            # Flush if buffer is full
             if len(self.metrics_buffer) >= 100:
                 self._flush_metrics()
 
     def _flush_metrics(self) -> None:
         """Flush metrics buffer to database"""
-        if not self.metrics_buffer:
+        if not self.metrics_buffer or not self.db_manager:
             return
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        for metric in self.metrics_buffer:
-            cursor.execute(
-                """
-                INSERT INTO performance_metrics 
-                (session_id, metric_name, metric_value, timestamp, context)
-                VALUES (?, ?, ?, ?, ?)
-            """,
-                (metric.session_id, metric.metric_name, metric.value, metric.timestamp, json.dumps(metric.context)),
-            )
-        conn.commit()
-        conn.close()
-        self.metrics_buffer.clear()
+
+        with self.buffer_lock:
+            metrics_to_flush = list(self.metrics_buffer)
+            self.metrics_buffer.clear()
+
+        try:
+            with self.db_manager.get_session() as session:
+                for metric in metrics_to_flush:
+                    db_metric = self.PerformanceMetricModel(
+                        session_id=metric.session_id,
+                        metric_name=metric.metric_name,
+                        metric_value=metric.value,
+                        timestamp=metric.timestamp,
+                        context=metric.context,
+                    )
+                    session.add(db_metric)
+        except Exception as e:
+            logger.error(f"Error flushing metrics to database: {e}")
 
     def _start_metrics_flush_thread(self) -> None:
         """Start background thread for periodic metrics flushing"""
@@ -219,12 +193,10 @@ class PerformanceMonitor:
         def flush_periodically():
             while True:
                 time.sleep(30)  # Flush every 30 seconds
-                with self.buffer_lock:
-                    if self.metrics_buffer:
-                        try:
-                            self._flush_metrics()
-                        except Exception as e:
-                            logger.debug(f"Error flushing metrics: {e}")
+                try:
+                    self._flush_metrics()
+                except Exception as e:
+                    logger.debug(f"Error flushing metrics: {e}")
 
         thread = threading.Thread(target=flush_periodically, daemon=True)
         thread.start()
@@ -274,13 +246,10 @@ class PerformanceMonitor:
         def decorator(func: Callable) -> Callable:
             @wraps(func)
             def wrapper(*args, **kwargs):
-                # Generate cache key
                 cache_key = f"{key_prefix}:{func.__name__}:" + self.cache._generate_key(*args, **kwargs)
-                # Try to get from cache
                 cached_result = self.cache.get(cache_key)
                 if cached_result is not None:
                     return cached_result
-                # Execute function and cache result
                 result = func(*args, **kwargs)
                 self.cache.set(cache_key, result, ttl=ttl)
 
@@ -292,109 +261,145 @@ class PerformanceMonitor:
 
     def record_system_metrics(self) -> None:
         """Record current system performance metrics"""
+        if not self.db_manager:
+            return
+
         try:
             cpu_percent = psutil.cpu_percent(interval=1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO system_metrics 
-                (cpu_percent, memory_percent, disk_usage_percent, active_sessions, cache_hit_rate)
-                VALUES (?, ?, ?, ?, ?)
-            """,
-                (cpu_percent, memory.percent, disk.percent, 0, 0.0),
-            )
-            conn.commit()
-            conn.close()
+
+            with self.db_manager.get_session() as session:
+                # Record CPU
+                session.add(
+                    self.SystemMetricsModel(
+                        metric_id=f"cpu_{datetime.now().timestamp()}",
+                        metric_type="cpu_percent",
+                        metric_value=cpu_percent,
+                        metric_metadata={"source": "psutil"},
+                    )
+                )
+
+                # Record Memory
+                session.add(
+                    self.SystemMetricsModel(
+                        metric_id=f"mem_{datetime.now().timestamp()}",
+                        metric_type="memory_percent",
+                        metric_value=memory.percent,
+                        metric_metadata={"total": memory.total, "available": memory.available},
+                    )
+                )
+
+                # Record Disk
+                session.add(
+                    self.SystemMetricsModel(
+                        metric_id=f"disk_{datetime.now().timestamp()}",
+                        metric_type="disk_usage_percent",
+                        metric_value=disk.percent,
+                        metric_metadata={"path": "/"},
+                    )
+                )
+
         except Exception as e:
             logger.debug(f"Error recording system metrics: {e}")
 
     def get_performance_summary(self, session_id: Optional[str] = None, hours: int = 24) -> Dict[str, Any]:
         """Get performance summary for analysis"""
+        if not self.db_manager:
+            return {}
+
         cutoff_time = datetime.now() - timedelta(hours=hours)
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        # Base query
-        base_query = """
-            SELECT metric_name, AVG(metric_value) as avg_value, 
-                   COUNT(*) as count, MIN(metric_value) as min_value,
-                   MAX(metric_value) as max_value
-            FROM performance_metrics
-            WHERE timestamp > ?
-        """
-        params = [cutoff_time]
-        if session_id:
-            base_query += " AND session_id = ?"
-            params.append(session_id)
-        base_query += " GROUP BY metric_name ORDER BY avg_value DESC"
-        cursor.execute(base_query, params)
-        metrics_summary = {}
-        for row in cursor.fetchall():
-            metrics_summary[row[0]] = {
-                "avg": round(row[1], 4),
-                "count": row[2],
-                "min": round(row[3], 4),
-                "max": round(row[4], 4),
-            }
-        # Get cache statistics
-        cache_stats = self.cache.get_stats()
-        # Get recent system metrics
-        cursor.execute(
-            """
-            SELECT AVG(cpu_percent), AVG(memory_percent), AVG(disk_usage_percent)
-            FROM system_metrics
-            WHERE timestamp > ?
-        """,
-            (cutoff_time,),
-        )
-        system_avg = cursor.fetchone()
-        conn.close()
-        return {
-            "metrics_summary": metrics_summary,
-            "cache_stats": cache_stats,
-            "system_averages": (
-                {
-                    "cpu_percent": round(system_avg[0] or 0, 2),
-                    "memory_percent": round(system_avg[1] or 0, 2),
-                    "disk_usage_percent": round(system_avg[2] or 0, 2),
+
+        try:
+            from sqlalchemy import select, func
+
+            with self.db_manager.get_session() as session:
+                # Query performance metrics
+                query = select(
+                    self.PerformanceMetricModel.metric_name,
+                    func.avg(self.PerformanceMetricModel.metric_value),
+                    func.count(self.PerformanceMetricModel.id),
+                    func.min(self.PerformanceMetricModel.metric_value),
+                    func.max(self.PerformanceMetricModel.metric_value),
+                ).where(self.PerformanceMetricModel.timestamp > cutoff_time)
+
+                if session_id:
+                    query = query.where(self.PerformanceMetricModel.session_id == session_id)
+
+                query = query.group_by(self.PerformanceMetricModel.metric_name)
+
+                results = session.execute(query).all()
+
+                metrics_summary = {}
+                for row in results:
+                    metrics_summary[row[0]] = {
+                        "avg": round(row[1], 4),
+                        "count": row[2],
+                        "min": round(row[3], 4),
+                        "max": round(row[4], 4),
+                    }
+
+                # Get system metrics averages
+                sys_query = (
+                    select(self.SystemMetricsModel.metric_type, func.avg(self.SystemMetricsModel.metric_value))
+                    .where(self.SystemMetricsModel.timestamp > cutoff_time)
+                    .group_by(self.SystemMetricsModel.metric_type)
+                )
+
+                sys_results = session.execute(sys_query).all()
+                sys_avgs = {row[0]: round(row[1], 2) for row in sys_results}
+
+                return {
+                    "metrics_summary": metrics_summary,
+                    "cache_stats": self.cache.get_stats(),
+                    "system_averages": {
+                        "cpu_percent": sys_avgs.get("cpu_percent", 0),
+                        "memory_percent": sys_avgs.get("memory_percent", 0),
+                        "disk_usage_percent": sys_avgs.get("disk_usage_percent", 0),
+                    },
+                    "time_range_hours": hours,
+                    "session_id": session_id,
                 }
-                if system_avg
-                else {}
-            ),
-            "time_range_hours": hours,
-            "session_id": session_id,
-        }
+        except Exception as e:
+            logger.error(f"Error getting performance summary: {e}")
+            return {}
 
     def get_slow_operations(self, threshold_seconds: float = 1.0, limit: int = 10) -> List[Dict[str, Any]]:
         """Get slowest operations for optimization"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT session_id, metric_name, metric_value, timestamp, context
-            FROM performance_metrics
-            WHERE metric_name LIKE '%_execution_time' AND metric_value > ?
-            ORDER BY metric_value DESC
-            LIMIT ?
-        """,
-            (threshold_seconds, limit),
-        )
-        slow_ops = []
-        for row in cursor.fetchall():
-            context = json.loads(row[4]) if row[4] else {}
-            slow_ops.append(
-                {
-                    "session_id": row[0],
-                    "operation": row[1],
-                    "duration": round(row[2], 4),
-                    "timestamp": row[3],
-                    "context": context,
-                }
-            )
-        conn.close()
-        return slow_ops
+        if not self.db_manager:
+            return []
+
+        try:
+            from sqlalchemy import select
+
+            with self.db_manager.get_session() as session:
+                query = (
+                    select(self.PerformanceMetricModel)
+                    .where(
+                        self.PerformanceMetricModel.metric_name.like("%_execution_time"),
+                        self.PerformanceMetricModel.metric_value > threshold_seconds,
+                    )
+                    .order_by(self.PerformanceMetricModel.metric_value.desc())
+                    .limit(limit)
+                )
+
+                results = session.execute(query).scalars().all()
+
+                slow_ops = []
+                for row in results:
+                    slow_ops.append(
+                        {
+                            "session_id": row.session_id,
+                            "operation": row.metric_name,
+                            "duration": round(row.metric_value, 4),
+                            "timestamp": row.timestamp,
+                            "context": row.context,
+                        }
+                    )
+                return slow_ops
+        except Exception as e:
+            logger.error(f"Error getting slow operations: {e}")
+            return []
 
     def optimize_cache(self) -> Dict[str, Any]:
         """Analyze and optimize cache performance"""
@@ -413,24 +418,24 @@ class PerformanceMonitor:
 
     def cleanup_old_metrics(self, days_old: int = 7) -> int:
         """Clean up old performance metrics"""
-        cutoff_date = datetime.now() - timedelta(days=days_old)
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            DELETE FROM performance_metrics WHERE timestamp < ?
-        """,
-            (cutoff_date,),
-        )
-        deleted_count = cursor.rowcount
-        cursor.execute(
-            """
-            DELETE FROM system_metrics WHERE timestamp < ?
-        """,
-            (cutoff_date,),
-        )
-        deleted_count += cursor.rowcount
-        conn.commit()
-        conn.close()
+        if not self.db_manager:
+            return 0
 
-        return deleted_count
+        cutoff_date = datetime.now() - timedelta(days=days_old)
+
+        try:
+            from sqlalchemy import delete
+
+            with self.db_manager.get_session() as session:
+                # Delete performance metrics
+                stmt1 = delete(self.PerformanceMetricModel).where(self.PerformanceMetricModel.timestamp < cutoff_date)
+                result1 = session.execute(stmt1)
+
+                # Delete system metrics
+                stmt2 = delete(self.SystemMetricsModel).where(self.SystemMetricsModel.timestamp < cutoff_date)
+                result2 = session.execute(stmt2)
+
+                return result1.rowcount + result2.rowcount
+        except Exception as e:
+            logger.error(f"Error cleaning up old metrics: {e}")
+            return 0

@@ -207,6 +207,25 @@ if SQLALCHEMY_AVAILABLE:
             Index("idx_metrics_type_time", "metric_type", "timestamp"),
         )
 
+    class PerformanceMetric(Base):
+        """Application performance metrics"""
+
+        __tablename__ = "performance_metrics"
+
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        session_id = Column(String(100), nullable=True)
+        metric_name = Column(String(100), nullable=False)
+        metric_value = Column(Float, nullable=False)
+        timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+        context = Column(JSONType, default=dict)
+        created_at = Column(DateTime, default=datetime.utcnow)
+
+        __table_args__ = (
+            Index("idx_perf_session", "session_id"),
+            Index("idx_perf_timestamp", "timestamp"),
+            Index("idx_perf_metric", "metric_name"),
+        )
+
     class ModelRegistry(Base):
         """Registry for trained models stored in object storage"""
 
@@ -246,17 +265,43 @@ if SQLALCHEMY_AVAILABLE:
 
         __tablename__ = "users"
 
-        user_id = Column(String(100), primary_key=True)
+        id = Column(String(100), primary_key=True)
         email = Column(String(255), unique=True, nullable=False)
-        hashed_password = Column(String(255), nullable=False)
+        hashed_password = Column(String(255), nullable=True)
         full_name = Column(String(255), nullable=True)
+        avatar_url = Column(String(500), nullable=True)
+        google_oauth_id = Column(String(255), nullable=True, unique=True)
+        allow_email_notifications = Column(Boolean, default=False)
         is_active = Column(Boolean, default=True)
         created_at = Column(DateTime, default=datetime.utcnow)
         last_login = Column(DateTime, nullable=True)
 
+        sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+
         __table_args__ = (
             Index("idx_user_email", "email"),
             Index("idx_user_active", "is_active"),
+            Index("idx_user_google", "google_oauth_id"),
+        )
+
+    class UserSession(Base):
+        """User chat sessions"""
+
+        __tablename__ = "user_sessions"
+
+        id = Column(String(100), primary_key=True)
+        user_id = Column(String(100), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+        title = Column(String(255), default="New Chat")
+        dataset_path = Column(String(500), nullable=True)
+        dataset_name = Column(String(255), nullable=True)
+        created_at = Column(DateTime, default=datetime.utcnow)
+        last_accessed = Column(DateTime, default=datetime.utcnow)
+
+        user = relationship("User", back_populates="sessions")
+
+        __table_args__ = (
+            Index("idx_session_user", "user_id"),
+            Index("idx_session_accessed", "last_accessed"),
         )
 
     class Report(Base):
