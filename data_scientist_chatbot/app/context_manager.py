@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import hashlib
 from dataclasses import dataclass
 import re
+from core.logger import logger
 
 
 @dataclass
@@ -33,14 +34,40 @@ class ContextManager:
     and cross-session learning capabilities
     """
 
-    def __init__(self, db_path: str = "data_scientist_chatbot/memory/context.db"):
+    def __init__(self, db_path: str = "data/databases/context_memory.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
 
+    def retry_on_lock(func):
+        """Decorator to retry database operations on lock error"""
+        import time
+        import random
+        from functools import wraps
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            max_retries = 5
+            base_delay = 0.1
+
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) and attempt < max_retries - 1:
+                        delay = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                        logger.warning(f"DB locked, retrying {func.__name__} (attempt {attempt+1}/{max_retries})")
+                        time.sleep(delay)
+                        continue
+                    raise e
+
+        return wrapper
+
+    @retry_on_lock
     def _init_database(self):
         """Initialize SQLite database for context storage"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=60.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
         # Conversation contexts table
@@ -91,11 +118,33 @@ class ContextManager:
         )
 
         conn.commit()
+
+        # [MIGRATION] Sync existing patterns to ChromaDB
+        try:
+            cursor.execute(
+                "SELECT pattern_type, pattern_data, success_count, confidence_score FROM learning_patterns WHERE confidence_score > 0.5"
+            )
+            rows = cursor.fetchall()
+            if rows:
+                from utils.rag_context import RAGContextManager
+
+                rag = RAGContextManager("global_patterns")
+                patterns = []
+                for row in rows:
+                    patterns.append(
+                        {"type": row[0], "data": json.loads(row[1]), "success_count": row[2], "confidence": row[3]}
+                    )
+                rag.index_learning_patterns(patterns)
+                logger.info(f"Synced {len(patterns)} patterns to RAG")
+        except Exception as e:
+            logger.warning(f"Failed to sync patterns to RAG: {e}")
+
         conn.close()
 
+    @retry_on_lock
     def save_conversation_context(self, context: ConversationContext) -> None:
         """Save conversation context to persistent storage"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -122,7 +171,7 @@ class ContextManager:
 
     def get_session_context(self, session_id: str, limit: int = 5) -> List[ConversationContext]:
         """Retrieve recent conversation contexts for a session"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -157,24 +206,19 @@ class ContextManager:
 
     def extract_conversation_insights(self, messages: List) -> ConversationContext:
         """Extract insights from conversation messages using pattern analysis"""
-        # Extract key information from messages
         user_messages = [msg for msg in messages if hasattr(msg, "type") and msg.type == "human"]
         ai_messages = [msg for msg in messages if hasattr(msg, "type") and msg.type == "ai"]
 
-        # Analyze conversation content
         key_topics = self._extract_topics(user_messages + ai_messages)
         data_insights = self._extract_data_insights(ai_messages)
         code_patterns = self._extract_code_patterns(ai_messages)
         user_preferences = self._analyze_user_preferences(user_messages)
 
-        # Generate summary
         summary = self._generate_summary(user_messages, ai_messages)
-
-        # Calculate importance score
         importance_score = self._calculate_importance_score(len(user_messages), len(data_insights), len(code_patterns))
 
         return ConversationContext(
-            session_id="",  # Will be set by caller
+            session_id="",  # set by caller
             summary=summary,
             key_topics=key_topics,
             data_insights=data_insights,
@@ -218,7 +262,7 @@ class ContextManager:
                     if keyword in content:
                         topics.add(keyword)
 
-        return list(topics)[:10]  # Limit to top 10 topics
+        return list(topics)[:10]
 
     def _extract_data_insights(self, ai_messages: List) -> List[str]:
         """Extract data insights from AI responses"""
@@ -293,12 +337,10 @@ class ContextManager:
         if not user_messages:
             return "No user interaction recorded"
 
-        # Extract main user request from first message
         first_request = ""
         if user_messages and hasattr(user_messages[0], "content"):
             first_request = user_messages[0].content[:100]
 
-        # Count interactions
         interaction_count = len(user_messages)
 
         return f"Session with {interaction_count} interactions. Main request: {first_request}..."
@@ -313,7 +355,7 @@ class ContextManager:
 
     def get_cross_session_patterns(self, pattern_type: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """Retrieve successful patterns from across sessions for learning"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         cursor = conn.cursor()
 
         if pattern_type:
@@ -346,11 +388,12 @@ class ContextManager:
         conn.close()
         return patterns
 
+    @retry_on_lock
     def record_pattern_usage(self, pattern_type: str, pattern_data: Dict[str, Any], success: bool) -> None:
-        """Record usage of a pattern for learning"""
+        """Record usage of a pattern for learning with retry logic"""
         pattern_hash = hashlib.md5(json.dumps(pattern_data, sort_keys=True).encode()).hexdigest()
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=60.0)
         cursor = conn.cursor()
 
         # Check if pattern exists
@@ -363,6 +406,8 @@ class ContextManager:
         )
 
         existing = cursor.fetchone()
+
+        current_pattern = None
 
         if existing:
             # Update existing pattern
@@ -378,6 +423,14 @@ class ContextManager:
             """,
                 (new_success, new_failure, confidence, datetime.now(), existing[0]),
             )
+
+            if confidence > 0.5:
+                current_pattern = {
+                    "type": pattern_type,
+                    "data": pattern_data,
+                    "success_count": new_success,
+                    "confidence": confidence,
+                }
         else:
             # Create new pattern
             success_count = 1 if success else 0
@@ -393,14 +446,33 @@ class ContextManager:
                 (pattern_type, json.dumps(pattern_data), success_count, failure_count, confidence, datetime.now()),
             )
 
+            if success:
+                current_pattern = {
+                    "type": pattern_type,
+                    "data": pattern_data,
+                    "success_count": success_count,
+                    "confidence": confidence,
+                }
+
         conn.commit()
         conn.close()
 
+        # [RAG] Index new/updated pattern immediately
+        if current_pattern:
+            try:
+                from utils.rag_context import RAGContextManager
+
+                rag = RAGContextManager("global_patterns")
+                rag.index_learning_patterns([current_pattern])
+            except Exception as e:
+                logger.warning(f"Failed to index new pattern: {e}")
+
+    @retry_on_lock
     def cleanup_old_contexts(self, days_old: int = 30) -> int:
         """Clean up old conversation contexts to manage storage"""
         cutoff_date = datetime.now() - timedelta(days=days_old)
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -441,9 +513,10 @@ class ContextManager:
 
         return " | ".join(summary_parts)
 
+    @retry_on_lock
     def record_execution(self, session_id: str, turn_data: Dict[str, Any]) -> None:
         """Record code execution turn for session learning"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -459,6 +532,9 @@ class ContextManager:
             ),
         )
 
+        conn.commit()
+        conn.close()
+
         if turn_data.get("success", False) and turn_data.get("code"):
             self.record_pattern_usage(
                 pattern_type="code_execution",
@@ -468,9 +544,6 @@ class ContextManager:
                 },
                 success=True,
             )
-
-        conn.commit()
-        conn.close()
 
     def get_learning_context(self, session_id: str) -> str:
         """Get learning context for session (execution history summary)"""
@@ -496,9 +569,8 @@ class ContextManager:
         total_executions = len(results)
         successful_executions = sum(1 for r in results if r[0] > 0.5)
 
-        patterns = self.get_cross_session_patterns(pattern_type="code_execution", limit=3)
-
         context_parts = [f"SESSION LEARNING ({total_executions} executions, {successful_executions} successful)"]
+        patterns = self.get_cross_session_patterns(pattern_type="code_execution", limit=3)
 
         if patterns:
             context_parts.append("\nRECENT SUCCESSFUL APPROACHES:")
