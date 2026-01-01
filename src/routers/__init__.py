@@ -3,5 +3,17 @@ from .session_router import router as session_router
 from .auth_router import router as auth_router
 from .hierarchical_upload_router import router as hierarchical_upload_router
 from .report_router import router as report_router
+from .alert_router import router as alert_router
+from .connection_router import router as connection_router
+from .notification_router import router as notification_router
 
-__all__ = ["data_router", "session_router", "auth_router", "hierarchical_upload_router", "report_router"]
+__all__ = [
+    "data_router",
+    "session_router",
+    "auth_router",
+    "hierarchical_upload_router",
+    "report_router",
+    "alert_router",
+    "connection_router",
+    "notification_router",
+]

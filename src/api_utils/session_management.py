@@ -3,6 +3,51 @@ import uuid
 from typing import Optional, Dict, Any
 from datetime import datetime
 from fastapi import HTTPException
+import logging
+
+
+# Singleton for in-memory session storage
+class SessionDataManager:
+    _instance = None
+    _store = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(SessionDataManager, cls).__new__(cls)
+            # Initialize builtins._session_store if not present
+            import builtins
+
+            if not hasattr(builtins, "_session_store"):
+                builtins._session_store = {}
+        return cls._instance
+
+    @property
+    def store(self):
+        import builtins
+
+        if not hasattr(builtins, "_session_store"):
+            builtins._session_store = {}
+        return builtins._session_store
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        return self.store.get(session_id)
+
+    def create_session(self, session_id: str) -> Dict[str, Any]:
+        if session_id not in self.store:
+            self.store[session_id] = {
+                "session_id": session_id,
+                "created_at": datetime.now(),
+                "thinking_mode": False,
+                "web_search_enabled": False,
+            }
+        return self.store[session_id]
+
+    def delete_session(self, session_id: str):
+        if session_id in self.store:
+            del self.store[session_id]
+
+
+session_data_manager = SessionDataManager()
 
 
 async def clean_checkpointer_state(session_id: str, operation: str = "new session") -> bool:
@@ -21,7 +66,6 @@ async def clean_checkpointer_state(session_id: str, operation: str = "new sessio
 
 
 def get_or_create_agent_session(session_id: str, session_agents: Dict[str, Any], create_enhanced_agent_executor):
-    import logging
     import asyncio
 
     if session_id not in session_agents:
@@ -67,39 +111,19 @@ def validate_session_id(session_id: str) -> bool:
 
 
 def create_new_session() -> Dict[str, str]:
-    import builtins
-
     new_session_id = str(uuid.uuid4())
-    created_at = datetime.now()
 
-    if not hasattr(builtins, "_session_store"):
-        builtins._session_store = {}
-
-    builtins._session_store[new_session_id] = {
-        "session_id": new_session_id,
-        "created_at": created_at,
-        "thinking_mode": False,
-        "web_search_enabled": False,
-    }
-
+    session_data_manager.create_session(new_session_id)
     clean_checkpointer_state(new_session_id, "new session")
 
     return {"session_id": new_session_id}
 
 
 def clear_session(session_id: str) -> bool:
-    import builtins
+    session_data_manager.delete_session(session_id)
 
-    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
-        del builtins._session_store[session_id]
-
-    if hasattr(builtins, "_persistent_sandboxes") and session_id in builtins._persistent_sandboxes:
-        try:
-            sandbox = builtins._persistent_sandboxes[session_id]
-            sandbox.close()
-            del builtins._persistent_sandboxes[session_id]
-        except Exception:
-            pass
+    # Handle sandbox cleanup if needed (requires access to sandbox store)
+    # For now, we focus on the session data
 
     clean_checkpointer_state(session_id, "clear session")
 

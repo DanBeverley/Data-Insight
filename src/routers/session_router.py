@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def get_session_db():
-    db_path = Path("sessions_metadata.db")
+    db_path = Path("data/databases/sessions_metadata.db")
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute(
         """
@@ -23,7 +23,8 @@ def get_session_db():
             user_id TEXT NOT NULL,
             title TEXT,
             created_at TEXT,
-            last_updated TEXT
+            last_updated TEXT,
+            is_manually_named INTEGER DEFAULT 0
         )
     """
     )
@@ -33,6 +34,13 @@ def get_session_db():
     except sqlite3.OperationalError:
         logger.info("Migrating sessions table to add user_id column")
         conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT 'anonymous'")
+        conn.commit()
+
+    try:
+        conn.execute("SELECT is_manually_named FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        logger.info("Migrating sessions table to add is_manually_named column")
+        conn.execute("ALTER TABLE sessions ADD COLUMN is_manually_named INTEGER DEFAULT 0")
         conn.commit()
 
     conn.commit()
@@ -86,10 +94,21 @@ async def get_sessions(current_user: Optional[User] = Depends(get_optional_curre
 
 
 @router.post("/new")
-async def create_new_session():
+async def create_new_session(current_user: Optional[User] = Depends(get_optional_current_user)):
     from ..api import session_store
 
-    user_id = "anonymous"
+    if not current_user:
+        new_session_id = str(uuid.uuid4())
+        created_at = datetime.now()
+        session_store[new_session_id] = {
+            "session_id": new_session_id,
+            "user_id": "guest",
+            "created_at": created_at,
+            "ephemeral": True,
+        }
+        return {"session_id": new_session_id, "created_at": created_at.isoformat(), "ephemeral": True}
+
+    user_id = current_user.id
     new_session_id = str(uuid.uuid4())
     created_at = datetime.now()
 
@@ -98,17 +117,48 @@ async def create_new_session():
     db_conn = get_session_db()
     try:
         db_conn.execute(
-            "INSERT INTO sessions (session_id, user_id, title, created_at, last_updated) VALUES (?, ?, ?, ?, ?)",
-            (new_session_id, user_id, "New Chat", created_at.isoformat(), created_at.isoformat()),
+            "INSERT INTO sessions (session_id, user_id, created_at, last_updated, is_manually_named) VALUES (?, ?, ?, ?, 0)",
+            (new_session_id, user_id, created_at.isoformat(), created_at.isoformat()),
         )
         db_conn.commit()
-        logger.info(f"Created new session: {new_session_id} for user: {user_id}")
     except Exception as e:
-        logger.error(f"Failed to persist new session: {e}")
+        logger.error(f"Failed to create session in database: {e}")
     finally:
         db_conn.close()
 
-    return {"session_id": new_session_id}
+    return {"session_id": new_session_id, "created_at": created_at.isoformat()}
+
+
+@router.post("/create")
+async def create_session():
+    """Alias for /new to support frontend."""
+    return await create_new_session()
+
+
+@router.get("/current")
+async def get_current_session(current_user: Optional[User] = Depends(get_optional_current_user)):
+    """Get or create current session for user."""
+    from ..api import session_store
+
+    user_id = current_user.id if current_user else "anonymous"
+
+    # Check for most recent session
+    db_conn = get_session_db()
+    try:
+        cursor = db_conn.execute(
+            "SELECT session_id FROM sessions WHERE user_id = ? ORDER BY last_updated DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return {"session_id": row[0]}
+    except Exception as e:
+        logger.error(f"Failed to get current session: {e}")
+    finally:
+        db_conn.close()
+
+    # No session found, let frontend create one
+    return {"session_id": None}
 
 
 @router.delete("/{session_id}")
@@ -168,12 +218,13 @@ async def rename_session(
 
         db_conn = get_session_db()
         try:
+            # Set is_manually_named to 1 (true)
             db_conn.execute(
-                "UPDATE sessions SET title = ?, last_updated = ? WHERE session_id = ? AND user_id = ?",
+                "UPDATE sessions SET title = ?, last_updated = ?, is_manually_named = 1 WHERE session_id = ? AND user_id = ?",
                 (new_title, datetime.now().isoformat(), session_id, user_id),
             )
             db_conn.commit()
-            logger.info(f"Renamed session {session_id} to '{new_title}'")
+            logger.info(f"Renamed session {session_id} to '{new_title}' (manual)")
         except Exception as e:
             logger.error(f"Failed to rename session in database: {e}")
             raise
@@ -190,8 +241,7 @@ async def auto_name_session(
     session_id: str, request: dict, current_user: Optional[User] = Depends(get_optional_current_user)
 ):
     try:
-        from langchain_ollama import ChatOllama
-        import os
+        from data_scientist_chatbot.app.core.agent_factory import create_brain_agent
 
         user_id = current_user.id if current_user else "anonymous"
         user_message = request.get("user_message", "").strip()
@@ -200,10 +250,20 @@ async def auto_name_session(
         if not user_message:
             raise HTTPException(status_code=400, detail="User message is required for auto-naming")
 
-        ollama_base_url = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        llm = ChatOllama(
-            model="gpt-oss:20b-cloud", base_url=ollama_base_url, temperature=0.7, format="", options={"num_predict": 60}
-        )
+        # Check if manually named
+        db_conn = get_session_db()
+        try:
+            cursor = db_conn.execute(
+                "SELECT is_manually_named FROM sessions WHERE session_id = ? AND user_id = ?", (session_id, user_id)
+            )
+            row = cursor.fetchone()
+            if row and row[0] == 1:
+                logger.info(f"Skipping auto-name for session {session_id} (manually named)")
+                return {"success": False, "message": "Session is manually named"}
+        finally:
+            db_conn.close()
+
+        llm = create_brain_agent()
 
         if agent_response and len(agent_response) > 50:
             agent_preview = agent_response[:500] if len(agent_response) > 500 else agent_response
@@ -279,6 +339,14 @@ async def get_session_messages(session_id: str, current_user: Optional[User] = D
                     "created_at": datetime.fromisoformat(created_at) if created_at else datetime.now(),
                 }
                 logger.info(f"Restored session {session_id} to session_store from database")
+
+                # Restore artifacts from cloud if needed
+                try:
+                    from data_scientist_chatbot.app.tools import restore_session_artifacts
+
+                    restore_session_artifacts(session_id)
+                except Exception as e:
+                    logger.warning(f"Failed to restore artifacts: {e}")
             else:
                 raise HTTPException(status_code=404, detail="Session not found")
         except HTTPException:
@@ -354,6 +422,17 @@ async def export_session(
     from ..api_utils.message_storage import load_messages
     from fastapi.responses import Response
     import markdown
+
+    db_conn = get_session_db()
+    try:
+        cursor = db_conn.execute("SELECT user_id FROM sessions WHERE session_id = ?", (session_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if row[0] != user_id and row[0] != "anonymous" and user_id != "anonymous":
+            raise HTTPException(status_code=403, detail="Not authorized to export this session")
+    finally:
+        db_conn.close()
 
     messages = load_messages(session_id)
 
@@ -819,3 +898,53 @@ async def search_conversations(q: str, current_user: Optional[User] = Depends(ge
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
     finally:
         db_conn.close()
+
+
+@router.get("/{session_id}/messages/{message_id}/versions")
+async def get_message_versions(
+    session_id: str, message_id: str, current_user: Optional[User] = Depends(get_optional_current_user)
+):
+    user_id = current_user.id if current_user else "anonymous"
+
+    db_conn = get_session_db()
+    try:
+        cursor = db_conn.execute("SELECT user_id FROM sessions WHERE session_id = ?", (session_id,))
+        row = cursor.fetchone()
+        if row and row[0] != user_id and row[0] != "anonymous" and user_id != "anonymous":
+            raise HTTPException(status_code=403, detail="Not authorized")
+    finally:
+        db_conn.close()
+
+    from ..api_utils.message_storage import get_message_versions as get_versions
+
+    versions = get_versions(session_id, message_id)
+
+    active_version = next((v["version"] for v in versions if v.get("is_active")), 1)
+
+    return {"message_id": message_id, "versions": versions, "total": len(versions), "current": active_version}
+
+
+@router.put("/{session_id}/messages/{message_id}/set-active/{version}")
+async def set_active_message_version(
+    session_id: str, message_id: str, version: int, current_user: Optional[User] = Depends(get_optional_current_user)
+):
+    user_id = current_user.id if current_user else "anonymous"
+
+    db_conn = get_session_db()
+    try:
+        cursor = db_conn.execute("SELECT user_id FROM sessions WHERE session_id = ?", (session_id,))
+        row = cursor.fetchone()
+        if row and row[0] != user_id and row[0] != "anonymous" and user_id != "anonymous":
+            raise HTTPException(status_code=403, detail="Not authorized")
+    finally:
+        db_conn.close()
+
+    from ..api_utils.message_storage import set_active_version, get_active_version_content
+
+    success = set_active_version(message_id, version)
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to set active version")
+
+    content = get_active_version_content(message_id)
+    return {"success": True, "version": version, "content": content}

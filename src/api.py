@@ -4,12 +4,28 @@ import logging
 import time
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from contextlib import asynccontextmanager, contextmanager
 import pandas as pd
 import joblib
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    UploadFile,
+    HTTPException,
+    Form,
+    BackgroundTasks,
+    WebSocket,
+    WebSocketDisconnect,
+    Depends,
+    Request,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,7 +70,7 @@ from .data_quality.validator import DataQualityValidator
 from .intelligence.data_profiler import IntelligentDataProfiler
 from .api_utils.session_management import clean_checkpointer_state, get_or_create_agent_session, validate_session
 from .api_utils.agent_response import extract_plot_urls, extract_agent_response
-from .api_utils.data_ingestion import (
+from .api_utils.dataset_service import (
     process_dataframe_ingestion,
     create_intelligence_summary,
     load_dataframe_to_sandbox,
@@ -63,8 +79,8 @@ from .api_utils.helpers import (
     convert_pandas_output_to_html,
     create_agent_input,
     run_agent_task,
-    create_workflow_status_context,
 )
+from data_scientist_chatbot.app.core.state_manager import create_workflow_status_context
 from .api_utils.models import (
     DataIngestionRequest,
     ProfilingRequest,
@@ -76,7 +92,18 @@ from .api_utils.models import (
 from .api_utils.upload_handler import enhance_with_agent_profile, load_data_to_agent_sandbox
 from .api_utils.artifact_handler import handle_artifact_download
 from .api_utils.streaming_service import stream_agent_chat
-from .routers import data_router, session_router, auth_router, hierarchical_upload_router, report_router
+from .routers import (
+    data_router,
+    session_router,
+    auth_router,
+    hierarchical_upload_router,
+    report_router,
+    alert_router,
+    connection_router,
+    notification_router,
+)
+from .auth.dependencies import get_optional_current_user
+from .database.models import User
 
 try:
     from .database.service import get_database_service
@@ -143,6 +170,29 @@ async def lifespan(app: FastAPI):
                 elif result.get("status") == "degraded":
                     logging.warning(f"Checkpoint system degraded, auto-cleaned: {result.get('operations', [])}")
 
+                try:
+                    from data_scientist_chatbot.app.agent import warmup_models_parallel
+
+                    logging.info("Starting parallel model warmup...")
+                    await warmup_models_parallel()
+                    logging.info("Model warmup completed successfully")
+
+                    from data_scientist_chatbot.app.core.model_manager import ModelManager
+
+                    model_manager = ModelManager()
+                    model_manager.start_health_check_loop()
+                except Exception as warmup_err:
+                    logging.warning(f"Model warmup failed (non-critical): {warmup_err}")
+
+                try:
+                    from src.scheduler.service import get_alert_scheduler
+
+                    scheduler = get_alert_scheduler()
+                    scheduler.start()
+                    logging.info("Alert scheduler started successfully")
+                except Exception as scheduler_err:
+                    logging.warning(f"Alert scheduler failed (non-critical): {scheduler_err}")
+
                 yield
         except Exception as e:
             logging.warning(f"Checkpointer initialization failed: {e}")
@@ -153,12 +203,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="DnA", description="", version="2.0.0", lifespan=lifespan)
 
+# Mount static assets
+import os
+
+static_dir = Path("static")
+if static_dir.exists():
+    app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+from starlette.middleware.sessions import SessionMiddleware
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SECRET_KEY", "change-this-secret-key-in-production"),
+    max_age=3600,
 )
 
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -168,6 +234,14 @@ from slowapi.errors import RateLimitExceeded
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+from src.routers.report_router import router as report_router
+
+app.include_router(report_router)
+
+from src.routers.image_router import router as image_router
+
+app.include_router(image_router)
 
 
 @app.on_event("startup")
@@ -213,33 +287,32 @@ def suppress_profiling_logs():
 static_dir = Path(__file__).parent.parent / "static"
 
 
-@app.get("/static/script.js")
-async def get_script():
-    """Serve JavaScript file with correct MIME type."""
-    script_path = static_dir / "script.js"
-    return FileResponse(script_path, media_type="application/javascript")
-
-
-@app.get("/static/styles.css")
-async def get_styles():
-    """Serve CSS file with correct MIME type."""
-    css_path = static_dir / "styles.css"
-    return FileResponse(css_path, media_type="text/css")
-
-
+# Mount static files for React SPA
+app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# Mount reports directory
+reports_dir = Path("data/reports")
+reports_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/reports", StaticFiles(directory=str(reports_dir)), name="reports")
 
 app.include_router(auth_router)
 app.include_router(data_router)
 app.include_router(session_router)
 app.include_router(hierarchical_upload_router)
 app.include_router(report_router)
+app.include_router(alert_router)
+app.include_router(connection_router)
+app.include_router(notification_router)
 
-session_store = {}
+from src.api_utils.session_management import session_data_manager
 
-import builtins
+session_store = session_data_manager.store
 
-builtins._session_store = session_store
+# builtins._session_store is now managed by session_data_manager
+
+# Client heartbeat tracking for long-running operations
+session_heartbeats: Dict[str, float] = {}
 
 data_profiler = IntelligentDataProfiler()
 
@@ -320,10 +393,14 @@ async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: 
             session_store[session_id]["profiling_message"] = "Profiling timed out - dataset may be too large"
             return
 
-        session_data = {"dataframe": df, "data_profile": data_profile, "filename": filename}
-        builtins._session_store[session_id] = session_data
-        session_data_store.save_session_data(session_id, session_data)
+        # Update existing session data instead of overwriting
+        if session_id not in session_store:
+            session_store[session_id] = {}
 
+        session_store[session_id].update({"dataframe": df, "data_profile": data_profile, "filename": filename})
+
+        # Save the complete updated session data
+        session_data_store.save_session_data(session_id, session_store[session_id])
         session_store[session_id]["profiling_status"] = "completed"
         session_store[session_id]["profiling_message"] = "Profiling complete"
 
@@ -354,13 +431,22 @@ async def run_profiling_background(df: pd.DataFrame, session_id: str, filename: 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the main application with vanilla JS + React integration."""
+    """Serve the React SPA."""
     html_path = Path(__file__).parent.parent / "static" / "index.html"
     return HTMLResponse(html_path.read_text())
 
 
+@app.get("/favicon.png")
+async def get_favicon():
+    """Serve favicon."""
+    favicon_path = Path(__file__).parent.parent / "static" / "favicon.png"
+    if favicon_path.exists():
+        return FileResponse(favicon_path, media_type="image/png")
+    return {"status": "no favicon"}
+
+
 @app.post("/api/agent/chat", response_model=ChatResponse)
-async def chat_endpoint(chat_request: ChatMessage):
+async def chat_endpoint(chat_request: ChatMessage, background_tasks: BackgroundTasks):
     """Handle chat messages with the AI agent"""
     try:
         from .api_utils.message_storage import save_message
@@ -386,63 +472,35 @@ async def chat_endpoint(chat_request: ChatMessage):
         all_plot_urls = []
 
         try:
-            print(f"FastAPI DEBUG: Starting agent stream for session {session_id}")
             for chunk in agent.stream(
                 input_state, config={"configurable": {"thread_id": session_id}, "recursion_limit": 10}
             ):
-                print(f"FastAPI DEBUG: Received chunk with keys: {list(chunk.keys())}")
-
                 if "action" in chunk:
-                    print("FastAPI DEBUG: Processing tool execution")
                     tool_messages = chunk["action"]["messages"]
-                    print(f"FastAPI DEBUG: Found {len(tool_messages)} tool messages")
-
-                    for i, tool_msg in enumerate(tool_messages):
-                        print(f"FastAPI DEBUG: Tool message {i} type: {type(tool_msg)}")
-                        print(f"FastAPI DEBUG: Tool message {i} attributes: {dir(tool_msg)}")
-
-                        # Check different possible attribute names for tool identification
-                        tool_name = (
-                            getattr(tool_msg, "name", None)
-                            or getattr(tool_msg, "tool_name", None)
-                            or getattr(tool_msg, "type", None)
-                        )
-                        print(f"FastAPI DEBUG: Tool message {i} identifier: {tool_name}")
-
+                    for tool_msg in tool_messages:
                         content = str(getattr(tool_msg, "content", ""))
-                        print(f"FastAPI DEBUG: Tool message {i} content preview: {content[:100]}...")
 
-                        # Always check for PLOT_SAVED regardless of message type
+                        # Check for PLOT_SAVED
                         if "PLOT_SAVED:" in content:
-                            print("FastAPI DEBUG: Found PLOT_SAVED in content!")
                             plot_saved_matches = re.findall(r"PLOT_SAVED:([^\n\r\s]+\.png)", content)
-                            print(f"FastAPI DEBUG: Plot saved matches: {plot_saved_matches}")
-
                             for plot_file in plot_saved_matches:
                                 url = f"/static/plots/{plot_file}"
                                 if url not in all_plot_urls:
                                     all_plot_urls.append(url)
-                                    print(f"FastAPI DEBUG: Added plot URL: {url}")
 
-                        # Also check for any PNG files mentioned
+                        # Check for .png files
                         if ".png" in content:
-                            print("FastAPI DEBUG: Found .png in content!")
                             plot_files = re.findall(r"([a-zA-Z0-9_\-]+\.png)", content)
-                            print(f"FastAPI DEBUG: All PNG files found: {plot_files}")
-
                             for pf in plot_files:
-                                if "plot" in pf:  # Only plot files
+                                if "plot" in pf:
                                     url = f"/static/plots/{pf}"
                                     if url not in all_plot_urls:
                                         all_plot_urls.append(url)
-                                        print(f"FastAPI DEBUG: Added plot URL from PNG: {url}")
 
                 if "agent" in chunk:
-                    print("FastAPI DEBUG: Processing agent response")
                     final_message = chunk["agent"]["messages"][-1]
                     if final_message:
                         final_response_content = final_message.content
-                        print(f"FastAPI DEBUG: Final response: {final_response_content[:100]}...")
 
             if not final_response_content:
                 final_state = agent.invoke(
@@ -460,6 +518,28 @@ async def chat_endpoint(chat_request: ChatMessage):
         metadata = {"plots": all_plot_urls} if all_plot_urls else None
         save_message(session_id, "ai", final_response_content, metadata=metadata)
 
+        # Trigger auto-naming if needed
+        try:
+            from .routers.session_router import get_session_db, auto_name_session
+
+            db_conn = get_session_db()
+            cursor = db_conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,))
+            row = cursor.fetchone()
+            current_title = row[0] if row else "New Chat"
+            db_conn.close()
+
+            if current_title == "New Chat" and len(final_response_content) > 20:
+                # We need to wrap the async call for background tasks
+                async def run_auto_name(sid, msg, resp):
+                    try:
+                        await auto_name_session(sid, {"user_message": msg, "agent_response": resp}, None)
+                    except Exception as e:
+                        print(f"Auto-naming failed: {e}")
+
+                background_tasks.add_task(run_auto_name, session_id, chat_request.message, final_response_content)
+        except Exception as e:
+            print(f"Auto-naming check failed: {e}")
+
         return ChatResponse(status="success", response=final_response_content, plots=all_plot_urls)
 
     except Exception as e:
@@ -472,164 +552,277 @@ async def chat_endpoint(chat_request: ChatMessage):
 
 @app.post("/api/upload")
 async def upload_data(
+    request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     enable_profiling: bool = Form(True),
     session_id: str = Form(...),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Upload and validate dataset with progressive profiling."""
+    """Upload and validate multiple datasets with progressive profiling."""
     try:
         if not session_id or not session_id.strip():
             raise HTTPException(status_code=400, detail="session_id is required")
 
-        # Check file size (limit to 100MB to prevent memory issues)
-        MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
-        contents = await file.read()
+        user_id = current_user.id if current_user else "anonymous"
 
-        if len(contents) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large ({len(contents) / 1024 / 1024:.1f}MB). Maximum size is {MAX_FILE_SIZE / 1024 / 1024}MB",
+        if session_id in session_store:
+            session_owner = session_store[session_id].get("user_id")
+            if session_owner and session_owner != user_id and session_owner != "anonymous":
+                raise HTTPException(status_code=403, detail="Not authorized to access this session")
+        else:
+            session_store[session_id] = {"user_id": user_id}
+
+        uploaded_details = []
+
+        # Initialize datasets dict if not present
+        if "datasets" not in session_store[session_id]:
+            session_store[session_id]["datasets"] = {}
+
+        for file in files:
+            # Check file size (limit to 100MB to prevent memory issues)
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+            contents = await file.read()
+
+            if len(contents) > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File {file.filename} too large ({len(contents) / 1024 / 1024:.1f}MB). Maximum size is {MAX_FILE_SIZE / 1024 / 1024}MB",
+                )
+
+            if file.filename.endswith(".zip"):
+                import tempfile
+                from src.api_utils.dataset_manifest import handle_file_upload
+
+                temp_file = Path(tempfile.gettempdir()) / f"upload_{session_id}_{file.filename}"
+                with open(temp_file, "wb") as f:
+                    f.write(contents)
+
+                result = handle_file_upload(temp_file, file.filename, session_id)
+
+                if not result["success"]:
+                    # Log error but maybe continue with other files? For now raise to be safe
+                    raise HTTPException(status_code=400, detail=result.get("error", "Failed to process ZIP file"))
+
+                session_store[session_id].update(
+                    {
+                        "dataset_manifest": result["manifest"],
+                        "dataset_type": "multi_file",
+                        "upload_filename": file.filename,
+                    }
+                )
+
+                temp_file.unlink()
+
+                uploaded_details.append(
+                    {"filename": file.filename, "type": "archive", "file_count": result["manifest"]["total_files"]}
+                )
+                continue
+
+            IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+            file_ext = Path(file.filename).suffix.lower()
+
+            if file_ext in IMAGE_EXTENSIONS:
+                try:
+                    from src.services.image_analyzer import ImageAnalyzer
+                    import pandas as pd
+
+                    upload_dir = Path("data/uploads") / session_id / "images"
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    image_path = upload_dir / file.filename
+
+                    with open(image_path, "wb") as f:
+                        f.write(contents)
+
+                    logging.info(f"[IMAGE] Analyzing uploaded image: {file.filename}")
+
+                    analyzer = ImageAnalyzer()
+                    extraction = await analyzer.extract_data(
+                        image_path=str(image_path), analysis_type="auto", session_id=session_id
+                    )
+
+                    if extraction.get("rows") and extraction.get("columns"):
+                        extraction = analyzer.validate_and_clean_data(extraction)
+                        df = pd.DataFrame(extraction["rows"])
+
+                        if list(df.columns) != extraction["columns"]:
+                            df.columns = extraction["columns"][: len(df.columns)]
+
+                        csv_filename = Path(file.filename).stem + "_extracted.csv"
+                        csv_path = Path("data/uploads") / session_id / csv_filename
+                        df.to_csv(csv_path, index=False)
+
+                        logging.info(
+                            f"[IMAGE] Extracted {len(df)} rows, {len(df.columns)} columns from {file.filename}"
+                        )
+
+                        dataset_name = csv_filename
+                        session_store[session_id]["datasets"][dataset_name] = df
+
+                        if "dataframe" not in session_store[session_id]:
+                            session_store[session_id]["dataframe"] = df
+                            session_store[session_id]["filename"] = csv_filename
+                            session_store[session_id]["dataset_path"] = str(csv_path.absolute())
+                            session_store[session_id]["source_image"] = file.filename
+
+                        from src.api_utils.session_persistence import session_data_store
+
+                        session_data_store.save_session_data(session_id, session_store[session_id])
+
+                        response_data = process_dataframe_ingestion(
+                            df, session_id, {"filename": csv_filename}, False, data_profiler, session_store
+                        )
+                        load_data_to_agent_sandbox(
+                            df, session_id, session_agents, create_enhanced_agent_executor, response_data
+                        )
+
+                        if enable_profiling:
+                            await run_profiling_background(df.copy(), session_id, csv_filename)
+
+                        uploaded_details.append(
+                            {
+                                "filename": file.filename,
+                                "type": "image",
+                                "extracted_to": csv_filename,
+                                "rows": len(df),
+                                "columns": len(df.columns),
+                                "confidence": extraction.get("confidence", 0),
+                                "profiling": "started" if enable_profiling else "disabled",
+                            }
+                        )
+                        continue
+                    else:
+                        logging.warning(f"[IMAGE] No data extracted from {file.filename}")
+                        uploaded_details.append(
+                            {
+                                "filename": file.filename,
+                                "type": "image",
+                                "error": "No data extracted",
+                                "notes": extraction.get("notes"),
+                            }
+                        )
+                        continue
+                except Exception as e:
+                    logging.error(f"[IMAGE] Failed to analyze {file.filename}: {e}")
+                    uploaded_details.append({"filename": file.filename, "type": "image", "error": str(e)})
+                    continue
+
+            df = ingest_data(io.BytesIO(contents), filename=file.filename)
+
+            if df is None:
+                logging.warning(f"Failed to parse uploaded file: {file.filename}")
+                continue
+
+            # Store in datasets dict
+            dataset_name = file.filename
+            session_store[session_id]["datasets"][dataset_name] = df
+
+            # Set as primary dataframe if it's the first one or only one
+            if "dataframe" not in session_store[session_id]:
+                session_store[session_id]["dataframe"] = df
+                session_store[session_id]["filename"] = file.filename
+
+                # Save file to disk for report generator
+                try:
+                    upload_dir = Path("data/uploads") / session_id
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    file_path = upload_dir / file.filename
+
+                    # Reset cursor to beginning of file
+                    file.file.seek(0)
+                    with open(file_path, "wb") as f:
+                        f.write(await file.read())
+
+                    session_store[session_id]["dataset_path"] = str(file_path.absolute())
+                    logging.info(f"Saved dataset to {file_path}")
+                    logging.info(
+                        f"DEBUG: session_store[{session_id}] keys after save: {list(session_store[session_id].keys())}"
+                    )
+                    logging.info(f"DEBUG: dataset_path in store: {session_store[session_id].get('dataset_path')}")
+                except Exception as e:
+                    logging.error(f"Failed to save dataset to disk: {e}")
+
+            # Persist session data
+            from src.api_utils.session_persistence import session_data_store
+
+            session_data_store.save_session_data(session_id, session_store[session_id])
+
+            # Process ingestion for this specific dataframe
+            # Note: process_dataframe_ingestion updates global session_store too
+            response_data = process_dataframe_ingestion(
+                df, session_id, {"filename": file.filename}, False, data_profiler, session_store
             )
 
-        import builtins
+            load_data_to_agent_sandbox(df, session_id, session_agents, create_enhanced_agent_executor, response_data)
 
-        if not hasattr(builtins, "_session_store"):
-            builtins._session_store = {}
+            if enable_profiling:
+                # [INTELLIGENCE UPGRADE] Await profiling to ensure context is ready for Planner
+                # We prioritize "Smart" behavior over "Fast Upload"
+                logging.info(f"Starting synchronous profiling for {file.filename}...")
+                await run_profiling_background(df.copy(), session_id, file.filename)
+                logging.info(f"Profiling completed for {file.filename}")
 
-        if file.filename.endswith(".zip"):
-            from pathlib import Path
-            import tempfile
-            from src.api_utils.dataset_manifest import handle_file_upload
+            uploaded_details.append(
+                {
+                    "filename": file.filename,
+                    "rows": len(df),
+                    "columns": len(df.columns),
+                    "profiling": "started" if enable_profiling else "disabled",
+                }
+            )
 
-            temp_file = Path(tempfile.gettempdir()) / f"upload_{session_id}_{file.filename}"
-            with open(temp_file, "wb") as f:
-                f.write(contents)
+        datasets_dict = session_store[session_id].get("datasets", {})
+        if len(datasets_dict) > 1:
+            try:
+                from src.intelligence.dataset_clusterer import DatasetClusterer
 
-            result = handle_file_upload(temp_file, file.filename, session_id)
+                logging.info(f"[ORCHESTRATOR] Processing {len(datasets_dict)} datasets for session {session_id}")
+                clusterer = DatasetClusterer()
+                result = clusterer.process_datasets(datasets_dict)
 
-            if not result["success"]:
-                raise HTTPException(status_code=400, detail=result.get("error", "Failed to process ZIP file"))
+                session_store[session_id]["dataset_registry"] = {
+                    k: {"filename": v.filename, "rows": v.row_count, "columns": list(v.columns), "domain": v.domain}
+                    for k, v in result.registry.items()
+                }
+                session_store[session_id]["clusters"] = [
+                    {
+                        "name": c.name,
+                        "datasets": c.datasets,
+                        "relationship": c.relationship,
+                        "merge_strategy": c.merge_strategy,
+                    }
+                    for c in result.clusters
+                ]
+                session_store[session_id]["dataframe"] = result.unified_dataframe
+                session_store[session_id]["unified_context"] = result.unified_context
 
-            builtins._session_store[session_id] = {
-                "dataset_manifest": result["manifest"],
-                "dataset_type": "multi_file",
-                "upload_filename": file.filename,
-            }
+                from data_scientist_chatbot.app.tools import refresh_sandbox_data
 
-            temp_file.unlink()
+                refresh_sandbox_data(session_id, result.unified_dataframe)
 
-            return {
-                "status": "success",
-                "session_id": session_id,
-                "agent_session_id": session_id,
-                "message": f"Uploaded archive with {result['manifest']['total_files']} files",
-                "dataset_type": "multi_file",
-                "manifest_summary": {
-                    "total_files": result["manifest"]["total_files"],
-                    "total_size_mb": result["manifest"]["total_size_mb"],
-                    "file_types": result["manifest"].get("file_types_summary", {}),
-                },
-            }
+                logging.info(
+                    f"[ORCHESTRATOR] Unified {len(datasets_dict)} datasets into {result.unified_dataframe.shape}"
+                )
+            except Exception as e:
+                logging.error(f"[ORCHESTRATOR] Clustering failed: {e}")
 
-        df = ingest_data(io.BytesIO(contents), filename=file.filename)
+        from src.api_utils.session_persistence import session_data_store
 
-        if df is None:
-            raise HTTPException(status_code=400, detail="Failed to parse uploaded file")
+        session_data_store.save_session_data(session_id, session_store[session_id])
 
-        response_data = process_dataframe_ingestion(
-            df, session_id, {"filename": file.filename}, False, data_profiler, session_store
-        )
-        session_id = response_data["session_id"]
-
-        load_data_to_agent_sandbox(df, session_id, session_agents, create_enhanced_agent_executor, response_data)
-
-        try:
-            from src.reporting.report_repository import ReportRepository
-            from src.database.connection import get_database_manager
-
-            db_manager = get_database_manager()
-            db = db_manager.get_session()
-            repo = ReportRepository(db)
-
-            report = repo.create_report(session_id=session_id, dataset_name=file.filename, status="generating")
-
-            response_data["report_id"] = report.id
-            response_data["report_created"] = True
-            logging.info(f"Report {report.id} created for upload {file.filename}")
-
-            db.close()
-        except Exception as report_error:
-            logging.error(f"Failed to create report for upload: {report_error}")
-            response_data["report_created"] = False
-
-        if enable_profiling:
-            response_data["profiling_status"] = "pending"
-            response_data[
-                "message"
-            ] = f"Dataset uploaded successfully - {len(df)} rows, {len(df.columns)} columns. Profiling in progress..."
-            background_tasks.add_task(run_profiling_background, df.copy(), session_id, file.filename)
-        else:
-            response_data["profiling_status"] = "disabled"
-
-        return response_data
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "message": f"Uploaded {len(uploaded_details)} files successfully",
+            "files": uploaded_details,
+            "primary_dataset": session_store[session_id].get("filename"),
+            "unified_shape": session_store[session_id].get("dataframe").shape
+            if session_store[session_id].get("dataframe") is not None
+            else None,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
-
-
-@app.post("/api/privacy/consent")
-async def handle_privacy_consent(request: dict):
-    """Handle user consent for privacy protection"""
-    try:
-        session_id = request.get("session_id")
-        apply_protection = request.get("apply_protection", False)
-
-        if not session_id or session_id not in session_store:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        import builtins
-
-        if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
-            session_data = builtins._session_store[session_id]
-
-            if apply_protection:
-                # Apply privacy protection using PrivacyEngine
-                from security.privacy_engine import PrivacyEngine
-
-                privacy_engine = PrivacyEngine()
-
-                original_df = session_data["dataframe"]
-                protected_df, transformations = privacy_engine.apply_k_anonymity(
-                    original_df, privacy_engine._auto_detect_quasi_identifiers(original_df)
-                )
-
-                # Update stored dataframe with protected version
-                session_data["dataframe"] = protected_df
-                session_data["privacy_applied"] = True
-                session_data["privacy_transformations"] = transformations
-
-                # Update session store as well
-                session_store[session_id]["dataframe"] = protected_df
-
-                return {
-                    "status": "success",
-                    "message": "Privacy protection applied successfully",
-                    "protection_applied": True,
-                }
-            else:
-                # Mark that user declined protection
-                session_data["privacy_applied"] = False
-                return {
-                    "status": "success",
-                    "message": "Continuing without privacy protection",
-                    "protection_applied": False,
-                }
-
-        raise HTTPException(status_code=404, detail="Session data not found")
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Privacy consent error: {str(e)}")
 
 
 @app.post("/api/ingest-url")
@@ -650,11 +843,11 @@ async def ingest_from_url_endpoint(request: DataIngestionRequest):
             session_store,
         )
         session_id = response_data["session_id"]
-        import builtins
+        session_id = response_data["session_id"]
 
-        if not hasattr(builtins, "_session_store"):
-            builtins._session_store = {}
-        builtins._session_store[session_id] = {"dataframe": df}
+        if session_id not in session_store:
+            session_store[session_id] = {}
+        session_store[session_id].update({"dataframe": df})
 
         try:
             dataset_content = f"""
@@ -781,6 +974,31 @@ async def cancel_agent_task(session_id: str):
         return {"success": False, "detail": str(e)}
 
 
+@app.post("/api/heartbeat/{session_id}")
+async def client_heartbeat(session_id: str):
+    """
+    Client heartbeat to indicate the session is still active.
+    Frontend should call this every 30 seconds during long operations.
+    """
+    session_heartbeats[session_id] = time.time()
+    return {"success": True, "session_id": session_id, "timestamp": session_heartbeats[session_id]}
+
+
+@app.get("/api/heartbeat/{session_id}")
+async def get_heartbeat_status(session_id: str):
+    """Check when the last heartbeat was received for a session."""
+    last_heartbeat = session_heartbeats.get(session_id)
+    if last_heartbeat:
+        elapsed = time.time() - last_heartbeat
+        return {
+            "session_id": session_id,
+            "last_heartbeat": last_heartbeat,
+            "elapsed_seconds": elapsed,
+            "active": elapsed < 60,
+        }
+    return {"session_id": session_id, "last_heartbeat": None, "active": False}
+
+
 @app.get("/api/agent/chat-stream")
 async def agent_chat_stream(
     message: str,
@@ -788,15 +1006,55 @@ async def agent_chat_stream(
     web_search_enabled: bool = False,
     token_streaming: bool = True,
     thinking_mode: bool = False,
+    regenerate: bool = False,
+    message_id: str = None,
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """Stream agent chat responses with dynamic status updates and optional thinking mode."""
     if not AGENT_AVAILABLE:
         raise HTTPException(status_code=503, detail="Agent service not available")
 
+    user_id = current_user.id if current_user else "anonymous"
+
     if session_id not in session_store:
-        raise HTTPException(
-            status_code=404, detail="Session not found. Please create a session first using /api/sessions/new"
-        )
+        from src.routers.session_router import get_session_db
+
+        db_conn = get_session_db()
+        try:
+            cursor = db_conn.execute(
+                "SELECT session_id, user_id, created_at FROM sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                session_owner = row[1]
+                if (
+                    session_owner
+                    and session_owner != "anonymous"
+                    and user_id != "anonymous"
+                    and session_owner != user_id
+                ):
+                    raise HTTPException(status_code=403, detail="Not authorized to access this session")
+                session_store[session_id] = {
+                    "session_id": row[0],
+                    "user_id": row[1],
+                    "created_at": datetime.fromisoformat(row[2]) if row[2] else datetime.now(),
+                }
+                logger.info(f"Loaded session {session_id} from database")
+            else:
+                session_store[session_id] = {"session_id": session_id, "user_id": user_id}
+                logger.info(f"Created new session {session_id} for user {user_id}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load session from database: {e}")
+            raise HTTPException(status_code=500, detail="Failed to load session")
+        finally:
+            db_conn.close()
+    else:
+        session_owner = session_store[session_id].get("user_id")
+        if session_owner and session_owner != "anonymous" and user_id != "anonymous" and session_owner != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to access this session")
 
     from fastapi.responses import StreamingResponse
 
@@ -825,10 +1083,94 @@ async def agent_chat_stream(
 
                 print(traceback.format_exc())
 
+        full_response = ""
+
         async for event_data in stream_agent_chat(
-            message, session_id, agent, session_store, status_agent_runnable, agent_sessions
+            message, session_id, agent, session_store, status_agent_runnable, agent_sessions, regenerate, message_id
         ):
             yield event_data
+            try:
+                if event_data.startswith("data: "):
+                    data = json.loads(event_data[6:])
+                    if data.get("type") == "final_response":
+                        full_response = data.get("response", "")
+            except Exception:
+                pass
+
+        if full_response and len(full_response) > 20:
+
+            async def run_auto_name_inline(sid, msg, resp):
+                try:
+                    from src.routers.session_router import get_session_db
+                    from data_scientist_chatbot.app.core.agent_factory import create_brain_agent
+
+                    db_conn = get_session_db()
+                    try:
+                        cursor = db_conn.execute(
+                            "SELECT title, user_id, is_manually_named FROM sessions WHERE session_id = ?", (sid,)
+                        )
+                        row = cursor.fetchone()
+                        current_title = row[0] if row else None
+                        user_id = row[1] if row else "anonymous"
+                        is_manually_named = row[2] if row and len(row) > 2 else 0
+                        print(
+                            f"DEBUG: Auto-name check - Session: {sid}, Title: {current_title}, User: {user_id}, Manual: {is_manually_named}"
+                        )
+                    finally:
+                        db_conn.close()
+
+                    if is_manually_named:
+                        print(f"INFO: Skipping auto-name for session {sid} (manually named)")
+                        return
+
+                    if not current_title or current_title == "New Chat":
+                        llm = create_brain_agent()
+                        if resp and len(resp) > 50:
+                            agent_preview = resp[:500] if len(resp) > 500 else resp
+                            prompt = f"""Generate a concise, descriptive title (4-8 words) for a data science conversation.
+
+User asked: "{msg}"
+
+Agent explained: "{agent_preview}"
+
+Create a title describing the TOPIC or CAPABILITY discussed, not the user's question.
+
+Good examples:
+- "Supported Data File Formats"
+- "Dataset Format Compatibility Overview"
+- "Sales Trend Analysis"
+- "Customer Churn Prediction Model"
+
+Bad examples:
+- "hello what dataset formats can" (too literal, incomplete)
+- "what sort of dataset" (copying user question)
+
+Return ONLY the title. No quotes. No periods."""
+                        else:
+                            prompt = f"""Generate a descriptive title (4-8 words) for: "{msg}"
+
+Focus on the topic, not the question. Return ONLY the title. No quotes. No periods."""
+
+                        response = await llm.ainvoke(prompt)
+                        title = response.content.strip().strip('"').strip("'")
+
+                        if len(title) > 60:
+                            title = title[:57] + "..."
+
+                        db_conn = get_session_db()
+                        try:
+                            db_conn.execute(
+                                "UPDATE sessions SET title = ?, last_updated = ? WHERE session_id = ? AND user_id = ?",
+                                (title, datetime.now().isoformat(), sid, user_id),
+                            )
+                            db_conn.commit()
+                            print(f"INFO: Auto-named session {sid} to '{title}'")
+                        finally:
+                            db_conn.close()
+                except Exception as e:
+                    print(f"ERROR: Auto-naming failed: {e}")
+
+            asyncio.create_task(run_auto_name_inline(session_id, message, full_response))
 
     return StreamingResponse(
         generate_events(),
@@ -1019,6 +1361,20 @@ async def cleanup_old_checkpoints_endpoint(retention_days: int = 7):
         )
     except Exception as e:
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    """Serve the Single Page Application (SPA)"""
+    if full_path.startswith("api"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Check if file exists in static folder (e.g. favicon.ico)
+    static_file = Path("static") / full_path
+    if static_file.is_file():
+        return FileResponse(static_file)
+
+    return FileResponse("static/index.html")
 
 
 if __name__ == "__main__":

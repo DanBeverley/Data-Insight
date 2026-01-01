@@ -15,8 +15,8 @@ def convert_pandas_output_to_html(output_text: str) -> str:
     return "📊 Dataset loaded successfully!"
 
 
-def create_agent_input(message: str, session_id: str) -> Dict[str, Any]:
-    return {"messages": [HumanMessage(content=message)], "session_id": session_id}
+def create_agent_input(message: str, session_id: str, **kwargs) -> Dict[str, Any]:
+    return {"messages": [HumanMessage(content=message)], "session_id": session_id, **kwargs}
 
 
 def run_agent_task(agent, message: str, session_id: str) -> Dict[str, Any]:
@@ -32,10 +32,14 @@ def run_agent_task(agent, message: str, session_id: str) -> Dict[str, Any]:
 
 
 def create_workflow_status_context(workflow_context: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a context dictionary for the status agent based on the current workflow state.
+    """
     return {
+        "current_agent": workflow_context.get("current_agent", "unknown"),
+        "current_action": workflow_context.get("current_action", "processing"),
         "user_goal": workflow_context.get("user_goal", ""),
-        "current_agent": workflow_context.get("current_agent", ""),
-        "current_action": workflow_context.get("current_action", ""),
-        "event_type": event.get("event", ""),
-        "node_name": event.get("name", ""),
+        "tool_calls": workflow_context.get("tool_calls", []),
+        "event_type": event.get("event", "unknown"),
+        "node_name": event.get("name", "unknown"),
     }

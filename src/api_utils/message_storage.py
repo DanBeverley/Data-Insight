@@ -11,11 +11,10 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("sessions_metadata.db")
+DB_PATH = Path("data/databases/sessions_metadata.db")
 
 
 def get_message_db():
-    """Get database connection and ensure schema exists"""
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
 
     conn.execute(
@@ -23,6 +22,8 @@ def get_message_db():
         CREATE TABLE IF NOT EXISTS conversation_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT NOT NULL,
+            user_id TEXT DEFAULT 'anonymous',
+            message_id TEXT,
             message_type TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -34,8 +35,31 @@ def get_message_db():
 
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS message_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            version_number INTEGER NOT NULL DEFAULT 1,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            is_active BOOLEAN DEFAULT 1,
+            metadata TEXT DEFAULT NULL,
+            UNIQUE(message_id, version_number)
+        )
+    """
+    )
+
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_session_messages
         ON conversation_messages(session_id, created_at)
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_message_versions
+        ON message_versions(message_id, version_number)
     """
     )
 
@@ -153,6 +177,39 @@ def delete_session_messages(session_id: str) -> bool:
         return False
 
 
+def delete_last_ai_message(session_id: str) -> bool:
+    """
+    Delete the last AI message for a session (used for regenerate functionality).
+
+    Args:
+        session_id: Session ID
+
+    Returns:
+        True if deleted successfully
+    """
+    try:
+        conn = get_message_db()
+        cursor = conn.execute(
+            """SELECT id FROM conversation_messages 
+               WHERE session_id = ? AND message_type = 'ai' 
+               ORDER BY created_at DESC LIMIT 1""",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+
+        if row:
+            conn.execute("DELETE FROM conversation_messages WHERE id = ?", (row[0],))
+            conn.commit()
+            logger.info(f"Deleted last AI message (id={row[0]}) for session {session_id}")
+
+        conn.close()
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to delete last AI message: {e}")
+        return False
+
+
 def get_message_count(session_id: str) -> int:
     """Get total message count for a session"""
     try:
@@ -200,3 +257,117 @@ def cleanup_old_messages(days_old: int = 30) -> int:
     except Exception as e:
         logger.error(f"Failed to cleanup old messages: {e}")
         return 0
+
+
+def save_message_version(session_id: str, message_id: str, content: str, metadata: Dict[str, Any] = None) -> int:
+    try:
+        conn = get_message_db()
+
+        cursor = conn.execute("SELECT MAX(version_number) FROM message_versions WHERE message_id = ?", (message_id,))
+        max_version = cursor.fetchone()[0]
+        new_version = (max_version or 0) + 1
+
+        conn.execute("UPDATE message_versions SET is_active = 0 WHERE message_id = ?", (message_id,))
+
+        import json
+
+        metadata_json = json.dumps(metadata) if metadata else None
+
+        conn.execute(
+            """INSERT INTO message_versions 
+               (message_id, session_id, version_number, content, created_at, is_active, metadata)
+               VALUES (?, ?, ?, ?, ?, 1, ?)""",
+            (message_id, session_id, new_version, content, datetime.now().isoformat(), metadata_json),
+        )
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Saved version {new_version} for message {message_id}")
+        return new_version
+
+    except Exception as e:
+        logger.error(f"Failed to save message version: {e}")
+        return 0
+
+
+def get_message_versions(session_id: str, message_id: str) -> List[Dict[str, Any]]:
+    try:
+        conn = get_message_db()
+        cursor = conn.execute(
+            """SELECT version_number, content, created_at, is_active, metadata
+               FROM message_versions 
+               WHERE session_id = ? AND message_id = ?
+               ORDER BY version_number ASC""",
+            (session_id, message_id),
+        )
+
+        versions = []
+        for row in cursor.fetchall():
+            version_num, content, created_at, is_active, metadata_json = row
+            version = {
+                "version": version_num,
+                "content": content,
+                "created_at": created_at,
+                "is_active": bool(is_active),
+            }
+            if metadata_json:
+                try:
+                    import json
+
+                    version["metadata"] = json.loads(metadata_json)
+                except:
+                    pass
+            versions.append(version)
+
+        conn.close()
+        return versions
+
+    except Exception as e:
+        logger.error(f"Failed to get message versions: {e}")
+        return []
+
+
+def set_active_version(message_id: str, version_number: int) -> bool:
+    try:
+        conn = get_message_db()
+
+        conn.execute("UPDATE message_versions SET is_active = 0 WHERE message_id = ?", (message_id,))
+
+        conn.execute(
+            "UPDATE message_versions SET is_active = 1 WHERE message_id = ? AND version_number = ?",
+            (message_id, version_number),
+        )
+
+        conn.commit()
+        conn.close()
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to set active version: {e}")
+        return False
+
+
+def get_latest_version(message_id: str) -> int:
+    try:
+        conn = get_message_db()
+        cursor = conn.execute("SELECT MAX(version_number) FROM message_versions WHERE message_id = ?", (message_id,))
+        result = cursor.fetchone()[0]
+        conn.close()
+        return result or 0
+    except Exception as e:
+        logger.error(f"Failed to get latest version: {e}")
+        return 0
+
+
+def get_active_version_content(message_id: str) -> str:
+    try:
+        conn = get_message_db()
+        cursor = conn.execute(
+            "SELECT content FROM message_versions WHERE message_id = ? AND is_active = 1", (message_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else ""
+    except Exception as e:
+        logger.error(f"Failed to get active version: {e}")
+        return ""
