@@ -52,13 +52,13 @@ def html_to_reportlab(html_content: str) -> str:
     text = re.sub(r"<em[^>]*>(.*?)</em>", r"<i>\1</i>", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(
         r'<iframe[^>]*src="[^"]*?([^/"]+\.html)"[^>]*>.*?</iframe>',
-        r"<br/>[📊 Chart: \1]<br/>",
+        r"<br/>[Chart: \1]<br/>",
         text,
         flags=re.DOTALL | re.IGNORECASE,
     )
     text = re.sub(
         r'<div[^>]*data-filename="([^"]+)"[^>]*>.*?</div>',
-        r"<br/>[📊 Chart: \1]<br/>",
+        r"<br/>[Chart: \1]<br/>",
         text,
         flags=re.DOTALL | re.IGNORECASE,
     )
@@ -71,22 +71,34 @@ def html_to_reportlab(html_content: str) -> str:
 
 
 def make_standalone_html(html_content: str) -> str:
-    artifact_pattern = r'<iframe[^>]*src="(/static/plots/|\.\./)([^"]+)"[^>]*>.*?</iframe>'
+    artifact_pattern = r'<iframe[^>]*src="([^"]*?)([^/"]+\.html)"[^>]*>.*?</iframe>'
     matches = re.findall(artifact_pattern, html_content, flags=re.DOTALL | re.IGNORECASE)
+
+    plotly_cdn = '<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>'
+    cdn_added = False
+
     for prefix, filename in matches:
-        artifact_path = Path("static/plots") / filename
-        if artifact_path.exists():
-            try:
-                artifact_html = artifact_path.read_text(encoding="utf-8")
-                replacement = f'<div class="embedded-chart" style="width:100%;height:500px;overflow:auto;border:1px solid #334155;margin:10px 0;">{artifact_html}</div>'
-                html_content = re.sub(
-                    rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
-                    replacement,
-                    html_content,
-                    flags=re.DOTALL | re.IGNORECASE,
-                )
-            except Exception:
-                pass
+        for base_path in [Path("static/plots"), Path("data/reports")]:
+            artifact_path = base_path / filename
+            if artifact_path.exists():
+                try:
+                    artifact_html = artifact_path.read_text(encoding="utf-8")
+                    replacement = f'<div class="embedded-chart" style="width:100%;height:500px;overflow:auto;border:1px solid #334155;margin:10px 0;">{artifact_html}</div>'
+                    original_src = f"{prefix}{filename}"
+                    html_content = re.sub(
+                        rf'<iframe[^>]*src="{re.escape(original_src)}"[^>]*>.*?</iframe>',
+                        replacement,
+                        html_content,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    )
+                    cdn_added = True
+                except Exception:
+                    pass
+                break
+
+    if cdn_added and plotly_cdn not in html_content:
+        html_content = html_content.replace("</head>", f"{plotly_cdn}</head>")
+
     return html_content
 
 
@@ -96,62 +108,78 @@ class ReportExporter:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
     def export_pdf(self, sections: List[Dict], title: str = "Analysis Report", session_id: str = "") -> bytes:
-        try:
-            from reportlab.lib.pagesizes import letter, A4
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.units import inch
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image, Table, TableStyle
-            from reportlab.lib import colors
-            from reportlab.lib.enums import TA_CENTER, TA_LEFT
-        except ImportError:
-            raise ImportError("reportlab is required for PDF export. Install with: pip install reportlab")
-
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=0.75 * inch, bottomMargin=0.75 * inch)
-        styles = getSampleStyleSheet()
-
-        title_style = ParagraphStyle(
-            "ReportTitle",
-            parent=styles["Heading1"],
-            fontSize=24,
-            textColor=colors.HexColor("#1e3a5f"),
-            spaceAfter=20,
-            alignment=TA_CENTER,
-        )
-
-        section_style = ParagraphStyle(
-            "SectionTitle",
-            parent=styles["Heading2"],
-            fontSize=16,
-            textColor=colors.HexColor("#2563eb"),
-            spaceBefore=20,
-            spaceAfter=10,
-        )
-
-        body_style = ParagraphStyle(
-            "BodyText",
-            parent=styles["Normal"],
-            fontSize=11,
-            leading=16,
-            spaceAfter=12,
-        )
-
-        story = []
-        story.append(Paragraph(title, title_style))
-        story.append(Paragraph(f"Generated: {datetime.now().strftime('%B %d, %Y')}", styles["Normal"]))
-        story.append(Spacer(1, 0.3 * inch))
-
+        sections_html = ""
         for section in sections:
-            story.append(Paragraph(section.get("title", "Section"), section_style))
+            section_title = section.get("title", "Section")
             content = section.get("content", "")
-            if isinstance(content, str):
-                clean_content = html_to_reportlab(content)
-                story.append(Paragraph(clean_content, body_style))
-            story.append(Spacer(1, 0.2 * inch))
+            content = self._embed_charts_as_images(content)
+            sections_html += f'<section><h2>{section_title}</h2><div class="content">{content}</div></section>'
 
-        doc.build(story)
-        buffer.seek(0)
-        return buffer.getvalue()
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+    body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #1e293b; line-height: 1.6; }}
+    h1 {{ color: #1e3a5f; text-align: center; border-bottom: 2px solid #2563eb; padding-bottom: 10px; }}
+    h2 {{ color: #2563eb; margin-top: 30px; }}
+    .meta {{ text-align: center; color: #64748b; margin-bottom: 30px; }}
+    section {{ margin-bottom: 20px; page-break-inside: avoid; }}
+    .content {{ margin-left: 10px; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+    th, td {{ border: 1px solid #e2e8f0; padding: 8px; text-align: left; }}
+    th {{ background-color: #f1f5f9; }}
+    ul, ol {{ margin-left: 20px; }}
+    strong, b {{ color: #0f172a; }}
+    .chart-image {{ max-width: 100%; height: auto; margin: 15px 0; border: 1px solid #e2e8f0; }}
+    .chart-placeholder {{ background: #f8fafc; border: 1px dashed #94a3b8; padding: 20px; text-align: center; margin: 10px 0; }}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+<p class="meta">Generated: {datetime.now().strftime('%B %d, %Y')}</p>
+{sections_html}
+</body>
+</html>"""
+
+        from src.reporting.chart_converter import html_to_pdf_sync
+
+        pdf_bytes = html_to_pdf_sync(full_html)
+        if pdf_bytes:
+            return pdf_bytes
+        raise RuntimeError(
+            "PDF generation failed. Ensure Playwright is installed with: pip install playwright && playwright install chromium"
+        )
+
+    def _embed_charts_as_images(self, content: str) -> str:
+        iframe_pattern = r'<iframe[^>]*src="(/static/plots/|\.\./)([^"]+\.html)"[^>]*>.*?</iframe>'
+        matches = re.findall(iframe_pattern, content, flags=re.DOTALL | re.IGNORECASE)
+
+        for prefix, filename in matches:
+            chart_path = Path("static/plots") / filename
+            if chart_path.exists():
+                try:
+                    from src.reporting.chart_converter import convert_chart_to_png_sync, png_to_base64
+
+                    png_bytes = convert_chart_to_png_sync(chart_path)
+                    if png_bytes:
+                        b64 = png_to_base64(png_bytes)
+                        img_tag = f'<img src="data:image/png;base64,{b64}" class="chart-image" alt="{filename}"/>'
+                        content = re.sub(
+                            rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
+                            img_tag,
+                            content,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        )
+                except Exception:
+                    placeholder = f'<div class="chart-placeholder">[Chart: {filename}]</div>'
+                    content = re.sub(
+                        rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
+                        placeholder,
+                        content,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    )
+        return content
 
     def export_docx(self, sections: List[Dict], title: str = "Analysis Report", session_id: str = "") -> bytes:
         try:
