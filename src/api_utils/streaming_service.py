@@ -316,6 +316,49 @@ def _try_format_statistics(text: str):
     return None
 
 
+async def _generate_report_summary(insights: list, artifact_count: int, report_path: str, user_message: str) -> str:
+    try:
+        from data_scientist_chatbot.app.core.agent_factory import create_brain_agent
+
+        brain_agent = create_brain_agent()
+
+        formatted_insights = []
+        for i in insights[:8]:
+            if isinstance(i, dict):
+                label = i.get("label", "")
+                value = i.get("value", "")
+                if label and value:
+                    formatted_insights.append(f"- {label}: {value}")
+
+        insights_block = "\n".join(formatted_insights) if formatted_insights else "No specific insights extracted."
+
+        prompt = f"""The data analysis is complete. Summarize the results for the user.
+
+User's original request: {user_message[:200]}
+
+Analysis produced:
+- {artifact_count} visualizations
+- Key findings:
+{insights_block}
+
+Write a brief, engaging 2-3 sentence summary of what was discovered. Be specific about the findings.
+End with exactly this markdown link: **[📄 View Full Report](report:{report_path})**"""
+
+        result = await brain_agent.ainvoke({"messages": [HumanMessage(content=prompt)]})
+        content = result.content if hasattr(result, "content") else str(result)
+
+        if content and len(content) > 20:
+            if f"report:{report_path}" not in content:
+                content += f"\n\n**[📄 View Full Report](report:{report_path})**"
+            return content
+    except Exception as e:
+        logging.warning(f"[STREAM] Brain summary generation failed: {e}")
+
+    insight_labels = [i.get("label", "") for i in insights[:5] if isinstance(i, dict) and i.get("label")]
+    insight_text = f" Key findings: {', '.join(insight_labels)}." if insight_labels else ""
+    return f"## 📊 Analysis Complete\n\nGenerated {artifact_count} visualizations from your analysis.{insight_text}\n\n**[📄 View Full Report](report:{report_path})**"
+
+
 async def stream_agent_chat(
     message: str,
     session_id: str,
@@ -863,13 +906,12 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                                 artifact_count = (
                                     len(tracked_artifacts) if tracked_artifacts else len(node_data.get("artifacts", []))
                                 )
-                                insight_summary = ""
-                                if insights:
-                                    insight_labels = [i.get("label", "") for i in insights[:5] if isinstance(i, dict)]
-                                    if insight_labels:
-                                        insight_summary = f" Key findings include: {', '.join(insight_labels)}."
 
-                                final_brain_response = f"## 📊 Analysis Report Generated\n\nI've completed a comprehensive analysis of your dataset and generated an interactive report with **{artifact_count} visualizations**.{insight_summary}\n\n**[📄 View Full Report](report:{report_path})**\n\n*Click the link above or use the panel on the right to explore the detailed findings.*"
+                                brain_context = await _generate_report_summary(
+                                    insights, artifact_count, report_path, message
+                                )
+                                if brain_context:
+                                    final_brain_response = brain_context
                             else:
                                 logging.warning(
                                     f"[STREAM] Architect completed but no report_url found in node_data: {list(node_data.keys())}"
