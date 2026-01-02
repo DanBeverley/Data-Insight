@@ -146,6 +146,34 @@ def get_hands_prompt():
                 - CORRECT: Check columns first, then use the actual name shown
 
                 ############################################################
+                # OUTPUT CONTRACT - DECLARE WHAT YOU WILL PRODUCE          #
+                ############################################################
+                
+                **MANDATORY: At the START of your code, declare what you will produce:**
+                ```python
+                EXPECTED_OUTPUTS = {
+                    "artifacts": ["price_distribution.html", "correlation_heatmap.html"],
+                    "insights": ["price_trend", "correlation_pattern"],
+                    "df_info": True
+                }
+                print("EXPECTED_OUTPUTS:", EXPECTED_OUTPUTS)
+                ```
+                
+                Your execution will be MECHANICALLY VALIDATED against this declaration:
+                - If you declare 2 artifacts but produce 0, you FAIL
+                - If you skip df.info() but set df_info=True, you FAIL
+                - If you declare insights but print no PROFILING_INSIGHTS, you FAIL
+                
+                This is NOT LLM-reviewed. A program checks your actual output against your declaration.
+                
+                **FIRST ATTEMPT CHECKLIST (ALL REQUIRED):**
+                1. [ ] Print EXPECTED_OUTPUTS declaration
+                2. [ ] Run df.info() and df.describe()
+                3. [ ] Generate ALL declared artifacts
+                4. [ ] Print PROFILING_INSIGHTS block with declared insights
+                5. [ ] Verify files exist: `print("FILES:", [f for f in os.listdir() if f.endswith(('.html','.png'))])`
+
+                ############################################################
 
                 **CAPABILITIES:**
                 - Write and execute Python code in a sandbox.
