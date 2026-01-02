@@ -78,3 +78,6 @@ mysql-connector-python>=8.0.0
 pywebpush>=2.0.0
 authlib>=1.0.0
 alembic>=1.13.0
+weasyprint>=60.0
+
+playwright>=1.40.0
