@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 try:
-    from langchain.tools import tool
+    from langchain_core.tools import tool
 except ImportError:
-    logger.warning("langchain.tools not available - tool decorator will be disabled")
+    logger.warning("langchain_core.tools not available - tool decorator will be disabled")
 
     def tool(func):
         return func
@@ -55,7 +55,6 @@ E2B_TEMPLATE_NAME = os.getenv("E2B_TEMPLATE_NAME", "data-insight-sandbox")
 
 
 def _wait_for_kernel(sandbox, max_retries: int = 6, delay: float = 5.0) -> bool:
-    """Wait for Jupyter kernel to be ready by running a simple health check."""
     import time
 
     for attempt in range(max_retries):

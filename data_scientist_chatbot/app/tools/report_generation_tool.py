@@ -1,7 +1,7 @@
 """Tool for generating comprehensive reports dynamically"""
 
 from pydantic import BaseModel, Field
-from langchain.tools import tool
+from langchain_core.tools import tool
 from typing import List, Optional
 
 
@@ -19,33 +19,23 @@ class ReportGenerationInput(BaseModel):
     )
 
 
-@tool(args_schema=ReportGenerationInput)
+@tool
 def generate_comprehensive_report(
     report_type: str,
-    analysis_focus: Optional[str] = None,
-    artifact_ids: Optional[List[str]] = None,
-    image_paths: Optional[List[str]] = None,
+    analysis_focus: str = "",
+    artifact_ids: str = "",
+    image_paths: str = "",
 ) -> str:
     """
     Generate a comprehensive, interactive HTML dashboard and report.
 
-    CRITICAL: This tool is the ONLY way to generate the UI dashboard.
-    You MUST call this tool ONLY when the user EXPLICITLY asks for a "report", "dashboard", or "full UI view".
-
-    FUNCTIONALITY:
-    1. Triggers the 'Frontend Architect' agent to design a bespoke HTML layout.
-    2. Aggregates all data profiles, visual insights, and artifacts.
-    3. Generates a responsive, glassmorphism-styled dashboard in the Report Panel.
-
-    USE WHEN:
-    - User EXPLICITLY asks for "report", "dashboard", "summary UI".
-    - You want to present a final comprehensive deliverable in the UI panel.
+    CRITICAL: Call this tool ONLY when user EXPLICITLY asks for "report", "dashboard", or "full UI view".
 
     Args:
-        report_type: 'eda' (exploratory), 'model_results' (ML), or 'general_analysis' (default).
-        analysis_focus: Specific focus (e.g., 'sales trends', 'missing data').
-        artifact_ids: List of artifact IDs to include.
-        image_paths: List of image paths to analyze.
+        report_type: Type of report - 'eda' (exploratory), 'model_results' (ML), or 'general_analysis'
+        analysis_focus: Specific focus (e.g., 'sales trends', 'missing data')
+        artifact_ids: Comma-separated artifact IDs to include
+        image_paths: Comma-separated image paths to analyze
 
     Returns:
         Confirmation string. The actual report is streamed to the frontend UI.

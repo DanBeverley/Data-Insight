@@ -1,7 +1,7 @@
 """Tool definitions for agent system"""
 
 from pydantic import BaseModel, Field
-from langchain.tools import tool
+from langchain_core.tools import tool
 from typing import List, Optional
 from .report_generation_tool import generate_comprehensive_report, ReportGenerationInput
 
@@ -158,40 +158,26 @@ def web_search(query: str) -> str:
     return "This is a placeholder. Web search happens in the graph node."
 
 
-@tool(args_schema=ZipArtifactsInput)
-def zip_artifacts(artifact_ids: List[str], description: Optional[str] = None) -> str:
+@tool
+def zip_artifacts(artifact_ids: str, description: str = "") -> str:
     """
     Package multiple artifacts into a single downloadable zip file.
-    Artifact IDs are provided in your context under "AVAILABLE ARTIFACTS".
-
-    Examples:
-    - "Zip those 3 correlation plots" → Check context for visualization artifact IDs → Call with matching IDs
-    - "Package all visualizations" → Extract all visualization IDs from context → Call with those IDs
-    - "Download the EDA outputs" → Identify EDA-related artifact IDs from context → Call with IDs
 
     Args:
-        artifact_ids: List of artifact IDs from context (format: session_id_number)
-        description: Optional description for the zip archive
+        artifact_ids: Comma-separated artifact IDs (e.g., 'id1,id2,id3')
+        description: Description for the zip archive
     """
     return "This is a placeholder. Zip creation happens in the graph node."
 
 
-@tool(args_schema=LoadModelInput)
-def load_trained_model(model_type: Optional[str] = None, model_id: Optional[str] = None) -> str:
+@tool
+def load_trained_model(model_type: str = "", model_id: str = "") -> str:
     """
     Load a previously trained model from object storage into the sandbox for reuse.
-    Use this when you need to:
-    - Make predictions with a model trained earlier in the session
-    - Create visualizations using a trained model (e.g., decision boundaries, regression planes)
-    - Compare new data against a trained model
-    - Continue training from a saved checkpoint
-
-    The model will be downloaded from cloud storage and uploaded to the sandbox,
-    making it available for joblib.load(), pickle.load(), or framework-specific loading.
 
     Args:
-        model_type: Type identifier of the model (e.g., 'linear_regression_model'). Loads most recent if not specified.
-        model_id: Specific model ID for exact model selection. Overrides model_type if provided.
+        model_type: Type identifier (e.g., 'linear_regression_model'). Loads most recent if empty.
+        model_id: Specific model ID. Overrides model_type if provided.
 
     Returns:
         Path to the loaded model file in the sandbox
@@ -229,8 +215,8 @@ def inspect_dataset() -> str:
     return "This is a placeholder. Dataset inspection happens in the graph node."
 
 
-@tool(args_schema=DatasetExplorerInput)
-def list_files(folder: Optional[str] = None, extension: Optional[str] = None) -> str:
+@tool
+def list_files(folder: str = "", extension: str = "") -> str:
     """
     List files in the uploaded dataset. Optionally filter by folder or extension.
 
