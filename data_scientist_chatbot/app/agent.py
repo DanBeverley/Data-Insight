@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from langchain.tools import tool
+from langchain_core.tools import tool
 from langchain_core.messages import BaseMessage, ToolMessage, HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END, MessagesState, add_messages
@@ -215,16 +215,19 @@ from typing import List, Dict, Any
 
 
 @tool
-def submit_dashboard_insights(insights: List[Dict[str, Any]], session_id: str):
+def submit_dashboard_insights(insights_json: str, session_id: str):
     """
     Submit structured insights for the dashboard.
 
     Args:
-        insights: List of dictionaries with keys: 'label', 'value', 'type' (info/warning/success), 'source'.
+        insights_json: JSON string of insights array. Each item: {label, value, type (info/warning/success)}
         session_id: The current session ID.
     """
     try:
         import builtins
+        import json
+
+        insights = json.loads(insights_json) if isinstance(insights_json, str) else insights_json
 
         if not hasattr(builtins, "_session_store"):
             return "Error: Session store not initialized."
@@ -232,7 +235,6 @@ def submit_dashboard_insights(insights: List[Dict[str, Any]], session_id: str):
         if session_id not in builtins._session_store:
             builtins._session_store[session_id] = {}
 
-        # Enforce Agent source and High priority
         for insight in insights:
             insight["source"] = "Agent"
             insight["priority"] = "high"
@@ -426,20 +428,17 @@ def run_brain_agent(state: AgentState):
     ]
 
     model_name = getattr(llm, "model", "")
-
-    # Always bind tools - let Brain intelligently decide when to use them
-    # The prompt guides Brain to:
-    # - Use delegate_coding_task for analysis tasks
-    # - Use generate_comprehensive_report when user wants a report AND artifacts exist
-    # - Provide interpretation when artifacts exist and report not explicitly requested
-    workflow_stage = state.get("workflow_stage", "")
+    is_gemini = "gemini" in model_name.lower() or "ChatGoogleGenerativeAI" in type(llm).__name__
 
     if "phi3" in model_name.lower():
         llm_with_tools = llm
         logger.info(f"[BRAIN] phi3 model detected - tools NOT bound")
+    elif is_gemini:
+        llm_with_tools = llm.bind_tools(brain_tools)
+        logger.info(f"[BRAIN] Gemini model - tools bound")
     else:
         llm_with_tools = llm.bind_tools(brain_tools)
-        logger.info(f"[BRAIN] Tools bound (stage={workflow_stage}, artifacts={len(artifacts)})")
+        logger.info(f"[BRAIN] Ollama model - tools bound")
 
     prompt = get_brain_prompt()
     agent_runnable = prompt | llm_with_tools
@@ -645,27 +644,45 @@ def run_hands_agent(state: AgentState):
                             f"**YOUR PREVIOUS INSIGHTS/FINDINGS:**\n" + "\n".join(insights_summary)
                         )
 
-                    # 4. Verifier feedback (what needs to be fixed)
                     missing_items = feedback_data.get("missing_items", [])
                     execution_context_parts.append(f"**VERIFIER FEEDBACK:**\n{feedback_msg}")
 
                     execution_context = "\n\n".join(execution_context_parts)
 
-                    targeted_task = f"""Retrying...
-                                        {execution_context}
-                                        Verifier said: "{feedback_msg}"
+                    is_execution_error = (
+                        "execution_errors" in missing_items or "Code execution had errors" in feedback_msg
+                    )
 
-                                        {len(existing_artifacts)} artifacts already exist and are COMPLETE - DO NOT regenerate them.
-                                        Only output what's missing:
-                                        - If "df_info" is missing: Run `df.info()`, `df.describe()`, and print the shape
-                                        - If "insights" is missing: Print the PROFILING_INSIGHTS JSON block
-                                        - If a specific plot is missing: Generate ONLY that plot
+                    if is_execution_error:
+                        targeted_task = f"""**YOUR PREVIOUS CODE FAILED WITH AN ERROR.**
 
-                                        Write minimal code that ONLY fixes the missing item(s). Do NOT rerun any analysis or recreate any existing artifacts."""
+{execution_context}
+
+**YOUR TASK:**
+1. Analyze the error traceback above - identify the exact line, operation, and root cause
+2. Understand WHY it failed (data issue, wrong column name, type mismatch, missing value, etc.)
+3. Write CORRECTED code that handles this error case properly
+4. Use defensive coding: add appropriate error handling, null checks, or type conversions as needed
+5. The {len(existing_artifacts)} existing artifacts are complete - only fix the failing code section
+
+Write the corrected code:"""
+                    else:
+                        targeted_task = f"""Retrying...
+{execution_context}
+
+{len(existing_artifacts)} artifacts already exist and are COMPLETE - DO NOT regenerate them.
+Only output what's missing:
+- If "df_info" is missing: Run `df.info()`, `df.describe()`, and print the shape
+- If "insights" is missing: Print the PROFILING_INSIGHTS JSON block
+- If a specific plot is missing: Generate ONLY that plot
+
+Write minimal code that ONLY fixes the missing item(s)."""
 
                     task_description = targeted_task
 
-                    logger.info(f"[HANDS] Retry mode - targeted fix for: {missing_items or feedback_msg}")
+                    logger.info(
+                        f"[HANDS] Retry mode - {'EXECUTION ERROR FIX' if is_execution_error else 'missing items'}: {missing_items}"
+                    )
             except Exception as e:
                 logger.warning(f"[HANDS] Failed to parse feedback JSON: {e}")
 
@@ -828,7 +845,7 @@ Decision reasoning: {decision.reasoning}
         loop_messages = hands_state["messages"]
         prev_exec = enhanced_state.get("execution_result") or {}
         artifacts = list(enhanced_state.get("artifacts") or [])
-        execution_summary = prev_exec.get("stdout", "") if isinstance(prev_exec, dict) else ""
+        execution_summary = ""  # Fresh each run - artifacts track completion
         agent_insights = list(enhanced_state.get("agent_insights") or [])
 
         while turn_count < max_turns:
@@ -930,7 +947,7 @@ Decision reasoning: {decision.reasoning}
                 except Exception as tracker_error:
                     logger.warning(f"[HANDS] Could not sync artifacts from tracker: {tracker_error}")
 
-                execution_summary += tool_output_content
+                execution_summary = tool_output_content
 
                 # Early exit check if the agent printed the final JSON block
                 if "PROFILING_INSIGHTS_END" in stdout:
@@ -952,7 +969,7 @@ Decision reasoning: {decision.reasoning}
                     },
                 )
 
-                execution_summary = execution_summary + f"\n\n--- Turn {turn_count + 1} ---\n{stdout}\n{stderr}".strip()
+                execution_summary = f"--- Turn {turn_count + 1} ---\n{stdout}\n{stderr}".strip()
 
                 # [EARLY EXIT] If the agent has output the final insights block, stop the loop.
                 if "PROFILING_INSIGHTS_START" in stdout:
@@ -1173,7 +1190,8 @@ async def run_architect_node(state: AgentState):
         result = {
             "messages": [
                 AIMessage(
-                    content=f"**Report Generated Successfully**\n\nYour comprehensive data analysis report is ready. It includes:\n- Executive summary with key findings\n- Interactive visualizations\n- Statistical insights and patterns\n- Actionable recommendations\n\n📊 [**View Interactive Dashboard**](report:{report_url})"
+                    content=f"**Report Generated Successfully**\n\nYour comprehensive data analysis report is ready. It includes:\n- Executive summary with key findings\n- Interactive visualizations\n- Statistical insights and patterns\n- Actionable recommendations\n\n📊 [**View Interactive Dashboard**](report:{report_url})",
+                    additional_kwargs={"report_url": report_url, "report_path": report_path},
                 )
             ],
             "current_agent": "presenter",

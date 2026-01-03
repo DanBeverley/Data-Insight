@@ -21,6 +21,8 @@ except ImportError:
 
     AgentState = GlobalState
 
+from .constants import NodeName, WorkflowStage
+
 from ..agent import (
     run_brain_agent,
     run_hands_agent,
@@ -88,23 +90,21 @@ def route_from_brain(state: AgentState):
     if messages:
         last_msg = messages[-1]
         if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-            return "parser"
+            return NodeName.PARSER.value
     return END
 
 
 def route_after_action(state: AgentState) -> str:
-    """Route after tool execution"""
     stage = state.get("workflow_stage")
-    if stage == "reporting":
-        return "analyst"
-    if stage == "delegating":
-        return "hands"
-    return "brain"
+    if stage == WorkflowStage.REPORTING.value:
+        return NodeName.ANALYST.value
+    if stage == WorkflowStage.DELEGATING.value:
+        return NodeName.HANDS.value
+    return NodeName.BRAIN.value
 
 
 def should_continue(state: AgentState):
-    # Parser logic
-    return "action"
+    return NodeName.ACTION.value
 
 
 def create_agent_executor(memory=None):
@@ -113,40 +113,41 @@ def create_agent_executor(memory=None):
     graph = StateGraph(AgentState)
 
     # Add Nodes
-    graph.add_node("brain", run_brain_agent)
-    graph.add_node("hands", run_hands_agent)
-    graph.add_node("verifier", run_verifier_agent)
+    graph.add_node(NodeName.BRAIN.value, run_brain_agent)
+    graph.add_node(NodeName.HANDS.value, run_hands_agent)
+    graph.add_node(NodeName.VERIFIER.value, run_verifier_agent)
 
-    # Tool Execution Nodes
-    graph.add_node("parser", parse_tool_calls)
-    graph.add_node("action", execute_tools_node)
+    graph.add_node(NodeName.PARSER.value, parse_tool_calls)
+    graph.add_node(NodeName.ACTION.value, execute_tools_node)
 
-    # Newsroom Nodes
-    graph.add_node("analyst", run_analyst_node)
-    graph.add_node("architect", run_architect_node)
-    graph.add_node("presenter", run_presenter_node)
+    graph.add_node(NodeName.ANALYST.value, run_analyst_node)
+    graph.add_node(NodeName.ARCHITECT.value, run_architect_node)
+    graph.add_node(NodeName.PRESENTER.value, run_presenter_node)
 
-    # Set Entry Point
-    graph.set_entry_point("brain")
+    graph.set_entry_point(NodeName.BRAIN.value)
 
     # Edges
 
     # Brain -> Tools, Hands, or End
-    graph.add_conditional_edges("brain", route_from_brain, {"parser": "parser", END: END})
-
-    # Tool Execution Loop
-    graph.add_edge("parser", "action")
-
-    # Action Routing
     graph.add_conditional_edges(
-        "action", route_after_action, {"brain": "brain", "analyst": "analyst", "hands": "hands"}
+        NodeName.BRAIN.value, route_from_brain, {NodeName.PARSER.value: NodeName.PARSER.value, END: END}
     )
 
-    # Hands -> Verifier (QA Layer)
-    graph.add_edge("hands", "verifier")
+    graph.add_edge(NodeName.PARSER.value, NodeName.ACTION.value)
+
+    graph.add_conditional_edges(
+        NodeName.ACTION.value,
+        route_after_action,
+        {
+            NodeName.BRAIN.value: NodeName.BRAIN.value,
+            NodeName.ANALYST.value: NodeName.ANALYST.value,
+            NodeName.HANDS.value: NodeName.HANDS.value,
+        },
+    )
+
+    graph.add_edge(NodeName.HANDS.value, NodeName.VERIFIER.value)
 
     def route_from_verifier(state: AgentState):
-        """Route based on verification result"""
         plan = state.get("plan", [])
         current_index = state.get("current_task_index", 0)
 
@@ -155,18 +156,21 @@ def create_agent_executor(memory=None):
             if next_task.get("status") == "pending":
                 retry_count = state.get("retry_count", 0)
                 logger.info(f"[GRAPH] Verifier rejected. Routing to HANDS for correction (Attempt {retry_count + 1}).")
-                return "hands"
+                return NodeName.HANDS.value
 
         logger.info("[GRAPH] Verification successful. Returning to Brain.")
-        return "brain"
+        return NodeName.BRAIN.value
 
     # Verifier -> Conditional Routing
-    graph.add_conditional_edges("verifier", route_from_verifier, {"hands": "hands", "brain": "brain"})
+    graph.add_conditional_edges(
+        NodeName.VERIFIER.value,
+        route_from_verifier,
+        {NodeName.HANDS.value: NodeName.HANDS.value, NodeName.BRAIN.value: NodeName.BRAIN.value},
+    )
 
-    # Newsroom Pipeline
-    graph.add_edge("analyst", "architect")
-    graph.add_edge("architect", "presenter")
-    graph.add_edge("presenter", END)
+    graph.add_edge(NodeName.ANALYST.value, NodeName.ARCHITECT.value)
+    graph.add_edge(NodeName.ARCHITECT.value, NodeName.PRESENTER.value)
+    graph.add_edge(NodeName.PRESENTER.value, END)
 
     checkpointer = memory if memory else _checkpointer
     if CHECKPOINTER_AVAILABLE and checkpointer:
