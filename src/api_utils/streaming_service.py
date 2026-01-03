@@ -2,11 +2,14 @@ import json
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Dict, Any, AsyncGenerator
 from langchain_core.messages import HumanMessage
 from .helpers import create_agent_input, create_workflow_status_context
 from .agent_response import extract_agent_response
+from data_scientist_chatbot.app.core.constants import NodeName, WORKFLOW_NODES, SAFE_CHECKPOINT_NODES
+from data_scientist_chatbot.app.core.state_extractor import extract_report_url_from_messages
 
 
 def strip_model_tokens(content: str) -> str:
@@ -323,39 +326,57 @@ async def _generate_report_summary(insights: list, artifact_count: int, report_p
         brain_agent = create_brain_agent()
 
         formatted_insights = []
-        for i in insights[:8]:
+        for i in insights[:10]:
             if isinstance(i, dict):
                 label = i.get("label", "")
                 value = i.get("value", "")
                 if label and value:
-                    formatted_insights.append(f"- {label}: {value}")
+                    formatted_insights.append(f"- **{label}**: {value}")
 
-        insights_block = "\n".join(formatted_insights) if formatted_insights else "No specific insights extracted."
+        insights_block = (
+            "\n".join(formatted_insights)
+            if formatted_insights
+            else "No specific insights were extracted from this analysis."
+        )
 
-        prompt = f"""The data analysis is complete. Summarize the results for the user.
+        prompt = f"""You are summarizing a data analysis that was just completed. Based on the insights below, write a natural conversational response.
 
-User's original request: {user_message[:200]}
+**User's Request**: {user_message[:300]}
 
-Analysis produced:
-- {artifact_count} visualizations
-- Key findings:
+**Analysis Results**:
+- Generated {artifact_count} visualizations
+- Key Insights Found:
 {insights_block}
 
-Write a brief, engaging 2-3 sentence summary of what was discovered. Be specific about the findings.
-End with exactly this markdown link: **[📄 View Full Report](report:{report_path})**"""
+**Instructions**:
+1. Write 2-4 sentences summarizing the key findings in a friendly, conversational tone
+2. Be SPECIFIC - mention actual numbers, trends, or patterns from the insights above
+3. At the end, add this exact link on its own line: **[📄 View Full Report](report:{report_path})**
 
-        result = await brain_agent.ainvoke({"messages": [HumanMessage(content=prompt)]})
+Write your response now:"""
+
+        logging.info(f"[STREAM] Calling Brain for summary with {len(formatted_insights)} insights")
+        result = await brain_agent.ainvoke([HumanMessage(content=prompt)])
         content = result.content if hasattr(result, "content") else str(result)
+
+        logging.info(
+            f"[STREAM] Brain summary generated ({len(content) if content else 0} chars): {content[:200] if content else 'None'}..."
+        )
 
         if content and len(content) > 20:
             if f"report:{report_path}" not in content:
                 content += f"\n\n**[📄 View Full Report](report:{report_path})**"
             return content
+        else:
+            logging.warning(f"[STREAM] Brain summary too short or empty")
     except Exception as e:
         logging.warning(f"[STREAM] Brain summary generation failed: {e}")
+        import traceback
+
+        logging.warning(f"[STREAM] Traceback: {traceback.format_exc()}")
 
     insight_labels = [i.get("label", "") for i in insights[:5] if isinstance(i, dict) and i.get("label")]
-    insight_text = f" Key findings: {', '.join(insight_labels)}." if insight_labels else ""
+    insight_text = f" Key findings include: {', '.join(insight_labels)}." if insight_labels else ""
     return f"## 📊 Analysis Complete\n\nGenerated {artifact_count} visualizations from your analysis.{insight_text}\n\n**[📄 View Full Report](report:{report_path})**"
 
 
@@ -751,7 +772,7 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
 
             # Track current pipeline phase for smart timeout
             for node_name in event.keys():
-                if node_name in ["hands", "verifier", "brain", "presenter", "architect"]:
+                if node_name in WORKFLOW_NODES:
                     current_pipeline_phase = node_name
 
             # Smart timeout logic
@@ -764,7 +785,7 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                     )
 
                 grace_elapsed = time.time() - soft_timeout_time
-                at_safe_checkpoint = any(node in event for node in safe_checkpoint_nodes)
+                at_safe_checkpoint = any(node in event for node in SAFE_CHECKPOINT_NODES)
 
                 if at_safe_checkpoint:
                     logging.info(
@@ -787,10 +808,10 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                 break
 
             for node_name, node_data in event.items():
-                if node_name in ["router", "brain", "hands", "parser", "action", "analyst", "architect", "presenter"]:
+                if node_name in WORKFLOW_NODES:
                     logging.info(f"[STREAM] Node completed: {node_name}")
 
-                    if node_name in ["brain", "hands"]:
+                    if node_name in {NodeName.BRAIN.value, NodeName.HANDS.value}:
                         yield f"data: {json.dumps({'type': 'thinking_start', 'agent': node_name})}\n\n"
 
                     messages = node_data.get("messages", []) if node_data else []
@@ -798,15 +819,15 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                         all_messages.extend(messages)
                         current_state["messages"] = all_messages
 
-                        if node_name == "hands":
+                        if node_name == NodeName.HANDS.value:
                             logging.info(f"[STREAM] Hands node completed, messages count: {len(messages)}")
                             if node_data.get("artifacts"):
                                 logging.info(f"[STREAM] Hands generated {len(node_data.get('artifacts'))} artifacts")
-                            yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': 'hands'})}\n\n"
+                            yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': NodeName.HANDS.value})}\n\n"
                             yield f"data: {json.dumps({'type': 'task_update', 'status': 'complete'})}\n\n"
                             logging.info(f"[STREAM] Waiting for next node (should route to brain)...")
 
-                        elif node_name == "brain":
+                        elif node_name == NodeName.BRAIN.value:
                             logging.info(f"[STREAM] Brain node executing")
                             if messages:
                                 last_brain_msg = messages[-1]
@@ -835,15 +856,13 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                             else:
                                 logging.warning(f"[STREAM] Brain node completed but no messages found")
 
-                        elif node_name == "action":
+                        elif node_name == NodeName.ACTION.value:
                             last_action_msg = messages[-1]
                             if hasattr(last_action_msg, "type") and last_action_msg.type == "tool":
                                 action_content = str(last_action_msg.content)
                                 if action_content and action_content.strip():
-                                    # [REPORT UI TRIGGER] Check for report generation event
                                     if '"event": "report_generated"' in action_content:
                                         try:
-                                            # Try to extract JSON from the content
                                             json_match = re.search(
                                                 r'\{.*"event":\s*"report_generated".*\}', action_content, re.DOTALL
                                             )
@@ -860,42 +879,35 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
 
                                     action_outputs.append(action_content)
 
-                        elif node_name == "analyst":
+                        elif node_name == NodeName.ANALYST.value:
                             logging.info(f"[STREAM] Analyst node completed")
 
-                        elif node_name == "architect":
+                        elif node_name == NodeName.ARCHITECT.value:
                             logging.info(f"[STREAM] Architect node completed")
-                            logging.info(
-                                f"[STREAM] ARCHITECT RECEIVED KEYS: {list(node_data.keys()) if node_data else 'None'}"
-                            )
 
-                            # Check root level first (how architect returns it)
-                            report_path = node_data.get("report_url")
+                            report_path = node_data.get("report_url") if node_data else None
 
-                            # Fallback: check inside execution_result for legacy compatibility
-                            if not report_path and node_data.get("execution_result"):
-                                exec_result = node_data.get("execution_result")
-                                report_path = exec_result.get("report_url")
-                                if not report_path and exec_result.get("report_path"):
+                            if not report_path and messages:
+                                for msg in reversed(messages):
+                                    if hasattr(msg, "additional_kwargs"):
+                                        report_path = msg.additional_kwargs.get("report_url")
+                                        if report_path:
+                                            logging.info(f"[STREAM] Extracted report_url from message kwargs")
+                                            break
+
+                            if not report_path and node_data:
+                                if node_data.get("report_path"):
                                     import os
 
-                                    raw_path = exec_result.get("report_path")
+                                    raw_path = node_data.get("report_path")
                                     filename = os.path.basename(raw_path)
                                     report_path = f"/reports/{filename}"
-
-                            # Convert local path to URL if needed
-                            if not report_path and node_data.get("report_path"):
-                                import os
-
-                                raw_path = node_data.get("report_path")
-                                filename = os.path.basename(raw_path)
-                                report_path = f"/reports/{filename}"
 
                             if report_path:
                                 logging.info(f"[STREAM] Captured report URL: {report_path}")
                                 yield f"data: {json.dumps({'type': 'report_generated', 'report_path': report_path})}\n\n"
 
-                                insights = node_data.get("agent_insights", [])
+                                insights = node_data.get("agent_insights", []) if node_data else []
                                 from .artifact_tracker import get_artifact_tracker
 
                                 tracker = get_artifact_tracker()
@@ -903,9 +915,7 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                                 tracked_artifacts = (
                                     tracker_result.get("artifacts", []) if isinstance(tracker_result, dict) else []
                                 )
-                                artifact_count = (
-                                    len(tracked_artifacts) if tracked_artifacts else len(node_data.get("artifacts", []))
-                                )
+                                artifact_count = len(tracked_artifacts) if tracked_artifacts else 0
 
                                 brain_context = await _generate_report_summary(
                                     insights, artifact_count, report_path, message
@@ -913,11 +923,9 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                                 if brain_context:
                                     final_brain_response = brain_context
                             else:
-                                logging.warning(
-                                    f"[STREAM] Architect completed but no report_url found in node_data: {list(node_data.keys())}"
-                                )
+                                logging.warning(f"[STREAM] Architect completed but no report_url found")
 
-                        elif node_name == "presenter":
+                        elif node_name == NodeName.PRESENTER.value:
                             logging.info(f"[STREAM] Presenter node completed")
                             # Presenter messages are usually just confirmation, we already have the report from architect
 
