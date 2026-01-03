@@ -20,7 +20,7 @@ def run_verifier_agent(state: GlobalState, config: RunnableConfig) -> Dict[str, 
     logger.info("[VERIFIER] Validating task execution...")
 
     artifacts = state.get("artifacts") or []
-    agent_insights = state.get("agent_insights", [])
+    agent_insights = state.get("agent_insights") or []
     logger.info(f"[VERIFIER] Input: {len(artifacts)} artifacts, {len(agent_insights)} insights")
 
     plan = state.get("plan", [])

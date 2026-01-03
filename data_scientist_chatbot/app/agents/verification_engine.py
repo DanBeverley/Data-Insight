@@ -69,7 +69,7 @@ def parse_execution_output(stdout: str) -> ExecutionSummary:
             summary.has_errors = True
             error_match = re.search(rf"{pattern}.*?(?=\n\n|\Z)", stdout, re.DOTALL | re.IGNORECASE)
             if error_match:
-                summary.error_messages.append(error_match.group(0)[:200])
+                summary.error_messages.append(error_match.group(0))
 
     return summary
 
@@ -180,10 +180,11 @@ def stage1_programmatic_check(structured_input: Dict[str, Any]) -> Dict[str, Any
     passes = []
 
     if execution["has_errors"]:
+        error_detail = execution["error_messages"][0] if execution["error_messages"] else "Unknown error"
         failures.append(
             {
                 "check": "execution_errors",
-                "reason": f"Code execution had errors: {execution['error_messages'][0][:100] if execution['error_messages'] else 'Unknown error'}",
+                "reason": f"Code execution had errors: {error_detail}",
             }
         )
 
