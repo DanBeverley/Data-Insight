@@ -23,15 +23,15 @@ except ImportError:
 
 from .constants import NodeName, WorkflowStage
 
-from ..agent import (
+from ..agents import (
     run_brain_agent,
     run_hands_agent,
+    run_verifier_agent,
     run_analyst_node,
     run_architect_node,
     run_presenter_node,
     parse_tool_calls,
     execute_tools_node,
-    run_verifier_agent,
 )
 
 try:
@@ -148,17 +148,15 @@ def create_agent_executor(memory=None):
     graph.add_edge(NodeName.HANDS.value, NodeName.VERIFIER.value)
 
     def route_from_verifier(state: AgentState):
-        plan = state.get("plan", [])
-        current_index = state.get("current_task_index", 0)
-
-        if plan and current_index < len(plan):
-            next_task = plan[current_index]
-            if next_task.get("status") == "pending":
+        messages = state.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            content = str(last_msg.content) if hasattr(last_msg, "content") else ""
+            if '"approved": false' in content or '"approved":false' in content:
                 retry_count = state.get("retry_count", 0)
-                logger.info(f"[GRAPH] Verifier rejected. Routing to HANDS for correction (Attempt {retry_count + 1}).")
+                logger.info(f"[GRAPH] Verifier rejected. Routing to HANDS (Attempt {retry_count + 1}).")
                 return NodeName.HANDS.value
-
-        logger.info("[GRAPH] Verification successful. Returning to Brain.")
+        logger.info("[GRAPH] Verification passed. Returning to Brain.")
         return NodeName.BRAIN.value
 
     # Verifier -> Conditional Routing

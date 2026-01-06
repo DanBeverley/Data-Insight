@@ -1,0 +1,249 @@
+"""Brain agent - Orchestrates analysis and interprets results."""
+
+import re
+from typing import Dict, Any, List
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langsmith import traceable
+
+from data_scientist_chatbot.app.core.state import GlobalState
+from data_scientist_chatbot.app.core.agent_factory import create_brain_agent
+from data_scientist_chatbot.app.core.workflow_types import ExecutionResult, Artifact, WorkflowStage
+from data_scientist_chatbot.app.core.logger import logger
+from data_scientist_chatbot.app.prompts import get_brain_prompt
+from data_scientist_chatbot.app.utils.context import get_data_context
+from data_scientist_chatbot.app.utils.helpers import has_tool_calls
+from data_scientist_chatbot.app.utils.artifact_formatter import format_artifact_context
+from data_scientist_chatbot.app.utils.text_processing import sanitize_output
+from data_scientist_chatbot.app.context_manager import record_execution
+from data_scientist_chatbot.app.tools.tool_definitions import (
+    delegate_coding_task,
+    knowledge_graph_query,
+    access_learning_data,
+    web_search,
+    zip_artifacts,
+    generate_comprehensive_report,
+)
+
+
+def _extract_last_user_message(messages: List) -> str:
+    """Extract the most recent human message content."""
+    for msg in reversed(messages):
+        if hasattr(msg, "type") and msg.type == "human":
+            return msg.content
+    return "Provide analysis and insights."
+
+
+def _filter_messages_for_brain(messages: List, artifacts: List, agent_insights: List) -> List:
+    """Filter messages to provide clean context without intermediate pollution."""
+    filtered = []
+
+    for msg in messages:
+        if not hasattr(msg, "type"):
+            continue
+
+        if msg.type == "human":
+            filtered.append(msg)
+        elif msg.type == "ai":
+            if msg.additional_kwargs.get("internal"):
+                continue
+            if has_tool_calls(msg):
+                continue
+            if msg.content and msg.content.strip():
+                filtered.append(msg)
+
+    if artifacts and len(artifacts) > 0:
+        artifact_summary = f"Analysis complete with {len(artifacts)} artifacts"
+        if agent_insights:
+            insight_labels = [i.get("label", "") for i in agent_insights[:5]]
+            artifact_summary += f" and insights: {', '.join(insight_labels)}"
+        artifact_summary += ". Present the findings with embedded visualizations."
+
+        filtered.append(HumanMessage(content=artifact_summary))
+
+    return filtered
+
+
+def _build_context(
+    session_id: str,
+    artifacts: List[Artifact],
+    execution_result: ExecutionResult,
+    messages: List,
+    agent_insights: List[Dict],
+) -> str:
+    """Build the dataset context string for Brain."""
+    last_user_msg = _extract_last_user_message(messages)
+    data_context = get_data_context(session_id, query=last_user_msg)
+
+    context = ""
+    if data_context and data_context.strip():
+        context = f"Working with data: {data_context}"
+    else:
+        context = "Ready to help analyze data. Need dataset upload first."
+
+    if artifacts:
+        artifact_context = format_artifact_context(artifacts, execution_result)
+        if artifact_context:
+            context += f"\n\n{artifact_context}"
+
+    if agent_insights:
+        insights_str = "\n\n**KEY INSIGHTS FROM ANALYSIS:**\n"
+        for insight in agent_insights:
+            label = insight.get("label", "Insight")
+            value = insight.get("value", "")
+            insights_str += f"- **{label}:** {value}\n"
+        context += insights_str
+        logger.info(f"[BRAIN] Injected {len(agent_insights)} insights into context")
+
+    if artifacts and len(artifacts) > 0:
+        context += "\n\n**ANALYSIS COMPLETE:**\n"
+        context += f"Analysis has been completed successfully with {len(artifacts)} generated artifacts.\n"
+        context += "Now INTERPRET these results for the user:\n"
+        context += "1. Summarize the key findings based on the insights above.\n"
+        context += "2. Embed all generated visualizations using proper markdown syntax.\n"
+        context += "3. Provide actionable recommendations based on the analysis.\n"
+        context += "Do NOT run additional analysis - present the findings now."
+
+    return context
+
+
+def _fix_artifact_paths(content: str) -> str:
+    """Fix broken artifact links to point to static paths."""
+
+    def fix_img_path(match):
+        alt_text = match.group(1)
+        path = match.group(2)
+        if "/" not in path and path.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+            return f"![{alt_text}](/static/plots/{path})"
+        return match.group(0)
+
+    return re.sub(r"!\[(.*?)\]\((.*?)\)", fix_img_path, content)
+
+
+@traceable(name="brain_execution", tags=["agent", "llm"])
+def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
+    """Execute Brain agent to orchestrate analysis and interpret results."""
+    session_id = state.get("session_id")
+    messages = state.get("messages") or []
+
+    enhanced_state = state.copy()
+    enhanced_state["retry_count"] = enhanced_state.get("retry_count") or 0
+    last_sequence = enhanced_state.get("last_agent_sequence") or []
+    enhanced_state["last_agent_sequence"] = last_sequence + ["brain"]
+
+    execution_result_dict = state.get("execution_result")
+    execution_result = ExecutionResult(**execution_result_dict) if execution_result_dict else None
+
+    artifacts_dicts = state.get("artifacts") or []
+    artifacts = [Artifact(**a) for a in artifacts_dicts] if artifacts_dicts else []
+    agent_insights = state.get("agent_insights") or []
+
+    logger.info(
+        f"Brain agent: execution_result={'present' if execution_result else 'none'}, artifacts={len(artifacts)}"
+    )
+
+    context = _build_context(session_id, artifacts, execution_result, messages, agent_insights)
+    filtered_messages = _filter_messages_for_brain(messages, artifacts, agent_insights)
+
+    if artifacts:
+        logger.info(f"[BRAIN] Synthesis mode: {len(filtered_messages)} messages with synthesis instruction")
+
+    logger.info(f"Brain agent processing {len(filtered_messages)} messages")
+    msg_types = [f"{type(m).__name__}:{getattr(m, 'type', 'N/A')}" for m in filtered_messages]
+    logger.info(f"[BRAIN] Message sequence: {msg_types}")
+
+    thinking_mode = state.get("thinking_mode", False)
+    brain_mode = "report" if thinking_mode else "chat"
+    llm = create_brain_agent(mode=brain_mode)
+
+    from data_scientist_chatbot.app.agents.tools import submit_dashboard_insights
+
+    brain_tools = [
+        delegate_coding_task,
+        knowledge_graph_query,
+        access_learning_data,
+        web_search,
+        zip_artifacts,
+        generate_comprehensive_report,
+        submit_dashboard_insights,
+    ]
+
+    model_name = getattr(llm, "model", "")
+    if "phi3" in model_name.lower():
+        llm_with_tools = llm
+        logger.info("[BRAIN] phi3 model detected - tools NOT bound")
+    else:
+        llm_with_tools = llm.bind_tools(brain_tools)
+        logger.info("[BRAIN] Model - tools bound")
+
+    prompt = get_brain_prompt()
+    agent_runnable = prompt | llm_with_tools
+
+    invoke_state = {
+        "messages": filtered_messages,
+        "dataset_context": context,
+    }
+
+    try:
+        response = agent_runnable.invoke(invoke_state)
+    except Exception as llm_error:
+        logger.error(f"[BRAIN] LLM call failed: {llm_error}")
+        raise
+
+    logger.info(f"[BRAIN] Raw response type: {type(response)}")
+    content_preview = getattr(response, "content", None)
+    if content_preview:
+        logger.info(f"[BRAIN] Response content preview: '{content_preview[:200]}'")
+    logger.info(f"[BRAIN] Has tool_calls: {hasattr(response, 'tool_calls') and bool(response.tool_calls)}")
+
+    if not response:
+        response = type(
+            "obj",
+            (object,),
+            {"content": "I apologize, but I'm unable to generate a response at the moment. Please try again."},
+        )()
+
+    if hasattr(response, "content"):
+        if response.content:
+            response.content = _fix_artifact_paths(response.content)
+            response.content = sanitize_output(response.content)
+
+        if execution_result and not execution_result.success:
+            response.content = f"I encountered an issue while executing the code:\n\n{execution_result.error_details}\n\nWould you like me to try a different approach?"
+        elif not response.content:
+            response.content = (
+                "I've received your request but couldn't generate a detailed response. Please try rephrasing."
+            )
+
+    has_tools = hasattr(response, "tool_calls") and response.tool_calls
+    workflow_stage = WorkflowStage.BRAIN_INTERPRETATION.value if has_tools else WorkflowStage.COMPLETED.value
+
+    result_state = {
+        "messages": [response],
+        "current_agent": "brain",
+        "last_agent_sequence": enhanced_state["last_agent_sequence"],
+        "retry_count": enhanced_state.get("retry_count") or 0,
+        "artifacts": [a.__dict__ if hasattr(a, "__dict__") else a for a in artifacts],
+        "agent_insights": agent_insights,
+        "workflow_stage": workflow_stage,
+    }
+
+    try:
+        last_user_msg = _extract_last_user_message(messages)
+        record_execution(
+            session_id,
+            {
+                "user_request": last_user_msg,
+                "code": "",
+                "success": True,
+                "output": str(response.content)[:500],
+                "error": "",
+                "artifacts": [],
+                "self_corrected": False,
+                "attempts": 1,
+            },
+        )
+    except Exception as e:
+        logger.debug(f"Session memory recording skipped: {e}")
+
+    return result_state
