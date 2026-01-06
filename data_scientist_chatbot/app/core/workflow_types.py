@@ -33,7 +33,7 @@ class WorkflowStage(Enum):
 class Artifact(BaseModel):
     filename: str
     category: str
-    local_path: str
+    local_path: Optional[str] = None
     artifact_id: Optional[str] = None
     cloud_url: Optional[str] = None
     presigned_url: Optional[str] = None
