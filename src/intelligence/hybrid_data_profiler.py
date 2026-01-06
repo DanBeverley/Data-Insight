@@ -495,6 +495,102 @@ class HybridDataProfiler:
 
             column_info[col_name] = basic_info
 
+        # Enhanced: Statistical summary from df.describe()
+        statistical_summary = {}
+        try:
+            desc = df.describe(include="all").round(2)
+            for col in desc.columns:
+                col_stats = desc[col].dropna().to_dict()
+                statistical_summary[col] = {k: v for k, v in col_stats.items() if pd.notna(v)}
+        except Exception:
+            pass
+
+        # Enhanced: Top correlations
+        top_correlations = []
+        try:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) >= 2:
+                corr_matrix = df[numeric_cols].corr()
+                corr_pairs = []
+                for i, col1 in enumerate(numeric_cols):
+                    for col2 in numeric_cols[i + 1 :]:
+                        corr_val = corr_matrix.loc[col1, col2]
+                        if pd.notna(corr_val):
+                            corr_pairs.append(
+                                {
+                                    "columns": [col1, col2],
+                                    "correlation": round(corr_val, 3),
+                                    "strength": "strong"
+                                    if abs(corr_val) > 0.7
+                                    else "moderate"
+                                    if abs(corr_val) > 0.4
+                                    else "weak",
+                                }
+                            )
+                top_correlations = sorted(corr_pairs, key=lambda x: abs(x["correlation"]), reverse=True)[:5]
+        except Exception:
+            pass
+
+        # Enhanced: Skewness detection for numeric columns
+        skewness_info = {}
+        try:
+            for col in df.select_dtypes(include=[np.number]).columns:
+                skew_val = df[col].skew()
+                if pd.notna(skew_val):
+                    skew_type = (
+                        "highly right-skewed"
+                        if skew_val > 1
+                        else "right-skewed"
+                        if skew_val > 0.5
+                        else "highly left-skewed"
+                        if skew_val < -1
+                        else "left-skewed"
+                        if skew_val < -0.5
+                        else "symmetric"
+                    )
+                    if abs(skew_val) > 0.5:
+                        skewness_info[col] = {"skewness": round(skew_val, 2), "type": skew_type}
+        except Exception:
+            pass
+
+        # Enhanced: Top value frequencies for categorical columns
+        categorical_value_frequencies = {}
+        try:
+            for col in df.select_dtypes(include=["object", "category"]).columns:
+                value_counts = df[col].value_counts().head(5)
+                total = len(df[col].dropna())
+                categorical_value_frequencies[col] = {
+                    "top_values": [
+                        {"value": str(val), "count": int(cnt), "percentage": round(cnt / total * 100, 1)}
+                        for val, cnt in value_counts.items()
+                    ],
+                    "unique_count": int(df[col].nunique()),
+                    "mode": str(df[col].mode().iloc[0]) if len(df[col].mode()) > 0 else None,
+                }
+        except Exception:
+            pass
+
+        # Enhanced: Outlier detection using IQR
+        outlier_summary = {}
+        try:
+            for col in df.select_dtypes(include=[np.number]).columns:
+                Q1 = df[col].quantile(0.25)
+                Q3 = df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                lower = Q1 - 1.5 * IQR
+                upper = Q3 + 1.5 * IQR
+                outlier_count = int(((df[col] < lower) | (df[col] > upper)).sum())
+                outlier_pct = round(outlier_count / len(df) * 100, 2)
+                if outlier_pct > 1:
+                    outlier_summary[col] = {
+                        "outlier_count": outlier_count,
+                        "outlier_percentage": outlier_pct,
+                        "lower_bound": round(lower, 2),
+                        "upper_bound": round(upper, 2),
+                    }
+        except Exception:
+            pass
+
         # Key insights for agent
         agent_context = {
             "dataset_overview": {
@@ -503,7 +599,12 @@ class HybridDataProfiler:
                 "dtypes_summary": df.dtypes.value_counts().to_dict(),
                 "memory_usage_mb": round(df.memory_usage(deep=True).sum() / 1024 / 1024, 2),
             },
+            "statistical_summary": statistical_summary,
             "column_details": column_info,
+            "top_correlations": top_correlations,
+            "skewed_columns": skewness_info,
+            "categorical_distributions": categorical_value_frequencies,
+            "outlier_analysis": outlier_summary,
             "data_quality": {
                 "overall_score": quality_report.overall_score if quality_report else None,
                 "missing_data_summary": {
@@ -535,6 +636,11 @@ class HybridDataProfiler:
                 "suggested_target_columns": [
                     col for col in df.columns if pd.api.types.is_numeric_dtype(df[col]) and df[col].nunique() > 2
                 ][:3],
+                "highly_correlated_pairs": [
+                    (c["columns"][0], c["columns"][1]) for c in top_correlations if c["strength"] == "strong"
+                ],
+                "columns_needing_transformation": list(skewness_info.keys()),
+                "columns_with_outliers": list(outlier_summary.keys()),
             },
         }
 

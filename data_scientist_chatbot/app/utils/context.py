@@ -136,35 +136,86 @@ DATASET INTELLIGENCE:
 """
             )
 
-            # 2. Analysis Recommendations
+            # 2. Statistical Summary (df.describe equivalent)
+            stat_summary = ctx.get("statistical_summary", {})
+            if stat_summary:
+                stat_lines = ["STATISTICAL SUMMARY:"]
+                for col, stats in list(stat_summary.items())[:10]:
+                    stat_str = ", ".join(
+                        [f"{k}: {v}" for k, v in stats.items() if k in ["count", "mean", "std", "min", "max", "50%"]]
+                    )
+                    if stat_str:
+                        stat_lines.append(f"  • {col}: {stat_str}")
+                if len(stat_lines) > 1:
+                    context_parts.append("\n".join(stat_lines))
+
+            # 3. Top Correlations
+            correlations = ctx.get("top_correlations", [])
+            if correlations:
+                corr_lines = ["TOP CORRELATIONS:"]
+                for c in correlations[:5]:
+                    corr_lines.append(
+                        f"  • {c['columns'][0]} ↔ {c['columns'][1]}: {c['correlation']} ({c['strength']})"
+                    )
+                context_parts.append("\n".join(corr_lines))
+
+            # 4. Skewed Columns
+            skewed = ctx.get("skewed_columns", {})
+            if skewed:
+                skew_lines = ["SKEWED COLUMNS (may need transformation):"]
+                for col, info in list(skewed.items())[:5]:
+                    skew_lines.append(f"  • {col}: {info['type']} (skew={info['skewness']})")
+                context_parts.append("\n".join(skew_lines))
+
+            # 5. Categorical Distributions
+            cat_dist = ctx.get("categorical_distributions", {})
+            if cat_dist:
+                cat_lines = ["CATEGORICAL VALUE FREQUENCIES:"]
+                for col, info in list(cat_dist.items())[:5]:
+                    top_vals = ", ".join([f"{v['value']}({v['percentage']}%)" for v in info["top_values"][:3]])
+                    cat_lines.append(f"  • {col} ({info['unique_count']} unique): {top_vals}")
+                context_parts.append("\n".join(cat_lines))
+
+            # 6. Outliers
+            outliers = ctx.get("outlier_analysis", {})
+            if outliers:
+                out_lines = ["OUTLIER ANALYSIS (IQR method):"]
+                for col, info in list(outliers.items())[:5]:
+                    out_lines.append(f"  • {col}: {info['outlier_count']} outliers ({info['outlier_percentage']}%)")
+                context_parts.append("\n".join(out_lines))
+
+            # 7. Analysis Recommendations
             recs = ctx.get("analysis_recommendations", [])
             if recs:
                 context_parts.append("RECOMMENDED ANALYSIS:\n• " + "\n• ".join(recs[:5]))
 
-            # 3. RICH COLUMN INTELLIGENCE (Crucial for Planning)
+            # 8. Code Generation Hints
+            hints = ctx.get("code_generation_hints", {})
+            if hints:
+                hint_parts = []
+                if hints.get("highly_correlated_pairs"):
+                    hint_parts.append(f"Highly correlated: {hints['highly_correlated_pairs']}")
+                if hints.get("columns_needing_transformation"):
+                    hint_parts.append(f"Need transformation: {hints['columns_needing_transformation']}")
+                if hints.get("columns_with_outliers"):
+                    hint_parts.append(f"Have outliers: {hints['columns_with_outliers']}")
+                if hint_parts:
+                    context_parts.append("CODE HINTS:\n• " + "\n• ".join(hint_parts))
+
+            # 9. Column Profiles (condensed)
             if "column_details" in ctx:
                 col_details = []
-                for col, info in list(ctx["column_details"].items())[:30]:  # Limit to top 30 cols to save tokens
+                for col, info in list(ctx["column_details"].items())[:20]:
                     dtype_str = info.get("semantic_type", info.get("dtype", "unknown"))
-
-                    # Numeric Stats
                     stats_str = ""
-                    if "mean" in info:
+                    if "mean" in info and info["mean"] is not None:
                         stats_str = (
-                            f"| Mean: {info['mean']:.2f} | Range: [{info.get('min'):.2f}, {info.get('max'):.2f}]"
+                            f"| Mean: {info['mean']:.2f} | Range: [{info.get('min', 0):.2f}, {info.get('max', 0):.2f}]"
                         )
-
-                    # Sample Values
-                    samples = info.get("sample_values", [])
-                    sample_str = f"Samples: {samples}" if samples else ""
-
-                    col_details.append(f"- {col} ({dtype_str}) {stats_str} {sample_str}")
+                    col_details.append(f"  • {col} ({dtype_str}) {stats_str}")
 
                 if col_details:
-                    context_parts.append("\nCOLUMN PROFILES (Top 30):\n" + "\n".join(col_details))
-
-        else:
-            pass  # Columns already added above
+                    context_parts.append("COLUMN PROFILES:\n" + "\n".join(col_details))
 
         return "\n".join(context_parts)
 
