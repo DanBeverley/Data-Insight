@@ -31,7 +31,6 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GEMINI_MODELS = {
     "brain": "gemini-3-pro",
     "hands": "gemini-3-pro",
-    "status": "gemini-3-pro",
     "vision": "gemini-3-pro",
     "verifier": "gemini-3-pro",
 }
@@ -87,13 +86,6 @@ def create_hands_agent():
     return ChatOllama(**config)
 
 
-def create_status_agent():
-    if LLM_PROVIDER == "gemini" and GOOGLE_API_KEY:
-        return _create_gemini_agent("status", temperature=0.5)
-    config = model_manager.get_ollama_config("status")
-    return ChatOllama(**config)
-
-
 def create_vision_agent():
     if LLM_PROVIDER == "gemini" and GOOGLE_API_KEY:
         return _create_gemini_agent("vision", temperature=0.3)
@@ -106,6 +98,14 @@ def create_verifier_agent():
         return _create_gemini_agent("verifier", temperature=0.1)
     config = model_manager.get_ollama_config("verifier")
     return ChatOllama(**config)
+
+
+def get_model_name(agent_type: str = "brain") -> str:
+    """Get the current model name for display purposes."""
+    if LLM_PROVIDER == "gemini" and GOOGLE_API_KEY:
+        return GEMINI_MODELS.get(agent_type, "gemini-3-pro")
+    config = model_manager.get_ollama_config(agent_type)
+    return config.get("model", "ollama-model")
 
 
 logger.info(f"[AGENT_FACTORY] LLM Provider: {LLM_PROVIDER.upper()}")

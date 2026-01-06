@@ -30,7 +30,7 @@ class ModelManager:
         self.hands_model = "phi3:3.8b-mini-128k-instruct-q4_K_M" if is_test_env else unified_model
         self.vision_model = "qwen3-vl:235b-instruct-cloud"
         self.status_model = "ministral-3:8b-cloud"
-        self.verifier_model = "phi3:3.8b-mini-128k-instruct-q4_K_M" if is_test_env else "gpt-oss:20b-cloud"
+        self.verifier_model = "phi3:3.8b-mini-128k-instruct-q4_K_M" if is_test_env else "nemotron-3-nano:30b-cloud"
         self.current_model = self.brain_model
         self.switch_count = 0
         self.num_cores = psutil.cpu_count(logical=False) or 8
