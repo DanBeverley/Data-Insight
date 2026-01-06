@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { DashboardView } from "@/components/dashboard/DashboardView";
 import { DatasetView } from "@/components/dashboard/DatasetView";
-import { ReportPanel } from "@/components/report/ReportPanel";
+const ReportPanel = lazy(() => import("@/components/report/ReportPanel").then(m => ({ default: m.ReportPanel })));
 import { DatabaseModal } from "@/components/database/DatabaseModal";
 import { useNotifications } from "@/hooks/useNotifications";
 import { useAuth } from "@/contexts/AuthContext";
@@ -119,14 +119,16 @@ export default function Home() {
 
   const handleTriggerReport = useCallback((path: string) => {
     if (path) {
-      setReportPath(path);
-      setIsReportOpen(true);
+      if (path === reportPath && isReportOpen) {
+        setIsReportOpen(false);
+      } else {
+        setReportPath(path);
+        setIsReportOpen(true);
+      }
     } else if (reportPath) {
-      setIsReportOpen(true);
-    } else {
       setIsReportOpen(prev => !prev);
     }
-  }, [reportPath]);
+  }, [reportPath, isReportOpen]);
 
   const handleSessionUpdate = useCallback(() => {
     setSessionRefreshTrigger(prev => prev + 1);
@@ -188,13 +190,15 @@ export default function Home() {
 
           <div className={`flex-shrink-0 transition-all duration-300 ease-in-out ${isReportOpen ? 'w-[600px] opacity-100' : 'w-0 opacity-0'}`}>
             {isReportOpen && (
-              <ReportPanel
-                key={sessionId}
-                isOpen={isReportOpen}
-                onClose={() => setIsReportOpen(false)}
-                reportPath={reportPath}
-                sessionId={sessionId}
-              />
+              <Suspense fallback={<div className="w-full h-full bg-card animate-pulse" />}>
+                <ReportPanel
+                  key={reportPath}
+                  isOpen={isReportOpen}
+                  onClose={() => setIsReportOpen(false)}
+                  reportPath={reportPath}
+                  sessionId={sessionId}
+                />
+              </Suspense>
             )}
           </div>
         </div>

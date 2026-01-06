@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { LoadingGrid } from "./LoadingGrid";
+import { ResponseLoadingIndicator } from "./ResponseLoadingIndicator";
 import { PlanProgress, Task } from "./PlanProgress";
 import { PlotlyIframe } from "@/components/viz/PlotlyIframe";
 
@@ -145,6 +145,8 @@ interface MessageBubbleProps {
   onOpenReport?: (path: string) => void;
   isTyping?: boolean;
   isLoading?: boolean;
+  loadingStatus?: string;
+  modelName?: string;
   plan?: Task[];
   userAvatar?: string;
   messageId?: string;
@@ -153,7 +155,7 @@ interface MessageBubbleProps {
   onVersionChange?: (version: number) => void;
 }
 
-export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEdit, onOpenReport, isTyping, isLoading, plan, userAvatar, messageId, currentVersion = 1, totalVersions = 1, onVersionChange }: MessageBubbleProps) {
+export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEdit, onOpenReport, isTyping, isLoading, loadingStatus, modelName, plan, userAvatar, messageId, currentVersion = 1, totalVersions = 1, onVersionChange }: MessageBubbleProps) {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(typeof content === 'string' ? content : '');
@@ -235,7 +237,7 @@ export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEd
               plan && plan.length > 0 ? (
                 <PlanProgress plan={plan} />
               ) : (
-                <LoadingGrid />
+                <ResponseLoadingIndicator modelName={modelName} status={loadingStatus} />
               )
             ) : typeof content === 'string' ? (
               <div className="animate-in fade-in duration-700">
@@ -245,6 +247,7 @@ export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEd
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   rehypePlugins={[rehypeRaw]}
+                  urlTransform={(url) => url.startsWith('report:') ? url : url}
                   components={{
                     code({ node, inline, className, children, ...props }: any) {
                       return inline ? (
@@ -296,7 +299,12 @@ export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEd
                         const reportPath = href.startsWith('report:') ? href.replace('report:', '') : href;
                         return (
                           <button
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onOpenReport?.(reportPath); }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              console.log('[DEBUG] Report button clicked:', { href, reportPath, hasHandler: !!onOpenReport });
+                              onOpenReport?.(reportPath);
+                            }}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary font-medium rounded-md transition-colors"
                           >
                             {children}

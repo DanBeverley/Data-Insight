@@ -33,7 +33,6 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string>("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [persistedUploads, setPersistedUploads] = useState<{ filename: string; rows: number; columns: number }[]>([]);
   const [reportMode, setReportMode] = useState(false);
@@ -43,6 +42,8 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
   const [thinkingSections, setThinkingSections] = useState<ThinkingSection[]>([]);
   const [streamTasks, setStreamTasks] = useState<TaskItem[]>([]);
   const [lastReportPath, setLastReportPath] = useState<string>("");
+  const [loadingStatus, setLoadingStatus] = useState<string>("Initializing...");
+  const [currentModelName, setCurrentModelName] = useState<string>("quorvix-1");
 
   useEffect(() => {
     if (!user) {
@@ -128,7 +129,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
         scrollContainer.scrollTop = scrollContainer.scrollHeight;
       }
     }
-  }, [messages, isTyping, statusMessage]);
+  }, [messages, isTyping]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -157,11 +158,12 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
     };
 
     setMessages(prev => [...prev, newMessage]);
-    const messagesToSend = input;
+    const messagesToSend = userMsgContent;
     const filesToUpload = [...attachedFiles];
     setInput("");
     setAttachedFiles([]);
     setIsTyping(true);
+    setLoadingStatus("Analyzing request...");
 
     // Initial AI message placeholder
     let aiMsgId = (Date.now() + 1).toString();
@@ -189,7 +191,6 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
           headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         });
         setIsUploading(false);
-        setStatusMessage("Processing...");
       }
 
       const token = getAuthToken();
@@ -219,10 +220,17 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
             try {
               const data = JSON.parse(line.slice(6));
 
-              if (data.type === 'status') {
-                setStatusMessage(data.message);
-              } else if (data.type === 'thinking_start') {
+              if (data.type === 'thinking_start') {
                 const sectionId = `${data.agent}-${Date.now()}`;
+                const statusMap: Record<string, string> = {
+                  brain: 'Planning analysis...',
+                  hands: 'Executing code...',
+                  verifier: 'Verifying results...',
+                };
+                setLoadingStatus(statusMap[data.agent] || 'Processing...');
+                if (data.model_name) {
+                  setCurrentModelName(data.model_name);
+                }
                 setThinkingSections(prev => [...prev, {
                   id: sectionId,
                   agent: data.agent,
@@ -237,6 +245,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                     : section
                 ));
               } else if (data.type === 'task') {
+                setLoadingStatus(data.description || 'Working on task...');
                 setStreamTasks(prev => [...prev, {
                   id: `task-${Date.now()}`,
                   description: data.description,
@@ -251,11 +260,13 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                   msg.id === aiMsgId ? { ...msg, plan: data.plan } : msg
                 ));
               } else if (data.type === 'token') {
+                setLoadingStatus('Generating response...');
                 aiContent += data.content;
                 setMessages(prev => prev.map(msg =>
                   msg.id === aiMsgId ? { ...msg, content: aiContent } : msg
                 ));
               } else if (data.type === 'visualization') {
+                setLoadingStatus('Creating visualizations...');
                 setMessages(prev => prev.map(msg =>
                   msg.id === aiMsgId ? {
                     ...msg,
@@ -280,7 +291,6 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                   msg.id === aiMsgId ? { ...msg, content: aiContent } : msg
                 ));
                 setTimeout(() => {
-                  setStatusMessage("");
                   setThinkingSections([]);
                   setStreamTasks([]);
                 }, 1500);
@@ -361,9 +371,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
             try {
               const data = JSON.parse(line.slice(6));
 
-              if (data.type === 'status') {
-                setStatusMessage(data.message);
-              } else if (data.type === 'plan') {
+              if (data.type === 'plan') {
                 setMessages(prev => prev.map(msg =>
                   msg.id === aiMsgId ? { ...msg, plan: data.plan } : msg
                 ));
@@ -377,7 +385,6 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                 setMessages(prev => prev.map(msg =>
                   msg.id === aiMsgId ? { ...msg, content: aiContent } : msg
                 ));
-                setTimeout(() => setStatusMessage(""), 1500);
               }
             } catch (e) {
               console.error("Error parsing SSE:", e);
@@ -504,15 +511,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
             <>
               {messages.map((msg, idx) => (
                 <div key={msg.id} className="flex flex-col gap-2">
-                  {isTyping && msg.role === 'ai' && idx === messages.length - 1 && (thinkingSections.length > 0 || streamTasks.length > 0) && (
-                    <div className="ml-14 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                      <ThinkingStream
-                        sections={thinkingSections}
-                        tasks={streamTasks}
-                        currentAgent={thinkingSections.find(s => !s.isComplete)?.agent}
-                      />
-                    </div>
-                  )}
+                  {/* ThinkingStream removed - legacy duplicate */}
 
                   <MessageBubble
                     id={msg.id}
@@ -524,6 +523,8 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                     onOpenReport={(path) => onTriggerReport?.(path)}
                     isTyping={isTyping && msg.role === 'ai' && idx === messages.length - 1}
                     isLoading={isTyping && msg.role === 'ai' && idx === messages.length - 1 && msg.content === ""}
+                    loadingStatus={loadingStatus}
+                    modelName={currentModelName}
                     plan={msg.plan}
                     userAvatar={user?.avatar_url}
                   />
@@ -542,13 +543,15 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
 
             <div className="relative bg-card/60 backdrop-blur-xl rounded-2xl border border-border p-2">
               {/* Attached files display */}
+              {/* Attached & Persisted files display */}
+              {/* Attached files display */}
               {attachedFiles.length > 0 && (
                 <div className="flex flex-wrap gap-2 p-2 mb-2 border-b border-border">
                   {attachedFiles.map((file, idx) => (
-                    <div key={idx} className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 border border-primary/20 rounded-lg text-xs">
-                      <FileIcon className="h-3 w-3 text-primary" />
-                      <span className="text-primary">{file.name}</span>
-                      <button onClick={() => removeAttachment(idx)} className="text-primary/60 hover:text-destructive">
+                    <div key={`attached-${idx}`} className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 border border-border rounded-lg text-xs">
+                      <FileIcon className="h-3 w-3 text-foreground" />
+                      <span className="text-foreground">{file.name}</span>
+                      <button onClick={() => removeAttachment(idx)} className="text-muted-foreground hover:text-destructive">
                         <X className="h-3 w-3" />
                       </button>
                     </div>
