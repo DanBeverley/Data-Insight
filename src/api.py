@@ -4,7 +4,13 @@ import logging
 import time
 import os
 from pathlib import Path
+import sys
+import asyncio
 from dotenv import load_dotenv
+
+# Set Windows event loop policy for Playwright compatibility
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # Load environment variables
 load_dotenv()
@@ -121,7 +127,6 @@ AGENT_AVAILABLE = CHAT_AVAILABLE
 async_tasks = {}
 task_executor = None
 performance_monitor = None
-status_agent_runnable = None
 
 
 def get_session_agent(session_id: str):
@@ -177,10 +182,10 @@ async def lifespan(app: FastAPI):
                     await warmup_models_parallel()
                     logging.info("Model warmup completed successfully")
 
-                    from data_scientist_chatbot.app.core.model_manager import ModelManager
-
-                    model_manager = ModelManager()
-                    model_manager.start_health_check_loop()
+                    # Health check loop disabled to prevent 429 rate limiting
+                    # from data_scientist_chatbot.app.core.model_manager import ModelManager
+                    # model_manager = ModelManager()
+                    # model_manager.start_health_check_loop()
                 except Exception as warmup_err:
                     logging.warning(f"Model warmup failed (non-critical): {warmup_err}")
 
@@ -753,7 +758,13 @@ async def upload_data(
                 df, session_id, {"filename": file.filename}, False, data_profiler, session_store
             )
 
-            load_data_to_agent_sandbox(df, session_id, session_agents, create_enhanced_agent_executor, response_data)
+            try:
+                load_data_to_agent_sandbox(
+                    df, session_id, session_agents, create_enhanced_agent_executor, response_data
+                )
+            except Exception as sandbox_error:
+                logging.error(f"Failed to load data to agent sandbox (non-critical): {sandbox_error}")
+                # We continue since the file is uploaded to the session/disk successfully
 
             if enable_profiling:
                 # [INTELLIGENCE UPGRADE] Await profiling to ensure context is ready for Planner
@@ -1059,8 +1070,6 @@ async def agent_chat_stream(
     from fastapi.responses import StreamingResponse
 
     async def generate_events():
-        global status_agent_runnable
-
         session_store[session_id]["web_search_enabled"] = web_search_enabled
         session_store[session_id]["token_streaming"] = token_streaming
         session_store[session_id]["thinking_mode"] = thinking_mode
@@ -1071,22 +1080,10 @@ async def agent_chat_stream(
 
         agent = get_or_create_agent_session(session_id, agent_sessions, create_enhanced_agent_executor)
 
-        if status_agent_runnable is None:
-            try:
-                from data_scientist_chatbot.app.core.agent_factory import create_status_agent
-
-                status_agent_runnable = create_status_agent()
-                print(f"INFO: Status agent initialized successfully")
-            except Exception as e:
-                print(f"ERROR: Failed to initialize status agent: {e}")
-                import traceback
-
-                print(traceback.format_exc())
-
         full_response = ""
 
         async for event_data in stream_agent_chat(
-            message, session_id, agent, session_store, status_agent_runnable, agent_sessions, regenerate, message_id
+            message, session_id, agent, session_store, agent_sessions, regenerate, message_id
         ):
             yield event_data
             try:

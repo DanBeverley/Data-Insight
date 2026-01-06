@@ -10,6 +10,7 @@ from .helpers import create_agent_input, create_workflow_status_context
 from .agent_response import extract_agent_response
 from data_scientist_chatbot.app.core.constants import NodeName, WORKFLOW_NODES, SAFE_CHECKPOINT_NODES
 from data_scientist_chatbot.app.core.state_extractor import extract_report_url_from_messages
+from data_scientist_chatbot.app.core.agent_factory import get_model_name
 
 
 def strip_model_tokens(content: str) -> str:
@@ -385,7 +386,6 @@ async def stream_agent_chat(
     session_id: str,
     agent,
     session_store: Dict[str, Any],
-    status_agent_runnable=None,
     session_agents=None,
     regenerate: bool = False,
     message_id: str = None,
@@ -404,7 +404,7 @@ async def stream_agent_chat(
     try:
         logging.info(f"[STREAMING] Using .astream() method (async streaming) for session {session_id}")
         try:
-            async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
+            async for event_data in _stream_fallback(message, session_id, agent):
                 yield event_data
         except KeyError as ke:
             if "__start__" in str(ke):
@@ -427,7 +427,7 @@ async def stream_agent_chat(
                 else:
                     logging.warning(f"Checkpoint cleanup failed, proceeding anyway for session {session_id}")
 
-                async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
+                async for event_data in _stream_fallback(message, session_id, agent):
                     yield event_data
             else:
                 raise
@@ -437,9 +437,7 @@ async def stream_agent_chat(
             if hasattr(agent, "astream_events"):
                 logging.warning(f"[STREAMING] Falling back to astream_events() for session {session_id}")
                 try:
-                    async for event_data in _stream_with_events(
-                        message, session_id, agent, status_agent_runnable, thinking_mode
-                    ):
+                    async for event_data in _stream_with_events(message, session_id, agent, thinking_mode):
                         yield event_data
                 except Exception as e:
                     logging.error(f"[STREAMING] astream_events() also failed: {e}")
@@ -463,7 +461,7 @@ async def stream_agent_chat(
 
 
 async def _stream_with_events(
-    message: str, session_id: str, agent, status_agent_runnable, thinking_mode: bool = False
+    message: str, session_id: str, agent, thinking_mode: bool = False
 ) -> AsyncGenerator[str, None]:
     await asyncio.sleep(0.01)
 
@@ -534,11 +532,6 @@ async def _stream_with_events(
                             logging.info(f"[STREAM_EVENTS] Emitting in-progress plan for task {current_idx}")
                             yield f"data: {json.dumps({'type': 'plan', 'plan': ui_plan})}\n\n"
 
-                if status_agent_runnable:
-                    status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                    if status_msg:
-                        yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-
                 # [REPORT UI TRIGGER] Detect Architect start
                 if current_node == "architect":
                     logging.info(f"[STREAM] Architect node started, triggering UI loading state")
@@ -560,12 +553,6 @@ async def _stream_with_events(
                 workflow_context["tool_calls"].append({"tool": tool_name, "status": "starting"})
                 workflow_context["current_action"] = f"executing {tool_name}"
 
-                if status_agent_runnable:
-                    status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                    if status_msg:
-                        yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-                        await asyncio.sleep(0.1)
-
             elif event_name == "on_tool_end":
                 tool_name = event.get("name", "")
                 tool_output = event_data.get("output", "")
@@ -576,12 +563,6 @@ async def _stream_with_events(
                         break
 
                 workflow_context["current_action"] = f"completed {tool_name}"
-
-                if status_agent_runnable:
-                    status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                    if status_msg:
-                        yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-                        await asyncio.sleep(0.1)
 
                 if tool_name == "python_code_interpreter" and "PLOT_SAVED:" in str(tool_output):
                     import re
@@ -738,7 +719,7 @@ async def _stream_brain_tokens(content: str, session_id: str) -> AsyncGenerator[
         await asyncio.sleep(token_delay)
 
 
-async def _stream_fallback(message: str, session_id: str, agent, status_agent_runnable) -> AsyncGenerator[str, None]:
+async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerator[str, None]:
     from langchain_core.messages import HumanMessage
 
     config = {"configurable": {"thread_id": session_id}}
@@ -812,7 +793,8 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                     logging.info(f"[STREAM] Node completed: {node_name}")
 
                     if node_name in {NodeName.BRAIN.value, NodeName.HANDS.value}:
-                        yield f"data: {json.dumps({'type': 'thinking_start', 'agent': node_name})}\n\n"
+                        model_name = get_model_name(node_name)
+                        yield f"data: {json.dumps({'type': 'thinking_start', 'agent': node_name, 'model_name': model_name})}\n\n"
 
                     messages = node_data.get("messages", []) if node_data else []
                     if messages and isinstance(messages, list):
@@ -925,16 +907,7 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
                             else:
                                 logging.warning(f"[STREAM] Architect completed but no report_url found")
 
-                        elif node_name == NodeName.PRESENTER.value:
                             logging.info(f"[STREAM] Presenter node completed")
-                            # Presenter messages are usually just confirmation, we already have the report from architect
-
-                    if status_agent_runnable:
-                        status_msg = await _generate_fallback_status(
-                            status_agent_runnable, message, node_name, session_id
-                        )
-                        if status_msg:
-                            yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
 
                     await asyncio.sleep(0.1)
 
@@ -1085,61 +1058,3 @@ async def _stream_fallback(message: str, session_id: str, agent, status_agent_ru
 
         error_response = {"type": "final_response", "response": "Analysis completed.", "plots": []}
         yield f"data: {json.dumps(error_response)}\n\n"
-
-
-async def _generate_status(status_agent_runnable, workflow_context, event, current_node):
-    try:
-        status_context = create_workflow_status_context(workflow_context, event)
-        from data_scientist_chatbot.app.agent import get_status_agent_prompt
-
-        status_prompt_template = get_status_agent_prompt()
-        status_formatted = status_prompt_template.format(
-            brain_scratchpad=workflow_context.get("scratchpad", "Processing..."),
-            tool_name=workflow_context.get("tool_name", "None"),
-            workflow_stage=workflow_context.get("workflow_stage", "general"),
-        )
-        status_response = await asyncio.wait_for(status_agent_runnable.ainvoke(status_formatted), timeout=10.0)
-        return status_response.content.strip()
-    except asyncio.TimeoutError:
-        print(f"ERROR: Status agent timeout for node={current_node}")
-        return None
-    except Exception as e:
-        print(f"ERROR: Status generation failed for node={current_node}: {type(e).__name__}: {str(e)}")
-        import traceback
-
-        print(traceback.format_exc())
-        return None
-
-
-async def _generate_fallback_status(status_agent_runnable, message, node_name, session_id):
-    try:
-        workflow_context = {
-            "current_agent": node_name,
-            "current_action": "processing",
-            "user_goal": message,
-            "session_id": session_id,
-            "execution_progress": {},
-            "tool_calls": [],
-        }
-        fake_event = {"event": "on_chain_start", "name": node_name}
-        status_context = create_workflow_status_context(workflow_context, fake_event)
-
-        from data_scientist_chatbot.app.agent import get_status_agent_prompt
-
-        status_prompt_template = get_status_agent_prompt()
-        status_formatted = status_prompt_template.format(
-            brain_scratchpad=workflow_context.get("scratchpad", "Processing..."),
-            tool_name=workflow_context.get("tool_name", "None"),
-            workflow_stage=workflow_context.get("workflow_stage", "general"),
-        )
-        status_response = await asyncio.wait_for(status_agent_runnable.ainvoke(status_formatted), timeout=10.0)
-        return status_response.content.strip() if hasattr(status_response, "content") else str(status_response).strip()
-    except asyncio.TimeoutError:
-        print(f"ERROR: Fallback status agent timeout for node={node_name}")
-        return None
-    except Exception as e:
-        print(f"ERROR: Fallback status agent failed for node={node_name}: {type(e).__name__}: {str(e)}")
-        import traceback
-
-        print(traceback.format_exc())
-        return None
