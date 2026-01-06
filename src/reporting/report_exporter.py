@@ -71,33 +71,101 @@ def html_to_reportlab(html_content: str) -> str:
 
 
 def make_standalone_html(html_content: str) -> str:
-    artifact_pattern = r'<iframe[^>]*src="([^"]*?)([^/"]+\.html)"[^>]*>.*?</iframe>'
+    # Robust regex for single or double quotes
+    artifact_pattern = r'<iframe[^>]*src=["\']([^"\']*?)([^/"\']+\.html)["\'][^>]*>.*?</iframe>'
     matches = re.findall(artifact_pattern, html_content, flags=re.DOTALL | re.IGNORECASE)
 
     plotly_cdn = '<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>'
     cdn_added = False
 
+    # Check relative paths and absolute path from project root
+    base_dirs = [
+        Path("static/plots"),
+        Path("data/reports"),
+        Path(__file__).resolve().parent.parent.parent / "static" / "plots",
+    ]
+
     for prefix, filename in matches:
-        for base_path in [Path("static/plots"), Path("data/reports")]:
+        for base_path in base_dirs:
             artifact_path = base_path / filename
             if artifact_path.exists():
                 try:
                     artifact_html = artifact_path.read_text(encoding="utf-8")
                     replacement = f'<div class="embedded-chart" style="width:100%;height:500px;overflow:auto;border:1px solid #334155;margin:10px 0;">{artifact_html}</div>'
                     original_src = f"{prefix}{filename}"
+
+                    # Robust replacement pattern handling quotes
+                    pattern = rf'<iframe[^>]*src=["\']{re.escape(original_src)}["\'][^>]*>.*?</iframe>'
+
                     html_content = re.sub(
-                        rf'<iframe[^>]*src="{re.escape(original_src)}"[^>]*>.*?</iframe>',
-                        replacement,
+                        pattern,
+                        lambda _: replacement,
                         html_content,
                         flags=re.DOTALL | re.IGNORECASE,
                     )
                     cdn_added = True
-                except Exception:
+                except Exception as e:
+                    print(f"Error embedding chart {filename}: {e}")
                     pass
                 break
+            else:
+                # Log if not found in any base dir
+                if base_path == base_dirs[-1]:
+                    print(f"Chart artifact not found: {filename} in {base_dirs}")
 
     if cdn_added and plotly_cdn not in html_content:
         html_content = html_content.replace("</head>", f"{plotly_cdn}</head>")
+
+    return html_content
+
+
+def make_static_html(html_content: str) -> str:
+    from src.reporting.chart_converter import convert_chart_to_png_sync, png_to_base64
+
+    # Robust regex for single or double quotes
+    artifact_pattern = r'<iframe[^>]*src=["\']([^"\']*?)([^/"\']+\.html)["\'][^>]*>.*?</iframe>'
+    matches = re.findall(artifact_pattern, html_content, flags=re.DOTALL | re.IGNORECASE)
+
+    # Check relative paths and absolute path from project root
+    base_dirs = [
+        Path("static/plots"),
+        Path("data/reports"),
+        Path(__file__).resolve().parent.parent.parent / "static" / "plots",
+    ]
+
+    for prefix, filename in matches:
+        for base_path in base_dirs:
+            artifact_path = base_path / filename
+            if artifact_path.exists():
+                try:
+                    png_bytes = convert_chart_to_png_sync(artifact_path)
+                    if png_bytes:
+                        b64 = png_to_base64(png_bytes)
+                        img_tag = f'<img src="data:image/png;base64,{b64}" style="max-width:100%;height:auto;border:1px solid #334155;margin:10px 0;" alt="{filename}"/>'
+                        original_src = f"{prefix}{filename}"
+
+                        # Robust replacement pattern handling quotes
+                        pattern = rf'<iframe[^>]*src=["\']{re.escape(original_src)}["\'][^>]*>.*?</iframe>'
+
+                        html_content = re.sub(
+                            pattern,
+                            lambda _: img_tag,
+                            html_content,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        )
+                except Exception:
+                    placeholder = f'<div style="background:#1e293b;border:1px dashed #475569;padding:20px;text-align:center;margin:10px 0;color:#94a3b8;">[Chart: {filename}]</div>'
+                    original_src = f"{prefix}{filename}"
+
+                    pattern = rf'<iframe[^>]*src=["\']{re.escape(original_src)}["\'][^>]*>.*?</iframe>'
+
+                    html_content = re.sub(
+                        pattern,
+                        lambda _: placeholder,
+                        html_content,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    )
+                break
 
     return html_content
 
@@ -107,12 +175,12 @@ class ReportExporter:
         self.reports_dir = Path("data/reports")
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-    def export_pdf(self, sections: List[Dict], title: str = "Analysis Report", session_id: str = "") -> bytes:
+    async def export_pdf(self, sections: List[Dict], title: str = "Analysis Report", session_id: str = "") -> bytes:
         sections_html = ""
         for section in sections:
             section_title = section.get("title", "Section")
             content = section.get("content", "")
-            content = self._embed_charts_as_images(content)
+            content = await self._embed_charts_as_images_async(content)
             sections_html += f'<section><h2>{section_title}</h2><div class="content">{content}</div></section>'
 
         full_html = f"""<!DOCTYPE html>
@@ -142,14 +210,43 @@ class ReportExporter:
 </body>
 </html>"""
 
-        from src.reporting.chart_converter import html_to_pdf_sync
+        from src.reporting.chart_converter import html_to_pdf
 
-        pdf_bytes = html_to_pdf_sync(full_html)
+        pdf_bytes = await html_to_pdf(full_html)
         if pdf_bytes:
             return pdf_bytes
-        raise RuntimeError(
-            "PDF generation failed. Ensure Playwright is installed with: pip install playwright && playwright install chromium"
-        )
+        raise RuntimeError("PDF generation failed")
+
+    async def _embed_charts_as_images_async(self, content: str) -> str:
+        iframe_pattern = r'<iframe[^>]*src="(/static/plots/|\.\./)([^"]+\.html)"[^>]*>.*?</iframe>'
+        matches = re.findall(iframe_pattern, content, flags=re.DOTALL | re.IGNORECASE)
+
+        for prefix, filename in matches:
+            chart_path = Path("static/plots") / filename
+            if chart_path.exists():
+                try:
+                    from src.reporting.chart_converter import convert_chart_to_png, png_to_base64
+
+                    png_bytes = await convert_chart_to_png(chart_path)
+                    if png_bytes:
+                        b64 = png_to_base64(png_bytes)
+                        img_tag = f'<img src="data:image/png;base64,{b64}" class="chart-image" alt="{filename}"/>'
+                        content = re.sub(
+                            rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
+                            lambda _: img_tag,
+                            content,
+                            flags=re.DOTALL | re.IGNORECASE,
+                        )
+                except Exception as e:
+                    print(f"Error embedding chart {filename}: {e}")
+                    placeholder = f'<div class="chart-placeholder">[Chart: {filename}]</div>'
+                    content = re.sub(
+                        rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
+                        lambda _: placeholder,
+                        content,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    )
+        return content
 
     def _embed_charts_as_images(self, content: str) -> str:
         iframe_pattern = r'<iframe[^>]*src="(/static/plots/|\.\./)([^"]+\.html)"[^>]*>.*?</iframe>'
@@ -167,7 +264,7 @@ class ReportExporter:
                         img_tag = f'<img src="data:image/png;base64,{b64}" class="chart-image" alt="{filename}"/>'
                         content = re.sub(
                             rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
-                            img_tag,
+                            lambda _: img_tag,
                             content,
                             flags=re.DOTALL | re.IGNORECASE,
                         )
@@ -175,7 +272,7 @@ class ReportExporter:
                     placeholder = f'<div class="chart-placeholder">[Chart: {filename}]</div>'
                     content = re.sub(
                         rf'<iframe[^>]*src="({re.escape(prefix)}{re.escape(filename)})"[^>]*>.*?</iframe>',
-                        placeholder,
+                        lambda _: placeholder,
                         content,
                         flags=re.DOTALL | re.IGNORECASE,
                     )

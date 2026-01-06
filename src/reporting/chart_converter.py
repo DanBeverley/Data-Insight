@@ -70,6 +70,10 @@ async def convert_chart_to_png(html_path: Path, use_cache: bool = True) -> Optio
 
 
 def convert_chart_to_png_sync(html_path: Path, use_cache: bool = True) -> Optional[bytes]:
+    import nest_asyncio
+
+    nest_asyncio.apply()
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -111,6 +115,10 @@ async def html_to_pdf(html_content: str) -> Optional[bytes]:
 
 
 def html_to_pdf_sync(html_content: str) -> Optional[bytes]:
+    import nest_asyncio
+
+    nest_asyncio.apply()
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
