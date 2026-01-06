@@ -1,5 +1,3 @@
-"""State extraction utilities to eliminate duplicate patterns across agents"""
-
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from langchain_core.messages import BaseMessage, AIMessage
@@ -12,8 +10,6 @@ class ExtractedState:
     artifacts: List[Dict[str, Any]]
     agent_insights: List[Dict[str, Any]]
     execution_result: Optional[Dict[str, Any]]
-    plan: List[Dict[str, Any]]
-    current_task_index: int
     current_task_description: Optional[str]
     workflow_stage: Optional[str]
     retry_count: int
@@ -26,8 +22,6 @@ def extract_state(state: Dict[str, Any]) -> ExtractedState:
         artifacts=state.get("artifacts") or [],
         agent_insights=state.get("agent_insights") or [],
         execution_result=state.get("execution_result"),
-        plan=state.get("plan") or [],
-        current_task_index=state.get("current_task_index") or 0,
         current_task_description=state.get("current_task_description"),
         workflow_stage=state.get("workflow_stage"),
         retry_count=state.get("retry_count") or 0,
@@ -56,10 +50,6 @@ def get_current_task(state: ExtractedState) -> Tuple[str, Dict[str, Any]]:
             "assigned_to": "hands",
             "status": "in_progress",
         }
-
-    if state.plan and state.current_task_index < len(state.plan):
-        task = state.plan[state.current_task_index]
-        return task.get("description", ""), task
 
     last_msg = get_last_human_message(state.messages)
     return last_msg or "Unknown Task", {

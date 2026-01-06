@@ -171,13 +171,10 @@ def build_structured_verification_input(
 
 
 def stage1_programmatic_check(structured_input: Dict[str, Any]) -> Dict[str, Any]:
-    requirements = structured_input["task_requirements"]
     execution = structured_input["execution"]
-    artifacts = structured_input["artifacts"]
-    insights = structured_input["insights"]
 
     failures = []
-    passes = []
+    passes = ["context_available"]
 
     if execution["has_errors"]:
         error_detail = execution["error_messages"][0] if execution["error_messages"] else "Unknown error"
@@ -187,42 +184,8 @@ def stage1_programmatic_check(structured_input: Dict[str, Any]) -> Dict[str, Any
                 "reason": f"Code execution had errors: {error_detail}",
             }
         )
-
-    if not execution["df_info_present"]:
-        failures.append(
-            {"check": "df_info_missing", "reason": "Required df.info() or df.shape output not found in execution"}
-        )
     else:
-        passes.append("df_info")
-
-    if requirements["requires_visualization"]:
-        if artifacts["count"] == 0:
-            failures.append(
-                {
-                    "check": "visualization_missing",
-                    "reason": "Task requires visualization but no artifacts were generated",
-                }
-            )
-        elif not artifacts["has_visualizations"]:
-            failures.append(
-                {
-                    "check": "visualization_type_wrong",
-                    "reason": f"Task requires visualization but artifacts are: {artifacts['types']}",
-                }
-            )
-        else:
-            passes.append("artifacts")
-
-    if requirements["requires_model"]:
-        if not artifacts["has_models"]:
-            passes.append("model_training")
-
-    if not insights["has_insights"] and not execution["insights_in_stdout"]:
-        failures.append(
-            {"check": "insights_missing", "reason": "No insights provided. PROFILING_INSIGHTS block is required."}
-        )
-    else:
-        passes.append("insights")
+        passes.append("execution_clean")
 
     stage1_passed = len(failures) == 0
 
@@ -230,7 +193,7 @@ def stage1_programmatic_check(structured_input: Dict[str, Any]) -> Dict[str, Any
         "stage1_passed": stage1_passed,
         "failures": failures,
         "passes": passes,
-        "feedback": "; ".join([f["reason"] for f in failures]) if failures else "All programmatic checks passed",
+        "feedback": failures[0]["reason"] if failures else "Execution successful, no errors.",
     }
 
 

@@ -3,7 +3,7 @@ import json
 from pydantic import BaseModel, Field
 from langchain_core.runnables import RunnableConfig
 
-from data_scientist_chatbot.app.core.state import GlobalState, Task
+from data_scientist_chatbot.app.core.state import GlobalState
 from data_scientist_chatbot.app.core.agent_factory import create_verifier_agent
 from data_scientist_chatbot.app.prompts import get_verifier_prompt
 from data_scientist_chatbot.app.core.logger import logger
@@ -23,11 +23,7 @@ def run_verifier_agent(state: GlobalState, config: RunnableConfig) -> Dict[str, 
     agent_insights = state.get("agent_insights") or []
     logger.info(f"[VERIFIER] Input: {len(artifacts)} artifacts, {len(agent_insights)} insights")
 
-    plan = state.get("plan", [])
-    current_index = state.get("current_task_index") or 0
-
     current_task_desc = state.get("current_task_description")
-
     if current_task_desc:
         current_task = {
             "id": "delegated_task",
@@ -35,7 +31,7 @@ def run_verifier_agent(state: GlobalState, config: RunnableConfig) -> Dict[str, 
             "assigned_to": "hands",
             "status": "in_progress",
         }
-    elif not plan or current_index >= len(plan):
+    else:
         messages = state.get("messages", [])
         last_instruction = "Unknown Task"
         for msg in reversed(messages):
@@ -48,8 +44,6 @@ def run_verifier_agent(state: GlobalState, config: RunnableConfig) -> Dict[str, 
             "assigned_to": "hands",
             "status": "in_progress",
         }
-    else:
-        current_task = plan[current_index]
 
     logger.info(f"[VERIFIER] Task: {current_task['description'][:100]}...")
 
@@ -153,46 +147,22 @@ REQUIREMENTS:
     )
 
     if approved:
-        if plan and 0 <= current_index < len(plan):
-            plan[current_index]["status"] = "completed"
-            plan[current_index]["result"] = "Verified"
-
         return {
-            "plan": plan,
-            "current_task_index": current_index + 1,
             "messages": [AIMessage(content=decision_json, additional_kwargs={"internal": True})],
+            "current_agent": "verifier",
             "agent_insights": agent_insights,
+            "artifacts": artifacts,
+            "retry_count": state.get("retry_count", 0),
+            "workflow_stage": "verification_passed",
         }
     else:
-        if plan and 0 <= current_index < len(plan):
-            plan[current_index]["status"] = "failed"
-            plan[current_index]["error"] = feedback
-
-        correction_task: Task = {
-            "id": f"{current_task.get('id', 'task')}_fix",
-            "description": f"Fix: {feedback}. Original: {current_task.get('description', '')[:100]}",
-            "assigned_to": "hands",
-            "status": "pending",
-            "result": None,
-            "artifacts": [],
-            "error": None,
-        }
-
-        if plan and 0 <= current_index < len(plan):
-            plan.insert(current_index + 1, correction_task)
-            new_index = current_index + 1
-        else:
-            if not plan:
-                plan = []
-            plan.append(correction_task)
-            new_index = len(plan) - 1
-
         return {
-            "plan": plan,
-            "current_task_index": new_index,
-            "retry_count": state.get("retry_count", 0) + 1,
             "messages": [AIMessage(content=decision_json, additional_kwargs={"internal": True})],
+            "current_agent": "verifier",
             "agent_insights": agent_insights,
+            "artifacts": artifacts,
+            "retry_count": state.get("retry_count", 0) + 1,
+            "workflow_stage": "verification_failed",
         }
 
 
