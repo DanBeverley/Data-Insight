@@ -223,14 +223,24 @@ async def export_report_by_session(session_id: str, format: str, db: Session = D
     exporter = get_report_exporter()
     title = f"Analysis Report - {dataset_name}"
 
-    if format == "html":
+    if format == "html" or format == "html-interactive":
         from src.reporting.report_exporter import make_standalone_html
 
         standalone_content = make_standalone_html(html_content)
         return Response(
             content=standalone_content.encode("utf-8"),
             media_type="text/html",
-            headers={"Content-Disposition": f"attachment; filename=report_{session_id[:8]}.html"},
+            headers={"Content-Disposition": f"attachment; filename=report_{session_id[:8]}_interactive.html"},
+        )
+
+    if format == "html-static":
+        from src.reporting.report_exporter import make_static_html
+
+        static_content = make_static_html(html_content)
+        return Response(
+            content=static_content.encode("utf-8"),
+            media_type="text/html",
+            headers={"Content-Disposition": f"attachment; filename=report_{session_id[:8]}_static.html"},
         )
 
     sections = [{"title": "Report", "content": html_content}]
@@ -254,7 +264,11 @@ async def export_report_by_session(session_id: str, format: str, db: Session = D
     handler, media_type, ext = format_handlers[format]
 
     try:
-        content = handler(sections, title=title, session_id=session_id)
+        if format == "pdf":
+            content = await handler(sections, title=title, session_id=session_id)
+        else:
+            content = handler(sections, title=title, session_id=session_id)
+
         filename = f"report_{session_id[:8]}.{ext}"
         return Response(
             content=content, media_type=media_type, headers={"Content-Disposition": f"attachment; filename={filename}"}
@@ -400,7 +414,11 @@ async def export_report(report_id: str, format: str, db: Session = Depends(get_d
     handler, media_type, ext = format_handlers[format]
 
     try:
-        content = handler(sections, title=title, session_id=report.session_id)
+        if format == "pdf":
+            content = await handler(sections, title=title, session_id=report.session_id)
+        else:
+            content = handler(sections, title=title, session_id=report.session_id)
+
         filename = f"report_{report_id[:8]}.{ext}"
         return Response(
             content=content, media_type=media_type, headers={"Content-Disposition": f"attachment; filename={filename}"}

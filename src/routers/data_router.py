@@ -32,33 +32,54 @@ async def get_data_preview(session_id: str, rows: int = 10):
 async def get_session_uploads(session_id: str):
     from ..api import session_store
 
-    if session_id not in session_store:
-        return {"files": [], "status": "no_session"}
-
-    session_data = session_store[session_id]
     uploads = []
+    seen_files = set()
 
-    datasets = session_data.get("datasets", {})
-    for filename, df in datasets.items():
-        uploads.append(
-            {
-                "filename": filename,
-                "rows": len(df) if df is not None else 0,
-                "columns": len(df.columns) if df is not None else 0,
-            }
-        )
+    # 1. Check in-memory session store
+    if session_id in session_store:
+        session_data = session_store[session_id]
+        datasets = session_data.get("datasets", {})
+        for filename, df in datasets.items():
+            uploads.append(
+                {
+                    "filename": filename,
+                    "rows": len(df) if df is not None else 0,
+                    "columns": len(df.columns) if df is not None else 0,
+                }
+            )
+            seen_files.add(filename)
 
-    if not uploads and session_data.get("filename"):
-        df = session_data.get("dataframe")
-        uploads.append(
-            {
-                "filename": session_data["filename"],
-                "rows": len(df) if df is not None else 0,
-                "columns": len(df.columns) if df is not None else 0,
-            }
-        )
+        if session_data.get("filename") and session_data["filename"] not in seen_files:
+            df = session_data.get("dataframe")
+            uploads.append(
+                {
+                    "filename": session_data["filename"],
+                    "rows": len(df) if df is not None else 0,
+                    "columns": len(df.columns) if df is not None else 0,
+                }
+            )
+            seen_files.add(session_data["filename"])
 
-    return {"files": uploads, "status": "success"}
+    # 2. Check disk for persisted files (handle backend reboot)
+    # Using relative path from project root (assumed CWD)
+    try:
+        upload_dir = Path(f"data/uploads/{session_id}")
+        if upload_dir.exists():
+            for file_path in upload_dir.glob("*"):
+                if file_path.is_file() and file_path.name not in seen_files:
+                    # Basic metadata since we can't load DF instantly
+                    uploads.append(
+                        {
+                            "filename": file_path.name,
+                            "rows": 0,  # Unknown without loading
+                            "columns": 0,  # Unknown without loading
+                        }
+                    )
+                    seen_files.add(file_path.name)
+    except Exception as e:
+        print(f"Error scanning upload dir: {e}")
+
+    return {"files": uploads, "status": "success" if uploads else "no_files"}
 
 
 @router.post("/{session_id}/eda")
