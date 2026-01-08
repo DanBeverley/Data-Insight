@@ -166,15 +166,21 @@ export function ReportPanel({ isOpen, onClose, reportPath, sessionId }: ReportPa
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const [showHtmlSubmenu, setShowHtmlSubmenu] = useState(false);
   const [isDownloading, setIsDownloading] = useState<string | null>(null);
   const downloadMenuRef = useRef<HTMLDivElement>(null);
 
   const downloadFormats = [
-    { id: "html", label: "HTML (Interactive)", icon: Globe, description: "Web viewing" },
+    { id: "html", label: "HTML", icon: Globe, description: "Web viewing", hasSubmenu: true },
     { id: "pdf", label: "PDF Document", icon: FileText, description: "Print & share" },
     { id: "docx", label: "Word Document", icon: FileEdit, description: "Editable" },
     { id: "txt", label: "Plain Text", icon: File, description: "Simple text" },
     { id: "zip", label: "ZIP Bundle", icon: Archive, description: "With artifacts" },
+  ];
+
+  const htmlSubOptions = [
+    { id: "html-interactive", label: "Interactive (Plotly)", description: "Charts remain interactive" },
+    { id: "html-static", label: "Static (PNG)", description: "Charts as images" },
   ];
 
   const handleDownload = async (format: string) => {
@@ -188,7 +194,8 @@ export function ReportPanel({ isOpen, onClose, reportPath, sessionId }: ReportPa
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `report_${sessionId.slice(0, 8)}.${format}`;
+      const extension = format.startsWith('html') ? 'html' : format;
+      a.download = `report_${sessionId.slice(0, 8)}.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -255,7 +262,7 @@ export function ReportPanel({ isOpen, onClose, reportPath, sessionId }: ReportPa
   if (!isOpen) return null;
 
   return (
-    <div className="w-[600px] border-l border-white/10 bg-black/40 backdrop-blur-xl h-full flex flex-col animate-in slide-in-from-right duration-500 relative z-20 shadow-2xl">
+    <div className="w-[600px] border-l border-white/10 bg-black/40 backdrop-blur-xl h-full flex flex-col animate-in slide-in-from-right duration-300 relative z-20 shadow-2xl" style={{ willChange: 'transform, opacity', contentVisibility: 'auto' }}>
       <div className="h-16 border-b border-white/10 flex items-center justify-between px-6 bg-white/5">
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-primary" />
@@ -276,23 +283,53 @@ export function ReportPanel({ isOpen, onClose, reportPath, sessionId }: ReportPa
               <div className="absolute right-0 top-full mt-1 w-56 bg-card/95 backdrop-blur-xl border border-white/10 rounded-lg shadow-xl z-50 py-1 animate-in fade-in slide-in-from-top-2 duration-200">
                 {downloadFormats.map((format) => {
                   const Icon = format.icon;
+                  const hasSubmenu = format.hasSubmenu;
                   return (
-                    <button
+                    <div
                       key={format.id}
-                      onClick={() => handleDownload(format.id)}
-                      disabled={isDownloading === format.id}
-                      className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-white/5 transition-colors text-left disabled:opacity-50"
+                      className="relative"
+                      onMouseEnter={() => hasSubmenu && setShowHtmlSubmenu(true)}
+                      onMouseLeave={() => hasSubmenu && setShowHtmlSubmenu(false)}
                     >
-                      {isDownloading === format.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      ) : (
-                        <Icon className="h-4 w-4 text-muted-foreground" />
+                      <button
+                        onClick={() => !hasSubmenu && handleDownload(format.id)}
+                        disabled={isDownloading === format.id}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-white/5 transition-colors text-left disabled:opacity-50"
+                      >
+                        {isDownloading === format.id || isDownloading?.startsWith('html-') && format.id === 'html' ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                        ) : (
+                          <Icon className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <div className="flex-1">
+                          <div className="text-foreground">{format.label}</div>
+                          <div className="text-xs text-muted-foreground">{format.description}</div>
+                        </div>
+                        {hasSubmenu && <ChevronDown className="h-3 w-3 text-muted-foreground -rotate-90" />}
+                      </button>
+                      {hasSubmenu && showHtmlSubmenu && (
+                        <div className="absolute right-full top-0 mr-1 w-52 bg-card/95 backdrop-blur-xl border border-white/10 rounded-lg shadow-xl py-1 animate-in fade-in slide-in-from-right-2 duration-150">
+                          {htmlSubOptions.map((sub) => (
+                            <button
+                              key={sub.id}
+                              onClick={() => handleDownload(sub.id)}
+                              disabled={isDownloading === sub.id}
+                              className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-white/5 transition-colors text-left disabled:opacity-50"
+                            >
+                              {isDownloading === sub.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                              ) : (
+                                <Globe className="h-4 w-4 text-muted-foreground" />
+                              )}
+                              <div className="flex-1">
+                                <div className="text-foreground">{sub.label}</div>
+                                <div className="text-xs text-muted-foreground">{sub.description}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
                       )}
-                      <div className="flex-1">
-                        <div className="text-foreground">{format.label}</div>
-                        <div className="text-xs text-muted-foreground">{format.description}</div>
-                      </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -330,6 +367,7 @@ export function ReportPanel({ isOpen, onClose, reportPath, sessionId }: ReportPa
             src={reportPath.startsWith('/') ? reportPath : `/${reportPath}`}
             className="w-full h-full border-0"
             title="Analysis Report"
+            loading="lazy"
           />
         ) : (
           <div className="p-6">

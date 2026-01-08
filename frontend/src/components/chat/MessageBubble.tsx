@@ -153,9 +153,16 @@ interface MessageBubbleProps {
   currentVersion?: number;
   totalVersions?: number;
   onVersionChange?: (version: number) => void;
+  tokenStats?: {
+    totalTime?: number;
+    ttft?: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    tokensPerSecond?: number;
+  };
 }
 
-export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEdit, onOpenReport, isTyping, isLoading, loadingStatus, modelName, plan, userAvatar, messageId, currentVersion = 1, totalVersions = 1, onVersionChange }: MessageBubbleProps) {
+export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEdit, onOpenReport, isTyping, isLoading, loadingStatus, modelName, plan, userAvatar, messageId, currentVersion = 1, totalVersions = 1, onVersionChange, tokenStats }: MessageBubbleProps) {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(typeof content === 'string' ? content : '');
@@ -384,10 +391,22 @@ export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEd
 
         {!isLoading && (
           <div className={cn(
-            "absolute -bottom-7 text-[10px] font-medium text-muted-foreground/50",
+            "absolute -bottom-7 flex items-center gap-3 text-[10px] font-medium text-muted-foreground/50",
             isUser ? "right-0" : "left-0"
           )}>
-            {timestamp}
+            <span>{timestamp}</span>
+            {!isUser && tokenStats && (
+              <span className="flex items-center gap-2 opacity-70">
+                {tokenStats.totalTime !== undefined && <span>{tokenStats.totalTime.toFixed(2)}s</span>}
+                {tokenStats.ttft !== undefined && <span>TTFT: {tokenStats.ttft.toFixed(2)}s</span>}
+                {tokenStats.completionTokens !== undefined && tokenStats.completionTokens > 0 && (
+                  <span>{tokenStats.completionTokens} tokens</span>
+                )}
+                {tokenStats.tokensPerSecond !== undefined && tokenStats.tokensPerSecond > 0 && (
+                  <span>{tokenStats.tokensPerSecond.toFixed(1)} tok/s</span>
+                )}
+              </span>
+            )}
           </div>
         )}
       </div>
