@@ -23,14 +23,25 @@ def parse_tool_calls(state: GlobalState) -> Dict[str, Any]:
 
 def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
     """Execute tool calls from the last message."""
-    last_message = state["messages"][-1]
+    messages = state.get("messages", [])
+    logger.info(f"[ACTION] execute_tools_node received {len(messages)} messages")
+    msg_types = [f"{type(m).__name__}" for m in messages]
+    logger.info(f"[ACTION] Message types: {msg_types}")
+
+    if not messages:
+        logger.warning("[ACTION] No messages in state")
+        return {"messages": []}
+
+    last_message = messages[-1]
 
     if not has_tool_calls(last_message):
         logger.debug("execute_tools: No tool calls found")
-        return {"messages": state["messages"]}
+        return {"messages": messages}
 
     tool_calls = last_message.tool_calls or []
-    logger.debug(f"execute_tools: Found {len(tool_calls)} tool calls in message")
+    logger.info(
+        f"[ACTION] Found {len(tool_calls)} tool calls: {[tc.get('name', getattr(tc, 'name', 'unknown')) if isinstance(tc, dict) else tc.name for tc in tool_calls]}"
+    )
 
     tool_responses = []
     for tool_call in tool_calls:
@@ -75,6 +86,55 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
                         "current_agent": "action",
                     }
 
+                elif tool_name == "web_search":
+                    import asyncio
+                    import builtins
+                    from data_scientist_chatbot.app.tools.web_search import web_search as do_web_search
+
+                    query = tool_args.get("query", "")
+                    logger.info(f"[WEB_SEARCH] Executing search for: {query}")
+
+                    search_config = {}
+                    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                        search_config = builtins._session_store[session_id].get("search_config", {})
+                        builtins._session_store[session_id]["search_status"] = {
+                            "action": "searching",
+                            "query": query,
+                            "provider": search_config.get("provider", "duckduckgo"),
+                        }
+                    logger.info(f"[WEB_SEARCH] Using config: {search_config}")
+
+                    try:
+                        loop = asyncio.get_running_loop()
+                        import concurrent.futures
+
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            future = pool.submit(asyncio.run, do_web_search(query, search_config))
+                            content = future.result(timeout=30)
+                    except RuntimeError:
+                        content = asyncio.run(do_web_search(query, search_config))
+
+                    import re
+                    import json as json_lib
+
+                    result_count = 0
+                    json_match = re.search(r"<!-- SEARCH_DATA_JSON\n(.*?)\nSEARCH_DATA_END -->", content, re.DOTALL)
+                    if json_match:
+                        try:
+                            search_data = json_lib.loads(json_match.group(1))
+                            result_count = search_data.get("result_count", 0)
+                        except:
+                            result_count = content.count("[Source]")
+
+                    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                        builtins._session_store[session_id]["search_status"] = {
+                            "action": "complete",
+                            "query": query,
+                            "result_count": result_count,
+                        }
+
+                    logger.info(f"[WEB_SEARCH] Result length: {len(content)} chars, count: {result_count}")
+
                 elif tool_name == "python_code_interpreter":
                     logger.debug(f"Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
                     content = execute_tool(tool_name, tool_args, session_id)
@@ -97,7 +157,7 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
             break
 
     result_state = {
-        "messages": state["messages"] + tool_responses,
+        "messages": messages + tool_responses,
         "current_agent": "action",
         "python_executions": python_executions,
         "retry_count": 0,
@@ -116,8 +176,9 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
             logger.info("[WORKFLOW] Delegating to Hands Agent")
             result_state["workflow_stage"] = "delegating"
 
-    logger.debug(f"execute_tools_node: Python executions count: {python_executions}")
-    logger.debug(f"execute_tools_node: Returning state with {len(result_state['messages'])} messages")
+    logger.info(
+        f"[ACTION] Returning state with {len(result_state['messages'])} messages (added {len(tool_responses)} ToolMessages)"
+    )
     return result_state
 
 

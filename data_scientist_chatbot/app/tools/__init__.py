@@ -82,6 +82,30 @@ else:
                 task_desc = tool_args.get("task_description", "No description provided.")
                 return f"{task_desc}"
 
+            # Handle web_search tool
+            if tool_name == "web_search":
+                import asyncio
+                from .web_search import web_search as do_web_search
+                import builtins
+
+                query = tool_args.get("query", "")
+                search_config = {}
+                if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                    search_config = builtins._session_store[session_id].get("search_config", {})
+
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        import concurrent.futures
+
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            result = pool.submit(asyncio.run, do_web_search(query, search_config)).result()
+                    else:
+                        result = asyncio.run(do_web_search(query, search_config))
+                    return result
+                except Exception as e:
+                    return f"Web search error: {str(e)}"
+
             # Default delegation for other tools (assuming they are python code tools or handled elsewhere)
             # If tool_args has 'code', it's likely python_code_interpreter
             if "code" in tool_args:

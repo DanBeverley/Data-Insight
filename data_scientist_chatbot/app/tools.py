@@ -503,7 +503,13 @@ pd.set_option('display.max_columns', 20)
 pd.set_option('display.width', 120)
 pd.set_option('display.max_colwidth', 50)
 
-df = pd.read_parquet('/tmp/dataset.parquet')
+# Conditionally load dataset if available (not required for web search data tasks)
+df = None
+if os.path.exists('/tmp/dataset.parquet'):
+    df = pd.read_parquet('/tmp/dataset.parquet')
+    print(f"Dataset loaded: {{df.shape}}")
+else:
+    print("No dataset file - this may be a web search data visualization task")
 
 {sampling_code}
 
@@ -664,8 +670,19 @@ for model_file in new_models:
 
             for line in stdout_content.split("\n"):
                 if line.startswith("PLOT_SAVED:"):
-                    raw_filename = line.split(":")[1].strip()
+                    # Use maxsplit=1 to handle paths with colons (e.g., sandbox:/mnt/...)
+                    raw_filename = line.split(":", 1)[1].strip()
+                    # Clean up any sandbox path prefixes and extract just the filename
+                    if "sandbox:" in raw_filename:
+                        raw_filename = raw_filename.replace("sandbox:", "")
+                    if "/mnt/data/" in raw_filename:
+                        raw_filename = raw_filename.split("/mnt/data/")[-1]
+                    if "/static/plots/" in raw_filename:
+                        raw_filename = raw_filename.split("/static/plots/")[-1]
                     sandbox_filename = raw_filename.split("?")[0].strip()
+                    # Extract just the filename if it's still a path
+                    if "/" in sandbox_filename:
+                        sandbox_filename = sandbox_filename.split("/")[-1]
 
                     if sandbox_filename in processed_files:
                         continue
@@ -942,7 +959,15 @@ for model_file in new_models:
 
             for line in stdout_content.split("\n"):
                 if line.startswith("DATASET_SAVED:"):
-                    sandbox_filename = line.split(":", 1)[1].strip()
+                    raw_filename = line.split(":", 1)[1].strip()
+                    # Clean up any sandbox path prefixes
+                    if "sandbox:" in raw_filename:
+                        raw_filename = raw_filename.replace("sandbox:", "")
+                    if "/mnt/data/" in raw_filename:
+                        raw_filename = raw_filename.split("/mnt/data/")[-1]
+                    sandbox_filename = raw_filename.split("?")[0].strip()
+                    if "/" in sandbox_filename:
+                        sandbox_filename = sandbox_filename.split("/")[-1]
 
                     if sandbox_filename in processed_files:
                         print(f"Skipping duplicate dataset: {sandbox_filename}")
