@@ -17,3 +17,4 @@ class GlobalState(TypedDict):
     current_task_description: Optional[str]
     report_url: Optional[str]
     report_path: Optional[str]
+    search_config: Optional[Dict[str, str]]

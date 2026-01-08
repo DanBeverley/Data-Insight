@@ -721,6 +721,7 @@ async def _stream_brain_tokens(content: str, session_id: str) -> AsyncGenerator[
 
 async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerator[str, None]:
     from langchain_core.messages import HumanMessage
+    import builtins
 
     config = {"configurable": {"thread_id": session_id}}
     final_response = None
@@ -731,6 +732,15 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
     logging.info(f"[STREAM] Starting async streaming for session {session_id}")
     logging.info(f"[STREAM] Agent type: {type(agent)}")
     logging.info(f"[STREAM] Config: {config}")
+
+    from src.api import session_store as api_session_store
+
+    if not hasattr(builtins, "_session_store"):
+        builtins._session_store = {}
+    if session_id not in builtins._session_store:
+        builtins._session_store[session_id] = {}
+    if session_id in api_session_store and "search_config" in api_session_store[session_id]:
+        builtins._session_store[session_id]["search_config"] = api_session_store[session_id]["search_config"]
 
     original_user_message = HumanMessage(content=message)
     current_state = {"messages": [original_user_message], "session_id": session_id}
@@ -829,6 +839,9 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
                                             task_desc = tc_args.get("task_description", "Executing task...")
                                             yield f"data: {json.dumps({'type': 'task', 'description': task_desc, 'status': 'pending'})}\n\n"
                                             yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': 'brain'})}\n\n"
+                                        elif tc_name == "web_search":
+                                            query = tc_args.get("query", "")
+                                            yield f"data: {json.dumps({'type': 'search_status', 'action': 'searching', 'query': query})}\n\n"
                                 else:
                                     final_brain_response = brain_content
                                     yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': 'brain'})}\n\n"
@@ -842,6 +855,32 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
                             last_action_msg = messages[-1]
                             if hasattr(last_action_msg, "type") and last_action_msg.type == "tool":
                                 action_content = str(last_action_msg.content)
+
+                                # Check for search_status in session store
+                                import builtins
+
+                                if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                                    search_status = builtins._session_store[session_id].get("search_status")
+                                    if search_status:
+                                        yield f"data: {json.dumps({'type': 'search_status', **search_status})}\n\n"
+                                        builtins._session_store[session_id]["search_status"] = None
+
+                                # Parse SEARCH_DATA_JSON from web search results for accurate count/sources
+                                if "SEARCH_DATA_JSON" in action_content:
+                                    try:
+                                        json_match = re.search(
+                                            r"<!-- SEARCH_DATA_JSON\n(.*?)\nSEARCH_DATA_END -->",
+                                            action_content,
+                                            re.DOTALL,
+                                        )
+                                        if json_match:
+                                            search_data = json.loads(json_match.group(1))
+                                            result_count = search_data.get("result_count", 0)
+                                            sources = search_data.get("sources", [])
+                                            yield f"data: {json.dumps({'type': 'search_status', 'action': 'complete', 'resultCount': result_count, 'sources': sources[:5]})}\n\n"
+                                    except Exception as e:
+                                        logging.error(f"[STREAM] Failed to parse search data: {e}")
+
                                 if action_content and action_content.strip():
                                     if '"event": "report_generated"' in action_content:
                                         try:
@@ -859,7 +898,12 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
                                         except Exception as e:
                                             logging.error(f"[STREAM] Failed to parse report event: {e}")
 
-                                    action_outputs.append(action_content)
+                                    # Skip web search results - they're shown via status bar, not in response
+                                    if (
+                                        "## Web Search Results" not in action_content
+                                        and "SEARCH_DATA_JSON" not in action_content
+                                    ):
+                                        action_outputs.append(action_content)
 
                         elif node_name == NodeName.ANALYST.value:
                             logging.info(f"[STREAM] Analyst node completed")
@@ -1045,6 +1089,16 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
         final_json = {"type": "final_response", "response": content, "plots": plots}
         if report_id:
             final_json["report_id"] = report_id
+
+        from src.api import session_store as api_session_store
+
+        token_streaming = api_session_store.get(session_id, {}).get("token_streaming", True)
+
+        if token_streaming:
+            yield f"data: {json.dumps({'type': 'start_tokens'})}\n\n"
+            async for token_event in _stream_brain_tokens(content, session_id):
+                yield token_event
+            yield f"data: {json.dumps({'type': 'end_tokens'})}\n\n"
 
         logging.info(f"[STREAM] Yielding final response to frontend...")
         yield f"data: {json.dumps(final_json)}\n\n"

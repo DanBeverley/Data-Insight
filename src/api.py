@@ -1014,7 +1014,10 @@ async def get_heartbeat_status(session_id: str):
 async def agent_chat_stream(
     message: str,
     session_id: str,
-    web_search_enabled: bool = False,
+    web_search_mode: bool = False,
+    search_provider: str = "duckduckgo",
+    search_api_key: Optional[str] = None,
+    search_url: Optional[str] = None,
     token_streaming: bool = True,
     thinking_mode: bool = False,
     regenerate: bool = False,
@@ -1070,9 +1073,15 @@ async def agent_chat_stream(
     from fastapi.responses import StreamingResponse
 
     async def generate_events():
-        session_store[session_id]["web_search_enabled"] = web_search_enabled
+        session_store[session_id]["web_search_mode"] = web_search_mode
         session_store[session_id]["token_streaming"] = token_streaming
         session_store[session_id]["thinking_mode"] = thinking_mode
+        if web_search_mode:
+            session_store[session_id]["search_config"] = {
+                "provider": search_provider,
+                "api_key": search_api_key or "",
+                "url": search_url or "",
+            }
 
         if create_enhanced_agent_executor is None:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Agent service not available'})}\n\n"
