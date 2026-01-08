@@ -18,6 +18,9 @@ async def get_data_preview(session_id: str, rows: int = 10):
     if session_id not in session_store:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    if "dataframe" not in session_store[session_id]:
+        return {"data": [], "shape": [0, 0], "columns": [], "message": "No dataset uploaded"}
+
     df = session_store[session_id]["dataframe"]
 
     # Replace NaN/Infinity with None for JSON compliance
