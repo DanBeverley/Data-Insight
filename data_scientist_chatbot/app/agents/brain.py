@@ -36,6 +36,8 @@ def _extract_last_user_message(messages: List) -> str:
 
 def _filter_messages_for_brain(messages: List, artifacts: List, agent_insights: List) -> List:
     """Filter messages to provide clean context without intermediate pollution."""
+    from langchain_core.messages import ToolMessage
+
     filtered = []
 
     for msg in messages:
@@ -48,9 +50,11 @@ def _filter_messages_for_brain(messages: List, artifacts: List, agent_insights: 
             if msg.additional_kwargs.get("internal"):
                 continue
             if has_tool_calls(msg):
-                continue
-            if msg.content and msg.content.strip():
                 filtered.append(msg)
+            elif msg.content and msg.content.strip():
+                filtered.append(msg)
+        elif msg.type == "tool" or isinstance(msg, ToolMessage):
+            filtered.append(msg)
 
     if artifacts and len(artifacts) > 0:
         artifact_summary = f"Analysis complete with {len(artifacts)} artifacts"
@@ -179,9 +183,32 @@ def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
     prompt = get_brain_prompt()
     agent_runnable = prompt | llm_with_tools
 
+    from datetime import datetime
+    import builtins
+
+    active_modes_list = []
+    if thinking_mode:
+        active_modes_list.append(
+            "📊 REPORT MODE: Generate comprehensive analysis with detailed visualizations and insights"
+        )
+
+    web_search_enabled = False
+    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+        web_search_enabled = builtins._session_store[session_id].get("search_config") is not None
+    if web_search_enabled:
+        active_modes_list.append(
+            "🌐 WEB SEARCH: Enabled - use web_search tool for current information, trust results over training data"
+        )
+
+    active_modes_str = (
+        "\n".join(active_modes_list) if active_modes_list else "Standard chat mode - no special modes active"
+    )
+
     invoke_state = {
         "messages": filtered_messages,
         "dataset_context": context,
+        "current_date": datetime.now().strftime("%Y-%m-%d"),
+        "active_modes": active_modes_str,
     }
 
     try:
