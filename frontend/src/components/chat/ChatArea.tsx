@@ -11,6 +11,15 @@ import { useAuth } from "@/contexts/AuthContext";
 import { authFetch, getAuthToken } from "@/lib/authFetch";
 import { ThinkingStream, ThinkingSection, TaskItem } from "./ThinkingStream";
 import { PlusMenu } from "./PlusMenu";
+import { SearchSettingsModal, SearchSettings, loadSearchSettings } from "./SearchSettingsModal";
+
+interface TokenStats {
+  totalTime?: number;
+  ttft?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  tokensPerSecond?: number;
+}
 
 interface Message {
   id: string;
@@ -19,6 +28,7 @@ interface Message {
   timestamp: string;
   plan?: Task[];
   visualizations?: Array<{ data: any; id: string }>;
+  tokenStats?: TokenStats;
 }
 
 interface ChatAreaProps {
@@ -44,6 +54,11 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
   const [lastReportPath, setLastReportPath] = useState<string>("");
   const [loadingStatus, setLoadingStatus] = useState<string>("Initializing...");
   const [currentModelName, setCurrentModelName] = useState<string>("quorvix-1");
+  const [webSearchMode, setWebSearchMode] = useState(false);
+  const [searchSettings, setSearchSettings] = useState<SearchSettings>(loadSearchSettings);
+  const [searchSettingsOpen, setSearchSettingsOpen] = useState(false);
+  const [researchMode, setResearchMode] = useState(false);
+  const [researchTimeBudget, setResearchTimeBudget] = useState(10);
 
   useEffect(() => {
     if (!user) {
@@ -194,7 +209,13 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
       }
 
       const token = getAuthToken();
-      const response = await fetch(`/api/agent/chat-stream?message=${encodeURIComponent(messagesToSend)}&session_id=${sessionId}&token_streaming=true&thinking_mode=${reportMode}`, {
+      let url = `/api/agent/chat-stream?message=${encodeURIComponent(messagesToSend)}&session_id=${sessionId}&token_streaming=true&thinking_mode=${reportMode}`;
+      if (webSearchMode) {
+        url += `&web_search_mode=true&search_provider=${searchSettings.provider}`;
+        if (searchSettings.braveApiKey) url += `&search_api_key=${encodeURIComponent(searchSettings.braveApiKey)}`;
+        if (searchSettings.searxngUrl) url += `&search_url=${encodeURIComponent(searchSettings.searxngUrl)}`;
+      }
+      const response = await fetch(url, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
 
@@ -207,6 +228,9 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let aiContent = "";
+      const streamStartTime = performance.now();
+      let firstTokenTime: number | null = null;
+      let tokenCount = 0;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -260,6 +284,10 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                   msg.id === aiMsgId ? { ...msg, plan: data.plan } : msg
                 ));
               } else if (data.type === 'token') {
+                if (firstTokenTime === null) {
+                  firstTokenTime = performance.now();
+                }
+                tokenCount++;
                 setLoadingStatus('Generating response...');
                 aiContent += data.content;
                 setMessages(prev => prev.map(msg =>
@@ -287,8 +315,18 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
               } else if (data.type === 'final_response') {
                 console.log('[SSE] Received final_response:', data);
                 aiContent = data.response || aiContent;
+                const endTime = performance.now();
+                const totalTime = (endTime - streamStartTime) / 1000;
+                const ttft = firstTokenTime ? (firstTokenTime - streamStartTime) / 1000 : undefined;
+                const tokensPerSecond = tokenCount > 0 && totalTime > 0 ? tokenCount / totalTime : undefined;
+                const stats: TokenStats = {
+                  totalTime,
+                  ttft,
+                  completionTokens: tokenCount,
+                  tokensPerSecond,
+                };
                 setMessages(prev => prev.map(msg =>
-                  msg.id === aiMsgId ? { ...msg, content: aiContent } : msg
+                  msg.id === aiMsgId ? { ...msg, content: aiContent, tokenStats: stats } : msg
                 ));
                 setTimeout(() => {
                   setThinkingSections([]);
@@ -297,6 +335,18 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
 
                 if (onSessionUpdate) {
                   setTimeout(() => onSessionUpdate(), 1000);
+                }
+              } else if (data.type === 'search_status') {
+                if (data.action === 'searching') {
+                  setLoadingStatus(`🔍 Searching the web...`);
+                } else if (data.action === 'browsing' && data.url) {
+                  setLoadingStatus(`🌐 Browsing ${data.url.slice(0, 50)}...`);
+                } else if (data.action === 'complete') {
+                  const count = data.resultCount || 0;
+                  const sources = data.sources || [];
+                  const sourceStr = sources.length > 0 ? ` (${sources.slice(0, 3).join(', ')})` : '';
+                  setLoadingStatus(`✓ Found ${count} results${sourceStr}`);
+                  setTimeout(() => setLoadingStatus("Analyzing results..."), 2000);
                 }
               } else if (data.type === 'error') {
                 aiContent += `\n[Error: ${data.content}]`;
@@ -467,6 +517,16 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                       onFileSelect={() => fileInputRef.current?.click()}
                       reportMode={reportMode}
                       onReportModeChange={setReportMode}
+                      webSearchMode={webSearchMode}
+                      onWebSearchModeChange={setWebSearchMode}
+                      onOpenSearchSettings={() => setSearchSettingsOpen(true)}
+                      researchMode={researchMode}
+                      onResearchModeChange={(enabled) => {
+                        setResearchMode(enabled);
+                        if (enabled) setWebSearchMode(false);
+                      }}
+                      researchTimeBudget={researchTimeBudget}
+                      onResearchTimeBudgetChange={setResearchTimeBudget}
                     />
                     <input
                       value={input}
@@ -527,6 +587,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                     modelName={currentModelName}
                     plan={msg.plan}
                     userAvatar={user?.avatar_url}
+                    tokenStats={msg.tokenStats}
                   />
                 </div>
               ))}
@@ -564,6 +625,16 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                   onFileSelect={() => fileInputRef.current?.click()}
                   reportMode={reportMode}
                   onReportModeChange={setReportMode}
+                  webSearchMode={webSearchMode}
+                  onWebSearchModeChange={setWebSearchMode}
+                  onOpenSearchSettings={() => setSearchSettingsOpen(true)}
+                  researchMode={researchMode}
+                  onResearchModeChange={(enabled) => {
+                    setResearchMode(enabled);
+                    if (enabled) setWebSearchMode(false);
+                  }}
+                  researchTimeBudget={researchTimeBudget}
+                  onResearchTimeBudgetChange={setResearchTimeBudget}
                 />
 
                 <Textarea
@@ -602,6 +673,12 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
         </div>
       )}
 
+      <SearchSettingsModal
+        open={searchSettingsOpen}
+        onOpenChange={setSearchSettingsOpen}
+        settings={searchSettings}
+        onSave={setSearchSettings}
+      />
     </div>
   );
 }
