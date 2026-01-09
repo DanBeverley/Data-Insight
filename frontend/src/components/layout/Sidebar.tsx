@@ -228,7 +228,7 @@ export function Sidebar({ isOpen, onToggle, currentView, onViewChange, currentSe
           <div className="flex flex-col items-center space-y-1">
             <NavItem icon={MessageSquarePlus} label="Chat" id="chat" />
             <NavItem icon={LayoutDashboard} label="Dashboards" id="dashboards" />
-            <NavItem icon={Database} label="Datasets" id="datasets" />
+            <NavItem icon={Database} label="Knowledge" id="datasets" />
             {onConnectDatabase && (
               <Tooltip delayDuration={0}>
                 <TooltipTrigger asChild>

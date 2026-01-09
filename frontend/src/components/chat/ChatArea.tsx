@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Paperclip, Sparkles, Mic, ArrowUp, File as FileIcon, X } from "lucide-react";
+import { Send, Paperclip, Sparkles, Mic, ArrowUp, File as FileIcon, X, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { MessageBubble } from "./MessageBubble";
@@ -178,7 +178,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
     setInput("");
     setAttachedFiles([]);
     setIsTyping(true);
-    setLoadingStatus("Analyzing request...");
+    setLoadingStatus(researchMode ? `🔬 Starting deep research (${researchTimeBudget}m)...` : "Analyzing request...");
 
     // Initial AI message placeholder
     let aiMsgId = (Date.now() + 1).toString();
@@ -214,6 +214,9 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
         url += `&web_search_mode=true&search_provider=${searchSettings.provider}`;
         if (searchSettings.braveApiKey) url += `&search_api_key=${encodeURIComponent(searchSettings.braveApiKey)}`;
         if (searchSettings.searxngUrl) url += `&search_url=${encodeURIComponent(searchSettings.searxngUrl)}`;
+      }
+      if (researchMode) {
+        url += `&research_mode=true&research_time_budget=${researchTimeBudget}`;
       }
       const response = await fetch(url, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
@@ -348,6 +351,24 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                   setLoadingStatus(`✓ Found ${count} results${sourceStr}`);
                   setTimeout(() => setLoadingStatus("Analyzing results..."), 2000);
                 }
+              } else if (data.type === 'research_progress') {
+                const phase = data.phase || 'researching';
+                const iteration = data.iteration || 0;
+                const timeRemaining = data.time_remaining || 0;
+                const topic = data.current_topic || '';
+                const mins = Math.floor(timeRemaining / 60);
+                const secs = timeRemaining % 60;
+                const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                const topicStr = topic ? ` - ${topic.slice(0, 30)}...` : '';
+                setLoadingStatus(`🔬 ${phase} (${iteration})${topicStr} [${timeStr} left]`);
+              } else if (data.type === 'research_complete') {
+                const findingsCount = data.findings_count || 0;
+                const sourcesCount = data.sources_count || 0;
+                setLoadingStatus(`✓ Research complete: ${findingsCount} findings from ${sourcesCount} sources`);
+                setTimeout(() => setLoadingStatus("Synthesizing report..."), 2000);
+              } else if (data.type === 'cancelled') {
+                setIsTyping(false);
+                setLoadingStatus("");
               } else if (data.type === 'error') {
                 aiContent += `\n[Error: ${data.content}]`;
                 setMessages(prev => prev.map(msg =>
@@ -372,6 +393,19 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
     } finally {
       setIsTyping(false);
       setIsUploading(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    try {
+      const token = getAuthToken();
+      await fetch(`/api/agent/cancel/${sessionId}`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      setLoadingStatus("Stopping...");
+    } catch (error) {
+      console.error("Cancel error:", error);
     }
   };
 
@@ -542,15 +576,19 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                       autoFocus
                     />
                     <Button
-                      onClick={handleSend}
+                      onClick={isTyping ? handleCancel : handleSend}
                       size="icon"
-                      disabled={!input.trim() && attachedFiles.length === 0}
+                      disabled={!isTyping && !input.trim() && attachedFiles.length === 0}
                       className={cn(
-                        "h-10 w-10 rounded-xl transition-all duration-300 flex-shrink-0",
-                        (input.trim() || attachedFiles.length > 0) ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]" : "bg-muted text-muted-foreground hover:bg-muted/80"
+                        "h-10 w-10 rounded-xl transition-all duration-300 flex-shrink-0 hover:scale-105 active:scale-95",
+                        isTyping
+                          ? "bg-gray-200 hover:bg-gray-300 border border-gray-300 text-gray-800"
+                          : (input.trim() || attachedFiles.length > 0)
+                            ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]"
+                            : "bg-muted text-muted-foreground hover:bg-muted/80"
                       )}
                     >
-                      <ArrowUp className="h-5 w-5" />
+                      {isTyping ? <Square className="h-4 w-4 fill-current" /> : <ArrowUp className="h-5 w-5" />}
                     </Button>
                   </div>
                 </div>
@@ -655,17 +693,19 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                 />
 
                 <Button
-                  onClick={handleSend}
+                  onClick={isTyping ? handleCancel : handleSend}
                   size="icon"
-                  disabled={!input.trim() && attachedFiles.length === 0}
+                  disabled={!isTyping && !input.trim() && attachedFiles.length === 0}
                   className={cn(
-                    "h-10 w-10 rounded-xl transition-all duration-300",
-                    (input.trim() || attachedFiles.length > 0) ?
-                      (reportMode ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]" : "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]")
-                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    "h-10 w-10 rounded-xl transition-all duration-300 hover:scale-105 active:scale-95",
+                    isTyping
+                      ? "bg-gray-200 hover:bg-gray-300 border border-gray-300 text-gray-800"
+                      : (input.trim() || attachedFiles.length > 0)
+                        ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80"
                   )}
                 >
-                  <ArrowUp className="h-5 w-5" />
+                  {isTyping ? <Square className="h-4 w-4 fill-current" /> : <ArrowUp className="h-5 w-5" />}
                 </Button>
               </div>
             </div>

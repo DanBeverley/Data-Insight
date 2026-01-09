@@ -8,60 +8,43 @@ import {
   TableHeader,
   TableRow
 } from "@/components/ui/table";
-import { FileText, Upload, Database, MoreVertical, Search, Filter } from "lucide-react";
+import { FileText, Upload, Brain, Trash2, Search, Filter, BookOpen } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
-interface Dataset {
+interface KnowledgeItem {
   id: string;
-  name: string;
-  size: string;
-  rows: string;
-  type: string;
-  date: string;
-  status: string;
+  source: string;
+  source_name: string;
+  added_at: string;
+  content_preview: string;
 }
 
-interface DatasetViewProps {
+interface KnowledgeStoreViewProps {
   sessionId: string;
 }
 
-export function DatasetView({ sessionId }: DatasetViewProps) {
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
+  const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [storageUsed, setStorageUsed] = useState(0);
-  const [storageTotal, setStorageTotal] = useState(100);
+  const [searchQuery, setSearchQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    // Fetch uploaded datasets for this session
-    const fetchDatasets = async () => {
-      try {
-        const response = await fetch(`/api/data/${sessionId}/preview`);
-        if (response.ok) {
-          const data = await response.json();
-          // Backend returns { data: [...rows], shape: [rows, cols], columns: [...] }
-          if (data.data && data.data.length > 0) {
-            // Create dataset entry from preview data
-            const dataset = {
-              id: sessionId,
-              name: "Uploaded Dataset",
-              size: `${(JSON.stringify(data.data).length / 1024).toFixed(1)} KB`,
-              rows: data.shape ? data.shape[0].toString() : data.data.length.toString(),
-              type: "CSV",
-              date: new Date().toLocaleDateString(),
-              status: "Active"
-            };
-            setDatasets([dataset]);
-          }
-        }
-      } catch (error) {
-        console.error("Failed to fetch datasets:", error);
+  const fetchItems = async () => {
+    try {
+      const response = await fetch(`/api/knowledge/${sessionId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setItems(data.items || []);
       }
-    };
+    } catch (error) {
+      console.error("Failed to fetch knowledge items:", error);
+    }
+  };
 
+  useEffect(() => {
     if (sessionId) {
-      fetchDatasets();
+      fetchItems();
     }
   }, [sessionId]);
 
@@ -69,28 +52,33 @@ export function DatasetView({ sessionId }: DatasetViewProps) {
     if (!files.length) return;
 
     setUploading(true);
-    const formData = new FormData();
-    files.forEach(file => {
-      formData.append('files', file);
-    });
-    formData.append('session_id', sessionId);
-    formData.append('enable_profiling', 'true');
 
-    try {
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      });
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append('file', file);
 
-      const result = await response.json();
-      if (result.status === 'success') {
-        // Refresh datasets list
-        window.location.reload(); // Simple reload for now
+      try {
+        await fetch(`/api/knowledge/${sessionId}`, {
+          method: 'POST',
+          body: formData
+        });
+      } catch (error) {
+        console.error("Upload error:", error);
       }
+    }
+
+    setUploading(false);
+    fetchItems();
+  };
+
+  const handleDelete = async (docId: string) => {
+    try {
+      await fetch(`/api/knowledge/${sessionId}/${docId}`, {
+        method: 'DELETE'
+      });
+      fetchItems();
     } catch (error) {
-      console.error("Upload error:", error);
-    } finally {
-      setUploading(false);
+      console.error("Delete error:", error);
     }
   };
 
@@ -104,26 +92,44 @@ export function DatasetView({ sessionId }: DatasetViewProps) {
     e.preventDefault();
   };
 
-  const storagePercent = (storageUsed / storageTotal) * 100;
+  const getSourceIcon = (source: string) => {
+    if (source === "research") return <Brain className="h-4 w-4" />;
+    return <FileText className="h-4 w-4" />;
+  };
+
+  const getSourceLabel = (source: string) => {
+    switch (source) {
+      case "research": return "Research";
+      case "user_upload": return "Upload";
+      case "agent": return "Agent";
+      default: return "Other";
+    }
+  };
+
+  const filteredItems = items.filter(item =>
+    item.source_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    item.content_preview.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
     <div className="p-8 space-y-8 animate-in fade-in duration-500">
       <div>
-        <h2 className="text-3xl font-display font-bold text-foreground tracking-tight">Data Nexus</h2>
-        <p className="text-muted-foreground mt-1">Manage your raw datasets and connected sources.</p>
+        <h2 className="text-3xl font-display font-bold text-foreground tracking-tight flex items-center gap-3">
+          <BookOpen className="h-8 w-8 text-primary" />
+          Knowledge Store
+        </h2>
+        <p className="text-muted-foreground mt-1">Your research findings and uploaded documents, all in one place.</p>
       </div>
 
-      {/* Hidden file input */}
       <input
         type="file"
         multiple
         ref={fileInputRef}
         className="hidden"
-        accept=".csv,.xlsx,.xls,.json,.parquet"
+        accept=".txt,.md,.pdf,.json,.csv"
         onChange={(e) => e.target.files && handleFileSelect(Array.from(e.target.files))}
       />
 
-      {/* Stats / Drag Drop Area */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div
           ref={dropZoneRef}
@@ -135,89 +141,87 @@ export function DatasetView({ sessionId }: DatasetViewProps) {
           <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
             <Upload className="h-8 w-8 text-primary" />
           </div>
-          <h3 className="text-lg font-medium">{uploading ? 'Uploading...' : 'Drop files to upload'}</h3>
-          <p className="text-sm text-muted-foreground mt-1">Support for CSV, JSON, Excel, Parquet (Max 500MB)</p>
+          <h3 className="text-lg font-medium">{uploading ? 'Uploading...' : 'Drop files to add to knowledge'}</h3>
+          <p className="text-sm text-muted-foreground mt-1">Support for TXT, Markdown, PDF, JSON, CSV</p>
         </div>
 
         <div className="md:col-span-1 space-y-4">
           <div className="bg-primary/10 border border-primary/20 rounded-2xl p-5">
-            <p className="text-xs text-primary/80 uppercase font-bold mb-2">Total Storage</p>
-            <p className="text-2xl font-mono font-bold text-primary">
-              {storageUsed.toFixed(1)} GB
-            </p>
-            <div className="w-full bg-primary/20 h-1.5 rounded-full mt-3 overflow-hidden">
-              <div className="bg-primary h-full transition-all duration-300" style={{ width: `${storagePercent}%` }} />
-            </div>
-            <p className="text-xs text-primary/60 mt-1">of {storageTotal} GB</p>
+            <p className="text-xs text-primary/80 uppercase font-bold mb-2">Total Items</p>
+            <p className="text-3xl font-mono font-bold text-primary">{items.length}</p>
           </div>
           <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
-            <p className="text-xs text-muted-foreground uppercase font-bold mb-2">Uploaded Files</p>
-            <p className="text-3xl font-mono font-bold text-foreground">{datasets.length}</p>
+            <p className="text-xs text-muted-foreground uppercase font-bold mb-2">Research Findings</p>
+            <p className="text-3xl font-mono font-bold text-foreground">
+              {items.filter(i => i.source === "research").length}
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Controls */}
       <div className="flex gap-4">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search datasets..." className="pl-10 bg-white/5 border-white/10 focus-visible:ring-primary/50" />
+          <Input
+            placeholder="Search knowledge..."
+            className="pl-10 bg-white/5 border-white/10 focus-visible:ring-primary/50"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
         </div>
         <Button variant="outline" className="bg-white/5 border-white/10">
           <Filter className="mr-2 h-4 w-4" /> Filter
         </Button>
       </div>
 
-      {/* Table */}
       <div className="rounded-2xl border border-white/10 overflow-hidden bg-white/5 backdrop-blur-sm">
         <Table>
           <TableHeader className="bg-white/5">
             <TableRow className="hover:bg-transparent border-white/10">
               <TableHead className="text-muted-foreground">Name</TableHead>
-              <TableHead className="text-muted-foreground">Type</TableHead>
-              <TableHead className="text-muted-foreground">Size</TableHead>
-              <TableHead className="text-muted-foreground">Rows</TableHead>
-              <TableHead className="text-muted-foreground">Status</TableHead>
+              <TableHead className="text-muted-foreground">Source</TableHead>
+              <TableHead className="text-muted-foreground">Added</TableHead>
+              <TableHead className="text-muted-foreground">Preview</TableHead>
               <TableHead className="text-right"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {datasets.length === 0 ? (
+            {filteredItems.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-10">
-                  No datasets uploaded yet. Upload files to get started.
+                <TableCell colSpan={5} className="text-center text-muted-foreground py-10">
+                  No knowledge items yet. Upload files or run research to get started.
                 </TableCell>
               </TableRow>
             ) : (
-              datasets.map((file) => (
-                <TableRow key={file.id} className="hover:bg-white/5 border-white/10 group">
+              filteredItems.map((item) => (
+                <TableRow key={item.id} className="hover:bg-white/5 border-white/10 group">
                   <TableCell className="font-medium">
                     <div className="flex items-center gap-3">
-                      <div className="h-8 w-8 rounded bg-primary/10 flex items-center justify-center text-primary">
-                        <FileText className="h-4 w-4" />
+                      <div className={`h-8 w-8 rounded flex items-center justify-center ${item.source === 'research' ? 'bg-purple-500/20 text-purple-400' : 'bg-primary/10 text-primary'}`}>
+                        {getSourceIcon(item.source)}
                       </div>
-                      <div className="flex flex-col">
-                        <span className="text-sm text-foreground">{file.name}</span>
-                        <span className="text-xs text-muted-foreground">{file.date}</span>
-                      </div>
+                      <span className="text-sm text-foreground truncate max-w-[200px]">{item.source_name}</span>
                     </div>
                   </TableCell>
                   <TableCell>
-                    <span className="inline-flex items-center px-2 py-1 rounded-md bg-white/5 text-xs font-mono text-muted-foreground border border-white/5">
-                      {file.type}
+                    <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium ${item.source === 'research' ? 'bg-purple-500/20 text-purple-300' : 'bg-white/5 text-muted-foreground'} border border-white/5`}>
+                      {getSourceLabel(item.source)}
                     </span>
                   </TableCell>
-                  <TableCell className="text-sm text-muted-foreground font-mono">{file.size}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground font-mono">{file.rows}</TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <div className={`h-1.5 w-1.5 rounded-full ${file.status === 'Ready' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : file.status === 'Processing' ? 'bg-yellow-500 animate-pulse' : 'bg-gray-500'}`} />
-                      <span className="text-xs text-muted-foreground">{file.status}</span>
-                    </div>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {item.added_at ? new Date(item.added_at).toLocaleDateString() : '-'}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground truncate max-w-[300px]">
+                    {item.content_preview}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100 transition-opacity">
-                      <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                      onClick={() => handleDelete(item.id)}
+                    >
+                      <Trash2 className="h-4 w-4" />
                     </Button>
                   </TableCell>
                 </TableRow>
