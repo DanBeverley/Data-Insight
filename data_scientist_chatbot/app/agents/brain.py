@@ -23,6 +23,10 @@ from data_scientist_chatbot.app.tools.tool_definitions import (
     web_search,
     zip_artifacts,
     generate_comprehensive_report,
+    delegate_research_task,
+    save_to_knowledge,
+    query_knowledge,
+    ingest_file_to_knowledge,
 )
 
 
@@ -164,12 +168,16 @@ def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
 
     brain_tools = [
         delegate_coding_task,
+        delegate_research_task,
         knowledge_graph_query,
         access_learning_data,
         web_search,
         zip_artifacts,
         generate_comprehensive_report,
         submit_dashboard_insights,
+        save_to_knowledge,
+        query_knowledge,
+        ingest_file_to_knowledge,
     ]
 
     model_name = getattr(llm, "model", "")

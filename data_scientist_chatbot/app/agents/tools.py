@@ -135,6 +135,79 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
 
                     logger.info(f"[WEB_SEARCH] Result length: {len(content)} chars, count: {result_count}")
 
+                elif tool_name == "delegate_research_task":
+                    import asyncio
+                    import builtins
+                    from data_scientist_chatbot.app.agents.research_brain import ResearchBrain
+
+                    query = tool_args.get("query", "")
+                    time_budget = tool_args.get("time_budget_minutes", 10)
+                    logger.info(f"[RESEARCH] Starting deep research: '{query}' ({time_budget}m budget)")
+
+                    search_config = {}
+                    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                        search_config = builtins._session_store[session_id].get("search_config", {})
+
+                    research_brain = ResearchBrain(
+                        session_id=session_id, time_budget_minutes=time_budget, search_config=search_config
+                    )
+
+                    try:
+                        loop = asyncio.get_running_loop()
+                        import concurrent.futures
+
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            future = pool.submit(asyncio.run, research_brain.research(query))
+                            findings = future.result(timeout=time_budget * 60 + 30)
+                    except RuntimeError:
+                        findings = asyncio.run(research_brain.research(query))
+
+                    content = findings.to_summary()
+                    logger.info(
+                        f"[RESEARCH] Complete: {len(findings.findings)} findings, " f"{findings.iterations} iterations"
+                    )
+
+                elif tool_name == "save_to_knowledge":
+                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+
+                    store = KnowledgeStore(session_id)
+                    doc_id = store.add_document(
+                        content=tool_args.get("content", ""),
+                        source="agent",
+                        source_name=tool_args.get("source_name", "Agent Knowledge"),
+                    )
+                    content = f"Saved to knowledge store with ID: {doc_id}" if doc_id else "Failed to save"
+                    logger.info(f"[KNOWLEDGE] Saved document: {doc_id}")
+
+                elif tool_name == "query_knowledge":
+                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+
+                    store = KnowledgeStore(session_id)
+                    results = store.query(tool_args.get("query", ""), k=tool_args.get("k", 5))
+                    if results:
+                        content = "KNOWLEDGE STORE RESULTS:\n"
+                        for i, r in enumerate(results, 1):
+                            content += (
+                                f"\n{i}. [{r['metadata'].get('source_name', 'Unknown')}]\n{r['content'][:500]}...\n"
+                            )
+                    else:
+                        content = "No relevant knowledge found."
+                    logger.info(f"[KNOWLEDGE] Query returned {len(results)} results")
+
+                elif tool_name == "ingest_file_to_knowledge":
+                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    import builtins
+
+                    store = KnowledgeStore(session_id)
+                    file_path = tool_args.get("file_path", "")
+                    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                        uploads_dir = builtins._session_store[session_id].get("uploads_dir", "")
+                        if uploads_dir:
+                            file_path = f"{uploads_dir}/{file_path}"
+                    doc_id = store.add_file(file_path, source_type="user_upload")
+                    content = f"File ingested to knowledge with ID: {doc_id}" if doc_id else "Failed to ingest file"
+                    logger.info(f"[KNOWLEDGE] Ingested file: {file_path} -> {doc_id}")
+
                 elif tool_name == "python_code_interpreter":
                     logger.debug(f"Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
                     content = execute_tool(tool_name, tool_args, session_id)

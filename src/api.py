@@ -248,6 +248,10 @@ from src.routers.image_router import router as image_router
 
 app.include_router(image_router)
 
+from src.routers.knowledge_router import router as knowledge_router
+
+app.include_router(knowledge_router)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -970,12 +974,9 @@ async def cancel_agent_task(session_id: str):
         from .database.connection import get_database_manager
 
         db_manager = get_database_manager()
-        db = db_manager.db
-
-        cancelled_task = CancelledTask(session_id=session_id, cancelled_at=datetime.now(), reason="user_requested")
-
-        db.add(cancelled_task)
-        db.commit()
+        with db_manager.get_session() as db:
+            cancelled_task = CancelledTask(session_id=session_id, cancelled_at=datetime.now(), reason="user_requested")
+            db.add(cancelled_task)
 
         logging.info(f"Marked session {session_id} as cancelled")
         return {"success": True, "session_id": session_id}
@@ -1018,6 +1019,8 @@ async def agent_chat_stream(
     search_provider: str = "duckduckgo",
     search_api_key: Optional[str] = None,
     search_url: Optional[str] = None,
+    research_mode: bool = False,
+    research_time_budget: int = 10,
     token_streaming: bool = True,
     thinking_mode: bool = False,
     regenerate: bool = False,
@@ -1074,6 +1077,8 @@ async def agent_chat_stream(
 
     async def generate_events():
         session_store[session_id]["web_search_mode"] = web_search_mode
+        session_store[session_id]["research_mode"] = research_mode
+        session_store[session_id]["research_time_budget"] = research_time_budget
         session_store[session_id]["token_streaming"] = token_streaming
         session_store[session_id]["thinking_mode"] = thinking_mode
         if web_search_mode:
