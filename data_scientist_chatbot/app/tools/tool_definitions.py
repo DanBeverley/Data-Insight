@@ -158,6 +158,95 @@ def web_search(query: str) -> str:
     return "This is a placeholder. Web search happens in the graph node."
 
 
+class ResearchTaskInput(BaseModel):
+    query: str = Field(description="The research question or topic to investigate deeply")
+    time_budget_minutes: int = Field(
+        default=10, description="Time budget in minutes for the research (5-60 minutes recommended)"
+    )
+
+
+@tool(args_schema=ResearchTaskInput)
+def delegate_research_task(query: str, time_budget_minutes: int = 10) -> str:
+    """
+    Delegate a deep research task to the specialized Research Brain.
+
+    Use when the user explicitly requests thorough research, or when the query
+    requires exploring multiple subtopics, gathering diverse sources, and
+    synthesizing comprehensive findings.
+
+    The Research Brain will:
+    - Decompose the query into sub-questions
+    - Search and explore each subtopic iteratively
+    - Accumulate findings with source citations
+    - Return structured results for synthesis
+
+    Args:
+        query: The research question to investigate
+        time_budget_minutes: How long to spend researching (default 10 minutes)
+    """
+    return "This is a placeholder. Research delegation happens in the graph node."
+
+
+class SaveToKnowledgeInput(BaseModel):
+    content: str = Field(description="Text content to save to the knowledge store")
+    source_name: str = Field(description="Name/label for this knowledge item (e.g., 'Climate Research 2026')")
+
+
+class QueryKnowledgeInput(BaseModel):
+    query: str = Field(description="Search query to find relevant knowledge")
+    k: int = Field(default=5, description="Number of results to retrieve")
+
+
+class IngestFileInput(BaseModel):
+    file_path: str = Field(description="Path to the file to ingest (from uploads directory)")
+
+
+@tool(args_schema=SaveToKnowledgeInput)
+def save_to_knowledge(content: str, source_name: str) -> str:
+    """
+    Save content to the session's knowledge store for future retrieval.
+
+    Use when you have gathered valuable information (research findings,
+    extracted insights, user-provided context) that should be remembered
+    for this conversation session.
+
+    Args:
+        content: The text content to store
+        source_name: A descriptive name for this knowledge item
+    """
+    return "This is a placeholder. Knowledge saving happens in the graph node."
+
+
+@tool(args_schema=QueryKnowledgeInput)
+def query_knowledge(query: str, k: int = 5) -> str:
+    """
+    Search the knowledge store for relevant information.
+
+    Use BEFORE starting research to check if you already have relevant
+    information stored. Also use when the user asks about previously
+    discussed topics.
+
+    Args:
+        query: What to search for
+        k: How many results to return (default 5)
+    """
+    return "This is a placeholder. Knowledge query happens in the graph node."
+
+
+@tool(args_schema=IngestFileInput)
+def ingest_file_to_knowledge(file_path: str) -> str:
+    """
+    Add an uploaded file to the knowledge store.
+
+    Use when the user explicitly asks to "add this file to knowledge" or
+    "remember this document". The file content will be extracted and indexed.
+
+    Args:
+        file_path: Path to the file (relative to uploads directory)
+    """
+    return "This is a placeholder. File ingestion happens in the graph node."
+
+
 @tool
 def zip_artifacts(artifact_ids: str, description: str = "") -> str:
     """
