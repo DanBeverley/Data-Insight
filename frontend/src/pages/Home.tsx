@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react"
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ChatArea } from "@/components/chat/ChatArea";
 import { DashboardView } from "@/components/dashboard/DashboardView";
-import { DatasetView } from "@/components/dashboard/DatasetView";
+import { KnowledgeStoreView } from "@/components/dashboard/DatasetView";
 const ReportPanel = lazy(() => import("@/components/report/ReportPanel").then(m => ({ default: m.ReportPanel })));
 import { DatabaseModal } from "@/components/database/DatabaseModal";
 import { useNotifications } from "@/hooks/useNotifications";
@@ -171,7 +171,7 @@ export default function Home() {
             {currentView !== 'chat' && (
               <ScrollArea className="h-full">
                 {currentView === 'dashboards' && <DashboardView sessionId={sessionId} />}
-                {currentView === 'datasets' && <DatasetView sessionId={sessionId} />}
+                {currentView === 'datasets' && <KnowledgeStoreView sessionId={sessionId} />}
               </ScrollArea>
             )}
           </div>
