@@ -699,6 +699,33 @@ async def _stream_with_events(
     yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots, 'message_id': message_id, 'version': version})}\n\n"
 
 
+async def cancellable_stream(stream, session_id):
+    iterator = stream.__aiter__()
+    while True:
+        from .cancellation import is_task_cancelled
+
+        if is_task_cancelled(session_id):
+            yield {"__cancelled__": True}
+            return
+        try:
+            next_item_task = asyncio.create_task(anext(iterator))
+            while not next_item_task.done():
+                if is_task_cancelled(session_id):
+                    next_item_task.cancel()
+                    try:
+                        await next_item_task
+                    except asyncio.CancelledError:
+                        pass
+                    yield {"__cancelled__": True}
+                    return
+                await asyncio.sleep(0.5)
+            yield next_item_task.result()
+        except StopAsyncIteration:
+            break
+        except Exception:
+            raise
+
+
 async def _stream_brain_tokens(content: str, session_id: str) -> AsyncGenerator[str, None]:
     """
     Stream content token-by-token for ChatGPT-like experience.
@@ -758,13 +785,26 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
         current_pipeline_phase = "init"  # init → hands → verifier → brain
         safe_checkpoint_nodes = {"brain", "__end__", "presenter", "architect"}
 
-        async for event in agent.astream(create_agent_input(message, session_id), config=config):
+        async for event in cancellable_stream(
+            agent.astream(create_agent_input(message, session_id), config=config), session_id
+        ):
+            if "__cancelled__" in event:
+                logging.info(f"[STREAM] User cancelled task for session {session_id}")
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Generation stopped by user'})}\n\n"
+                break
+
             elapsed = time.time() - start_time
 
-            # Track current pipeline phase for smart timeout
             for node_name in event.keys():
                 if node_name in WORKFLOW_NODES:
                     current_pipeline_phase = node_name
+
+            import builtins
+
+            if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                research_progress = builtins._session_store[session_id].pop("research_progress", None)
+                if research_progress:
+                    yield f"data: {json.dumps({'type': 'research_progress', **research_progress})}\n\n"
 
             # Smart timeout logic
             if elapsed > max_stream_time:
@@ -1011,6 +1051,13 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
         logging.info(
             f"[STREAM] Available: action_outputs={len(action_outputs)}, final_brain_response={bool(final_brain_response)}, messages={len(messages)}"
         )
+
+        # Check for user cancellation again to prevent building final response
+        from .cancellation import is_task_cancelled
+
+        if is_task_cancelled(session_id):
+            logging.info(f"[STREAM] Task cancelled, skip final response generation")
+            return
 
         content_parts = []
 
