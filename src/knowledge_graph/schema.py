@@ -1,7 +1,7 @@
 """
 Knowledge Graph Schema Definition
 
-Defines the nodes, relationships, and structure for the DataInsight AI
+Defines the nodes, relationships, and structure for the Quorvix AI
 knowledge graph that captures relationships between data, features,
 models, and business outcomes.
 """

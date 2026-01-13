@@ -1,4 +1,4 @@
-"""Hybrid Data Profiling System for Dataset Awareness - DataInsight AI
+"""Hybrid Data Profiling System for Dataset Awareness - Quorvix AI
 
 Integrates all existing intelligence modules to create comprehensive dataset profiles
 for AI agent awareness including anomalies, quality assessment, semantic understanding, etc.

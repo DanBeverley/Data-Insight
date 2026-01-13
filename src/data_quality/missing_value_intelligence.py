@@ -1,4 +1,4 @@
-"""Advanced Missing Value Intelligence System for DataInsight AI"""
+"""Advanced Missing Value Intelligence System for Quorvix AI"""
 
 import logging
 import numpy as np

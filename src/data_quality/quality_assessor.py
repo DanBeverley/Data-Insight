@@ -1,4 +1,4 @@
-"""Context-Aware Data Quality Assessment System for DataInsight AI"""
+"""Context-Aware Data Quality Assessment System for Quorvix AI"""
 
 import logging
 import numpy as np

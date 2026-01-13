@@ -92,7 +92,7 @@ class DatabaseManager:
                     "pool_recycle": self.config.pool_recycle,
                     "connect_args": {
                         "connect_timeout": self.config.connect_timeout,
-                        "application_name": "DataInsight_AI",
+                        "application_name": "Quorvix_AI",
                     },
                 }
             )

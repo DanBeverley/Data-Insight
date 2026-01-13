@@ -1,5 +1,5 @@
 """
-Configuration Loader for DataInsight AI
+Configuration Loader for Quorvix AI
 
 This module reads the main `config.yaml` file, validates its structure,
 and provides a singleton-like object (`settings`) for easy access

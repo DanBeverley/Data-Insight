@@ -1,5 +1,5 @@
 """
-Centralized Data Ingestion Module for DataInsight AI
+Centralized Data Ingestion Module for Quorvix AI
 
 This module provides a unified function, `ingest_data`, to load data from
 various sources including file uploads, local paths, and remote URLs. It is
@@ -100,7 +100,7 @@ def _ingest_from_google_drive(url: str) -> Optional[pd.DataFrame]:
 
 def _fetch_and_parse_url(url: str, data_type: str) -> Optional[pd.DataFrame]:
     """Fetch data from URL and parse based on type."""
-    headers = {"User-Agent": "DataInsight-AI/2.0 (Data Analysis Tool)"}
+    headers = {"User-Agent": "Quorvix-AI/2.0 (Data Analysis Tool)"}
 
     response = requests.get(url, headers=headers, timeout=30)
     response.raise_for_status()

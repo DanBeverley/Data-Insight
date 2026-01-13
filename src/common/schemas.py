@@ -7,7 +7,7 @@ InsightType = Literal["summary", "quality", "health", "pattern", "anomaly", "rec
 
 
 @dataclass
-class DataInsight:
+class Quorvix:
     label: str
     value: str
     type: InsightType

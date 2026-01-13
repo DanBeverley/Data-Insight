@@ -1,8 +1,8 @@
 """
-Knowledge Graph Module for DataInsight AI
+Knowledge Graph Module for Quorvix AI
 
 This module provides graph-based knowledge representation and querying
-capabilities for the DataInsight AI platform, enabling relationship-aware
+capabilities for the Quorvix AI platform, enabling relationship-aware
 data science intelligence.
 """
 

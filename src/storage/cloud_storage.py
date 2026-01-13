@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def get_cloud_storage(bucket_name: str = "datainsight-artifacts"):
+def get_cloud_storage(bucket_name: str = "Quorvix-artifacts"):
     """
     Factory function to get Cloudflare R2 storage service.
 

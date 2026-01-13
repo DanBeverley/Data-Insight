@@ -1,4 +1,4 @@
-"""Intelligent Data Understanding System for DataInsight AI"""
+"""Intelligent Data Understanding System for Quorvix AI"""
 
 import re
 import logging
