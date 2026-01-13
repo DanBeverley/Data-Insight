@@ -1,11 +1,14 @@
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useState } from "react";
+import { SearchStatusCard } from "./SearchStatusCard";
 
 interface ResponseLoadingIndicatorProps {
   modelName?: string;
   status?: string;
   className?: string;
+  searchHistory?: any[];
+  currentSearchStatus?: any;
 }
 
 function PixelWave({ className }: { className?: string }) {
@@ -64,6 +67,8 @@ export function ResponseLoadingIndicator({
   modelName = "quorvix-1",
   status = "Analyzing sources",
   className,
+  searchHistory = [],
+  currentSearchStatus
 }: ResponseLoadingIndicatorProps) {
   return (
     <div
@@ -83,12 +88,28 @@ export function ResponseLoadingIndicator({
         <span className="text-sm font-medium text-foreground">{modelName}</span>
         <PixelWave />
       </div>
-      {status && status.length > 30 && (
-        <CollapsibleStatus status={status} />
-      )}
-      {(!status || status.length <= 30) && (
-        <div className="text-sm text-muted-foreground">{status || "Processing..."}</div>
-      )}
-    </div>
+
+      {
+        (searchHistory.length > 0 || currentSearchStatus) && (
+          <div className="mt-2 text-left">
+            <SearchStatusCard
+              searchStatus={currentSearchStatus}
+              searchHistory={searchHistory}
+            />
+          </div>
+        )
+      }
+
+      {
+        status && status.length > 30 && !status.includes("Searching") && (
+          <CollapsibleStatus status={status} />
+        )
+      }
+      {
+        (!status || status.length <= 30) && (
+          <div className="text-sm text-muted-foreground">{status || "Processing..."}</div>
+        )
+      }
+    </div >
   );
 }

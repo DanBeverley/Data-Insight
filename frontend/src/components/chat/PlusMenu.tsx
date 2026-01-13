@@ -156,6 +156,7 @@ export function PlusMenu({
                                     <Switch
                                         checked={researchMode}
                                         onCheckedChange={onResearchModeChange}
+                                        disabled={webSearchMode}
                                         className="scale-75 data-[state=checked]:bg-purple-500"
                                     />
                                 </div>

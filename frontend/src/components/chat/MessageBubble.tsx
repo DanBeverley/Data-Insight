@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { VersionSlider } from "./VersionSlider";
 import { Bot, User, Cpu, RefreshCw, Pencil, Check, X, Paperclip, Download, MoreVertical, Image as ImageIcon, FileDown, ExternalLink } from "lucide-react";
-import { ReactNode, useState, useRef } from "react";
+import { ReactNode, useState, useRef, memo } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import ReactMarkdown from 'react-markdown';
@@ -160,9 +160,31 @@ interface MessageBubbleProps {
     completionTokens?: number;
     tokensPerSecond?: number;
   };
+  searchHistory?: any[];
+  currentSearchStatus?: any;
 }
 
-export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEdit, onOpenReport, isTyping, isLoading, loadingStatus, modelName, plan, userAvatar, messageId, currentVersion = 1, totalVersions = 1, onVersionChange, tokenStats }: MessageBubbleProps) {
+function arePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
+  return (
+    prev.id === next.id &&
+    prev.role === next.role &&
+    prev.content === next.content &&
+    prev.timestamp === next.timestamp &&
+    prev.isTyping === next.isTyping &&
+    prev.isLoading === next.isLoading &&
+    prev.loadingStatus === next.loadingStatus &&
+    prev.modelName === next.modelName &&
+    prev.userAvatar === next.userAvatar &&
+    prev.currentVersion === next.currentVersion &&
+    prev.totalVersions === next.totalVersions &&
+    prev.plan === next.plan &&
+    prev.tokenStats === next.tokenStats &&
+    prev.searchHistory === next.searchHistory &&
+    prev.currentSearchStatus === next.currentSearchStatus
+  );
+}
+
+function MessageBubbleBase({ id, role, content, timestamp, onRegenerate, onEdit, onOpenReport, isTyping, isLoading, loadingStatus, modelName, plan, userAvatar, messageId, currentVersion = 1, totalVersions = 1, onVersionChange, tokenStats, searchHistory, currentSearchStatus }: MessageBubbleProps) {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(typeof content === 'string' ? content : '');
@@ -244,7 +266,12 @@ export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEd
               plan && plan.length > 0 ? (
                 <PlanProgress plan={plan} />
               ) : (
-                <ResponseLoadingIndicator modelName={modelName} status={loadingStatus} />
+                <ResponseLoadingIndicator
+                  modelName={modelName}
+                  status={loadingStatus}
+                  searchHistory={searchHistory}
+                  currentSearchStatus={currentSearchStatus}
+                />
               )
             ) : typeof content === 'string' ? (
               <div className="animate-in fade-in duration-700">
@@ -413,3 +440,5 @@ export function MessageBubble({ id, role, content, timestamp, onRegenerate, onEd
     </div >
   );
 }
+
+export const MessageBubble = memo(MessageBubbleBase, arePropsEqual);

@@ -29,6 +29,8 @@ interface Message {
   plan?: Task[];
   visualizations?: Array<{ data: any; id: string }>;
   tokenStats?: TokenStats;
+  searchHistory?: any[];
+  currentSearchStatus?: any;
 }
 
 interface ChatAreaProps {
@@ -59,6 +61,32 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
   const [searchSettingsOpen, setSearchSettingsOpen] = useState(false);
   const [researchMode, setResearchMode] = useState(false);
   const [researchTimeBudget, setResearchTimeBudget] = useState(10);
+  const [pausedResearch, setPausedResearch] = useState<{
+    active: boolean;
+    query: string;
+    findings: number;
+    timeRemaining: number;
+  } | null>(null);
+  const [currentSearchHistory, setCurrentSearchHistory] = useState<any[]>([]);
+  const [activeSearchStatus, setActiveSearchStatus] = useState<any>(null);
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+
+  /* 
+   * Auto-resize logic for the textarea.
+   */
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /* 
+   * Auto-resize logic for the textarea.
+   * We reset height to 'auto' to correctly calculate the new scrollHeight (handling shrinking).
+   * Then we cap it at 200px.
+   */
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+    }
+  }, [input]);
 
   useEffect(() => {
     if (!user) {
@@ -118,6 +146,23 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
     }
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!sessionId) return;
+    fetch(`/api/research/${sessionId}/state`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.has_state && (data.status === 'paused' || data.status === 'interrupted')) {
+          setPausedResearch({
+            active: true,
+            query: data.query,
+            findings: data.findings_count,
+            timeRemaining: data.time_remaining,
+          });
+        }
+      })
+      .catch(() => { });
+  }, [sessionId]);
+
   // Send heartbeat every 30 seconds while agent is processing (isTyping)
   useEffect(() => {
     if (!isTyping || !sessionId) return;
@@ -160,6 +205,22 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
     setAttachedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handleResumeResearch = async () => {
+    if (!pausedResearch) return;
+    setPausedResearch(null);
+    setResearchMode(true);
+    setInput(`Continue research: ${pausedResearch.query}`);
+    setTimeout(() => {
+      const sendBtn = document.querySelector<HTMLButtonElement>('[data-send-button]');
+      sendBtn?.click();
+    }, 100);
+  };
+
+  const handleDiscardResearch = async () => {
+    await fetch(`/api/research/${sessionId}/state`, { method: 'DELETE' });
+    setPausedResearch(null);
+  };
+
   const handleSend = async () => {
     if (!input.trim() && attachedFiles.length === 0) return;
 
@@ -182,6 +243,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
 
     // Initial AI message placeholder
     let aiMsgId = (Date.now() + 1).toString();
+    setActiveMessageId(aiMsgId);
     setMessages(prev => [...prev, {
       id: aiMsgId,
       role: 'ai',
@@ -234,6 +296,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
       const streamStartTime = performance.now();
       let firstTokenTime: number | null = null;
       let tokenCount = 0;
+      const currentStreamId = aiMsgId;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -334,23 +397,50 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                 setTimeout(() => {
                   setThinkingSections([]);
                   setStreamTasks([]);
+                  setCurrentSearchHistory([]);
+                  setActiveSearchStatus(null);
                 }, 1500);
 
                 if (onSessionUpdate) {
                   setTimeout(() => onSessionUpdate(), 1000);
                 }
               } else if (data.type === 'search_status') {
-                if (data.action === 'searching') {
-                  setLoadingStatus(`🔍 Searching the web...`);
-                } else if (data.action === 'browsing' && data.url) {
-                  setLoadingStatus(`🌐 Browsing ${data.url.slice(0, 50)}...`);
-                } else if (data.action === 'complete') {
-                  const count = data.resultCount || 0;
-                  const sources = data.sources || [];
-                  const sourceStr = sources.length > 0 ? ` (${sources.slice(0, 3).join(', ')})` : '';
-                  setLoadingStatus(`✓ Found ${count} results${sourceStr}`);
-                  setTimeout(() => setLoadingStatus("Analyzing results..."), 2000);
+                const newStatus = {
+                  action: data.action,
+                  query: data.query,
+                  provider: data.provider,
+                  url: data.url,
+                  resultCount: data.resultCount
+                };
+
+                setActiveSearchStatus(newStatus);
+
+                if (data.action === 'browsing' || data.action === 'results' || data.action === 'complete') {
+                  setCurrentSearchHistory(prev => {
+                    const exists = prev.some(item =>
+                      (item.url && item.url === data.url) ||
+                      (item.resultCount && item.resultCount === data.resultCount)
+                    );
+                    if (exists) return prev;
+                    return [...prev, newStatus];
+                  });
                 }
+
+                if (data.action === 'searching') {
+                  setLoadingStatus(`🔍 Searching for "${data.query}"...`);
+                } else if (data.action === 'browsing') {
+                  // handled by component
+                } else if (data.action === 'complete' || (data.action === 'results')) {
+                  // handled by component
+                }
+
+                setMessages(prev => prev.map(msg =>
+                  msg.id === currentStreamId ? {
+                    ...msg,
+                    searchHistory: [...currentSearchHistory, newStatus],
+                    currentSearchStatus: newStatus
+                  } : msg
+                ));
               } else if (data.type === 'research_progress') {
                 const phase = data.phase || 'researching';
                 const iteration = data.iteration || 0;
@@ -393,6 +483,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
     } finally {
       setIsTyping(false);
       setIsUploading(false);
+      if (!researchMode) setActiveMessageId(null);
     }
   };
 
@@ -483,6 +574,7 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
       ));
     } finally {
       setIsTyping(false);
+      setActiveMessageId(null);
     }
   };
 
@@ -503,6 +595,32 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
       />
       <ScrollArea ref={scrollRef} className="flex-1 p-4 md:p-8">
         <div className="max-w-4xl mx-auto space-y-8 pb-4 h-full">
+          {pausedResearch && (
+            <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-4 mb-4 animate-in slide-in-from-top">
+              <div className="flex items-start gap-3">
+                <div className="bg-purple-500/20 p-2 rounded-lg">
+                  <Sparkles className="h-5 w-5 text-purple-400" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-medium text-purple-300">Research Session Paused</h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    "{pausedResearch.query.slice(0, 50)}..." • {pausedResearch.findings} findings • {Math.floor(pausedResearch.timeRemaining / 60)}m remaining
+                  </p>
+                  <div className="flex gap-2 mt-3">
+                    <Button size="sm" variant="default" className="bg-purple-500 hover:bg-purple-600" onClick={handleResumeResearch}>
+                      Resume
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setPausedResearch(null)}>
+                      Keep
+                    </Button>
+                    <Button size="sm" variant="ghost" className="text-red-400 hover:text-red-300" onClick={handleDiscardResearch}>
+                      Discard
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           {loadingHistory ? (
             <div className="flex items-center justify-center py-10 text-muted-foreground">
               <Sparkles className="h-4 w-4 animate-pulse mr-2" />
@@ -546,51 +664,64 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                       ))}
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
-                    <PlusMenu
-                      onFileSelect={() => fileInputRef.current?.click()}
-                      reportMode={reportMode}
-                      onReportModeChange={setReportMode}
-                      webSearchMode={webSearchMode}
-                      onWebSearchModeChange={setWebSearchMode}
-                      onOpenSearchSettings={() => setSearchSettingsOpen(true)}
-                      researchMode={researchMode}
-                      onResearchModeChange={(enabled) => {
-                        setResearchMode(enabled);
-                        if (enabled) setWebSearchMode(false);
-                      }}
-                      researchTimeBudget={researchTimeBudget}
-                      onResearchTimeBudgetChange={setResearchTimeBudget}
-                    />
-                    <input
+                  <div className="flex flex-col">
+                    <Textarea
+                      ref={textareaRef}
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSend();
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSend();
+                        }
                       }}
                       placeholder={reportMode ? "Describe the report you want generated..." : "What do you want to know?"}
                       className={cn(
-                        "flex-1 bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground/50 h-10 px-2 transition-colors duration-300",
+                        "w-full min-h-[40px] max-h-[200px] resize-none bg-transparent border-none focus-visible:ring-0 shadow-none py-3 px-4 text-base placeholder:text-muted-foreground/50 text-foreground transition-colors duration-300 overflow-y-auto",
                         reportMode && "placeholder:text-primary/50"
                       )}
+                      rows={1}
                       autoFocus
                     />
-                    <Button
-                      onClick={isTyping ? handleCancel : handleSend}
-                      size="icon"
-                      disabled={!isTyping && !input.trim() && attachedFiles.length === 0}
-                      className={cn(
-                        "h-10 w-10 rounded-xl transition-all duration-300 flex-shrink-0 hover:scale-105 active:scale-95",
-                        isTyping
-                          ? "bg-gray-200 hover:bg-gray-300 border border-gray-300 text-gray-800"
-                          : (input.trim() || attachedFiles.length > 0)
-                            ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]"
-                            : "bg-muted text-muted-foreground hover:bg-muted/80"
-                      )}
-                    >
-                      {isTyping ? <Square className="h-4 w-4 fill-current" /> : <ArrowUp className="h-5 w-5" />}
-                    </Button>
+
+                    <div className="flex items-center justify-between px-2 pb-1">
+                      <PlusMenu
+                        onFileSelect={() => fileInputRef.current?.click()}
+                        reportMode={reportMode}
+                        onReportModeChange={setReportMode}
+                        webSearchMode={webSearchMode}
+                        onWebSearchModeChange={(enabled) => {
+                          setWebSearchMode(enabled);
+                          if (enabled) setResearchMode(false);
+                        }}
+                        onOpenSearchSettings={() => setSearchSettingsOpen(true)}
+                        researchMode={researchMode}
+                        onResearchModeChange={(enabled) => {
+                          setResearchMode(enabled);
+                          if (enabled) setWebSearchMode(false);
+                        }}
+                        researchTimeBudget={researchTimeBudget}
+                        onResearchTimeBudgetChange={setResearchTimeBudget}
+                      />
+
+                      <Button
+                        onClick={isTyping ? handleCancel : handleSend}
+                        size="icon"
+                        disabled={!isTyping && !input.trim() && attachedFiles.length === 0}
+                        className={cn(
+                          "h-10 w-10 rounded-xl transition-all duration-300 flex-shrink-0 hover:scale-105 active:scale-95",
+                          isTyping
+                            ? "bg-gray-200 hover:bg-gray-300 border border-gray-300 text-gray-800"
+                            : (input.trim() || attachedFiles.length > 0)
+                              ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]"
+                              : "bg-muted text-muted-foreground hover:bg-muted/80"
+                        )}
+                      >
+                        {isTyping ? <Square className="h-4 w-4 fill-current" /> : <ArrowUp className="h-5 w-5" />}
+                      </Button>
+                    </div>
                   </div>
+
                 </div>
               </div>
 
@@ -624,6 +755,8 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                     loadingStatus={loadingStatus}
                     modelName={currentModelName}
                     plan={msg.plan}
+                    searchHistory={msg.id === activeMessageId ? currentSearchHistory : msg.searchHistory}
+                    currentSearchStatus={msg.id === activeMessageId ? activeSearchStatus : msg.currentSearchStatus}
                     userAvatar={user?.avatar_url}
                     tokenStats={msg.tokenStats}
                   />
@@ -658,24 +791,9 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                 </div>
               )}
 
-              <div className="flex items-end gap-2">
-                <PlusMenu
-                  onFileSelect={() => fileInputRef.current?.click()}
-                  reportMode={reportMode}
-                  onReportModeChange={setReportMode}
-                  webSearchMode={webSearchMode}
-                  onWebSearchModeChange={setWebSearchMode}
-                  onOpenSearchSettings={() => setSearchSettingsOpen(true)}
-                  researchMode={researchMode}
-                  onResearchModeChange={(enabled) => {
-                    setResearchMode(enabled);
-                    if (enabled) setWebSearchMode(false);
-                  }}
-                  researchTimeBudget={researchTimeBudget}
-                  onResearchTimeBudgetChange={setResearchTimeBudget}
-                />
-
+              <div className="flex flex-col">
                 <Textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -686,28 +804,50 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
                   }}
                   placeholder={reportMode ? "Describe the report you want generated..." : "Ask anything..."}
                   className={cn(
-                    "min-h-[40px] w-full resize-none bg-transparent border-none focus-visible:ring-0 shadow-none py-2 px-4 text-base placeholder:text-muted-foreground/50 text-foreground transition-colors duration-300",
+                    "w-full min-h-[40px] max-h-[200px] resize-none bg-transparent border-none focus-visible:ring-0 shadow-none py-3 px-4 text-base placeholder:text-muted-foreground/50 text-foreground transition-colors duration-300 overflow-y-auto",
                     reportMode && "placeholder:text-primary/50"
                   )}
                   rows={1}
                 />
 
-                <Button
-                  onClick={isTyping ? handleCancel : handleSend}
-                  size="icon"
-                  disabled={!isTyping && !input.trim() && attachedFiles.length === 0}
-                  className={cn(
-                    "h-10 w-10 rounded-xl transition-all duration-300 hover:scale-105 active:scale-95",
-                    isTyping
-                      ? "bg-gray-200 hover:bg-gray-300 border border-gray-300 text-gray-800"
-                      : (input.trim() || attachedFiles.length > 0)
-                        ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]"
-                        : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  )}
-                >
-                  {isTyping ? <Square className="h-4 w-4 fill-current" /> : <ArrowUp className="h-5 w-5" />}
-                </Button>
+                <div className="flex items-center justify-between px-2 pb-1">
+                  <PlusMenu
+                    onFileSelect={() => fileInputRef.current?.click()}
+                    reportMode={reportMode}
+                    onReportModeChange={setReportMode}
+                    webSearchMode={webSearchMode}
+                    onWebSearchModeChange={(enabled) => {
+                      setWebSearchMode(enabled);
+                      if (enabled) setResearchMode(false);
+                    }}
+                    onOpenSearchSettings={() => setSearchSettingsOpen(true)}
+                    researchMode={researchMode}
+                    onResearchModeChange={(enabled) => {
+                      setResearchMode(enabled);
+                      if (enabled) setWebSearchMode(false);
+                    }}
+                    researchTimeBudget={researchTimeBudget}
+                    onResearchTimeBudgetChange={setResearchTimeBudget}
+                  />
+
+                  <Button
+                    onClick={isTyping ? handleCancel : handleSend}
+                    size="icon"
+                    disabled={!isTyping && !input.trim() && attachedFiles.length === 0}
+                    className={cn(
+                      "h-10 w-10 rounded-xl transition-all duration-300 hover:scale-105 active:scale-95",
+                      isTyping
+                        ? "bg-gray-200 hover:bg-gray-300 border border-gray-300 text-gray-800"
+                        : (input.trim() || attachedFiles.length > 0)
+                          ? "bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.4)]"
+                          : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    )}
+                  >
+                    {isTyping ? <Square className="h-4 w-4 fill-current" /> : <ArrowUp className="h-5 w-5" />}
+                  </Button>
+                </div>
               </div>
+
             </div>
           </div>
         </div>
