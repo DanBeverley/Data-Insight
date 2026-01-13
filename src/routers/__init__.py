@@ -6,6 +6,8 @@ from .report_router import router as report_router
 from .alert_router import router as alert_router
 from .connection_router import router as connection_router
 from .notification_router import router as notification_router
+from .research_router import router as research_router
+from .scheduler_router import router as scheduler_router
 
 __all__ = [
     "data_router",
@@ -16,4 +18,6 @@ __all__ = [
     "alert_router",
     "connection_router",
     "notification_router",
+    "research_router",
+    "scheduler_router",
 ]
