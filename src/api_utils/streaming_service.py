@@ -11,6 +11,61 @@ from .agent_response import extract_agent_response
 from data_scientist_chatbot.app.core.constants import NodeName, WORKFLOW_NODES, SAFE_CHECKPOINT_NODES
 from data_scientist_chatbot.app.core.state_extractor import extract_report_url_from_messages
 from data_scientist_chatbot.app.core.agent_factory import get_model_name
+import logging.handlers
+import queue
+
+
+class LogQueueHandler(logging.Handler):
+    def __init__(self, log_queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if "[SEARCH_STATUS]" in msg:
+                self.log_queue.put(msg)
+        except Exception:
+            self.handleError(record)
+
+
+def _parse_search_status_log(log_msg: str) -> dict:
+    if "[SEARCH_STATUS]" not in log_msg:
+        return None
+    parts = log_msg.split("[SEARCH_STATUS]")[1].strip().split("|")
+    if len(parts) < 2:
+        return None
+    action = parts[0]
+    event_payload = {"type": "search_status", "action": action}
+    if action == "searching" and len(parts) >= 3:
+        event_payload["query"] = parts[1]
+        event_payload["provider"] = parts[2]
+    elif action == "results" and len(parts) >= 3:
+        event_payload["resultCount"] = int(parts[1])
+        event_payload["query"] = parts[2]
+    elif action == "browsing" and len(parts) >= 2:
+        event_payload["url"] = parts[1]
+    return event_payload
+
+
+async def _log_watcher_task(log_queue: queue.Queue, output_queue: asyncio.Queue, stop_event: asyncio.Event):
+    while not stop_event.is_set():
+        try:
+            log_msg = log_queue.get_nowait()
+            event_payload = _parse_search_status_log(log_msg)
+            if event_payload:
+                await output_queue.put(f"data: {json.dumps(event_payload)}\n\n")
+        except queue.Empty:
+            pass
+        await asyncio.sleep(0.05)
+    while not log_queue.empty():
+        try:
+            log_msg = log_queue.get_nowait()
+            event_payload = _parse_search_status_log(log_msg)
+            if event_payload:
+                await output_queue.put(f"data: {json.dumps(event_payload)}\n\n")
+        except queue.Empty:
+            break
 
 
 def strip_model_tokens(content: str) -> str:
@@ -486,12 +541,21 @@ async def _stream_with_events(
         "session_id": session_id,
     }
 
+    log_queue = queue.Queue()
+    queue_handler = LogQueueHandler(log_queue)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(queue_handler)
+
     thinking_parser = None
     if thinking_mode:
         from .thinking_mode_parser import ThinkingModeParser, create_thinking_status_message
 
         thinking_parser = ThinkingModeParser()
         logging.info(f"[STREAM_EVENTS] Thinking mode ENABLED for session {session_id}")
+
+    output_queue = asyncio.Queue()
+    stop_log_watcher = asyncio.Event()
+    log_watcher = asyncio.create_task(_log_watcher_task(log_queue, output_queue, stop_log_watcher))
 
     try:
         logging.info(f"[STREAM_EVENTS] Calling agent.astream_events...")
@@ -546,7 +610,14 @@ async def _stream_with_events(
                         for thinking_update in thinking_parser.parse_streaming_chunk(chunk_content):
                             status_msg = create_thinking_status_message(thinking_update)
                             yield f"data: {json.dumps(status_msg)}\n\n"
-                            await asyncio.sleep(0.05)
+                            await asyncio.sleep(0.01)
+
+                while not output_queue.empty():
+                    try:
+                        log_event = output_queue.get_nowait()
+                        yield log_event
+                    except asyncio.QueueEmpty:
+                        break
 
             elif event_name == "on_tool_start":
                 tool_name = event.get("name", "")
@@ -652,6 +723,10 @@ async def _stream_with_events(
 
         logging.error(f"[STREAM_EVENTS] Traceback:\n{traceback.format_exc()}")
         raise
+    finally:
+        stop_log_watcher.set()
+        await log_watcher
+        root_logger.removeHandler(queue_handler)
 
     logging.info("[STREAM_EVENTS] Event loop completed, processing final response...")
 
@@ -938,11 +1013,18 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
                                         except Exception as e:
                                             logging.error(f"[STREAM] Failed to parse report event: {e}")
 
-                                    # Skip web search results - they're shown via status bar, not in response
-                                    if (
-                                        "## Web Search Results" not in action_content
-                                        and "SEARCH_DATA_JSON" not in action_content
-                                    ):
+                                    # Skip web search and knowledge store results - they're internal context
+                                    is_internal_result = (
+                                        "## Web Search Results" in action_content
+                                        or "SEARCH_DATA_JSON" in action_content
+                                        or "KNOWLEDGE STORE RESULTS:" in action_content
+                                        or "AVAILABLE DATASETS:" in action_content
+                                        or "Dataset '" in action_content
+                                        and "loaded" in action_content
+                                        or "No relevant knowledge found" in action_content
+                                        or "Failed to ingest file" in action_content
+                                    )
+                                    if not is_internal_result:
                                         action_outputs.append(action_content)
 
                         elif node_name == NodeName.ANALYST.value:
@@ -1051,6 +1133,18 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
         logging.info(
             f"[STREAM] Available: action_outputs={len(action_outputs)}, final_brain_response={bool(final_brain_response)}, messages={len(messages)}"
         )
+
+        # Post-loop extraction: If final_brain_response wasn't captured during loop,
+        # scan accumulated messages for the final AI response (industry standard defensive pattern)
+        if not final_brain_response and all_messages:
+            for msg in reversed(all_messages):
+                if hasattr(msg, "type") and msg.type == "ai":
+                    content = getattr(msg, "content", "")
+                    has_tool_calls = hasattr(msg, "tool_calls") and msg.tool_calls
+                    if content and len(str(content)) > 100 and not has_tool_calls:
+                        final_brain_response = strip_model_tokens(str(content))
+                        logging.info(f"[STREAM] Post-loop extracted brain response ({len(final_brain_response)} chars)")
+                        break
 
         # Check for user cancellation again to prevent building final response
         from .cancellation import is_task_cancelled
