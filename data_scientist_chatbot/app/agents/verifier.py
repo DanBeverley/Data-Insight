@@ -16,6 +16,34 @@ class VerifierDecision(BaseModel):
     existing_items: List[str] = Field(default=[], description="List of delivered items")
 
 
+def _save_analysis_to_rag(state: GlobalState, task: Dict, insights: List, artifacts: List):
+    session_id = state.get("session_id")
+    if not session_id:
+        return
+    try:
+        from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+
+        store = KnowledgeStore(session_id)
+
+        summary_parts = [f"## Analysis: {task.get('description', 'Unknown')[:100]}"]
+        if insights:
+            summary_parts.append("\n### Key Findings")
+            for i, insight in enumerate(insights[:10], 1):
+                label = insight.get("label", "") if isinstance(insight, dict) else str(insight)
+                summary_parts.append(f"{i}. {label}")
+        if artifacts:
+            summary_parts.append("\n### Generated Artifacts")
+            for a in artifacts[:10]:
+                name = a.get("filename", "") if isinstance(a, dict) else str(a)
+                summary_parts.append(f"- {name}")
+
+        summary = "\n".join(summary_parts)
+        store.add_document(summary, source="analysis", source_name=f"Analysis: {task.get('description', '')[:50]}")
+        logger.info("[VERIFIER] Saved analysis summary to RAG")
+    except Exception as e:
+        logger.warning(f"[VERIFIER] Failed to save to RAG: {e}")
+
+
 def run_verifier_agent(state: GlobalState, config: RunnableConfig) -> Dict[str, Any]:
     logger.info("[VERIFIER] Validating task execution...")
 
@@ -147,6 +175,7 @@ REQUIREMENTS:
     )
 
     if approved:
+        _save_analysis_to_rag(state, current_task, agent_insights, artifacts)
         return {
             "messages": [AIMessage(content=decision_json, additional_kwargs={"internal": True})],
             "current_agent": "verifier",

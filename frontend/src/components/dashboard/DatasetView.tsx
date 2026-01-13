@@ -8,7 +8,7 @@ import {
   TableHeader,
   TableRow
 } from "@/components/ui/table";
-import { FileText, Upload, Brain, Trash2, Search, Filter, BookOpen } from "lucide-react";
+import { FileText, Upload, Brain, Trash2, Search, Filter, BookOpen, ToggleLeft, ToggleRight, Eye, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
 interface KnowledgeItem {
@@ -17,6 +17,14 @@ interface KnowledgeItem {
   source_name: string;
   added_at: string;
   content_preview: string;
+  inject_to_context: boolean;
+}
+
+interface DocumentViewerState {
+  isOpen: boolean;
+  content: string;
+  title: string;
+  loading: boolean;
 }
 
 interface KnowledgeStoreViewProps {
@@ -27,6 +35,7 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
   const [items, setItems] = useState<KnowledgeItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [viewer, setViewer] = useState<DocumentViewerState>({ isOpen: false, content: "", title: "", loading: false });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -82,6 +91,34 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
     }
   };
 
+  const handleToggleInject = async (docId: string, currentState: boolean) => {
+    try {
+      await fetch(`/api/knowledge/${sessionId}/${docId}?inject_to_context=${!currentState}`, {
+        method: 'PATCH'
+      });
+      setItems(prev => prev.map(item =>
+        item.id === docId ? { ...item, inject_to_context: !currentState } : item
+      ));
+    } catch (error) {
+      console.error("Toggle error:", error);
+    }
+  };
+
+  const handleViewDocument = async (docId: string, title: string) => {
+    setViewer({ isOpen: true, content: "", title, loading: true });
+    try {
+      const response = await fetch(`/api/knowledge/${sessionId}/doc/${docId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setViewer({ isOpen: true, content: data.content, title: data.source_name, loading: false });
+      } else {
+        setViewer(prev => ({ ...prev, content: "Failed to load document", loading: false }));
+      }
+    } catch (error) {
+      setViewer(prev => ({ ...prev, content: "Error loading document", loading: false }));
+    }
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
@@ -126,7 +163,7 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
         multiple
         ref={fileInputRef}
         className="hidden"
-        accept=".txt,.md,.pdf,.json,.csv"
+        accept=".txt,.md,.pdf,.json,.csv,.tsv,.docx,.pptx,.xlsx,.xls,.html,.htm,.xml,.eml,.odt,.rtf,.rst,.org"
         onChange={(e) => e.target.files && handleFileSelect(Array.from(e.target.files))}
       />
 
@@ -180,7 +217,7 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
             <TableRow className="hover:bg-transparent border-white/10">
               <TableHead className="text-muted-foreground">Name</TableHead>
               <TableHead className="text-muted-foreground">Source</TableHead>
-              <TableHead className="text-muted-foreground">Added</TableHead>
+              <TableHead className="text-muted-foreground text-center">Memory</TableHead>
               <TableHead className="text-muted-foreground">Preview</TableHead>
               <TableHead className="text-right"></TableHead>
             </TableRow>
@@ -208,13 +245,32 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
                       {getSourceLabel(item.source)}
                     </span>
                   </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {item.added_at ? new Date(item.added_at).toLocaleDateString() : '-'}
+                  <TableCell className="text-center">
+                    <button
+                      onClick={() => handleToggleInject(item.id, item.inject_to_context)}
+                      className="transition-colors"
+                      title={item.inject_to_context ? "In agent memory" : "Not in memory"}
+                    >
+                      {item.inject_to_context ? (
+                        <ToggleRight className="h-6 w-6 text-green-400" />
+                      ) : (
+                        <ToggleLeft className="h-6 w-6 text-muted-foreground" />
+                      )}
+                    </button>
                   </TableCell>
-                  <TableCell className="text-sm text-muted-foreground truncate max-w-[300px]">
+                  <TableCell className="text-sm text-muted-foreground truncate max-w-[300px] cursor-pointer hover:text-foreground" onClick={() => handleViewDocument(item.id, item.source_name)}>
                     {item.content_preview}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-right space-x-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity text-primary hover:text-primary hover:bg-primary/10"
+                      onClick={() => handleViewDocument(item.id, item.source_name)}
+                      title="View document"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -230,6 +286,26 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
           </TableBody>
         </Table>
       </div>
+
+      {viewer.isOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setViewer(prev => ({ ...prev, isOpen: false }))}>
+          <div className="bg-background border border-white/10 rounded-2xl max-w-3xl w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-white/10">
+              <h3 className="font-semibold text-lg truncate">{viewer.title}</h3>
+              <Button variant="ghost" size="icon" onClick={() => setViewer(prev => ({ ...prev, isOpen: false }))}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="p-4 overflow-auto flex-1">
+              {viewer.loading ? (
+                <div className="text-center text-muted-foreground py-8">Loading...</div>
+              ) : (
+                <pre className="whitespace-pre-wrap text-sm font-mono text-foreground/90">{viewer.content}</pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
