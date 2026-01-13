@@ -50,8 +50,42 @@ class ResearchFindings:
         if finding.source_url:
             self.visited_urls.add(finding.source_url)
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "original_query": self.original_query,
+            "findings": [
+                {
+                    "content": f.content,
+                    "source_url": f.source_url,
+                    "source_title": f.source_title,
+                    "query": f.query,
+                    "timestamp": f.timestamp,
+                }
+                for f in self.findings
+            ],
+            "explored_subtopics": self.explored_subtopics,
+            "pending_subtopics": self.pending_subtopics,
+            "visited_urls": list(self.visited_urls),
+            "start_time": self.start_time,
+            "time_budget_seconds": self.time_budget_seconds,
+            "iterations": self.iterations,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], elapsed_override: float = 0) -> "ResearchFindings":
+        findings = cls(
+            original_query=data["original_query"],
+            time_budget_seconds=data.get("time_budget_seconds", 600) - int(elapsed_override),
+        )
+        findings.explored_subtopics = data.get("explored_subtopics", [])
+        findings.pending_subtopics = data.get("pending_subtopics", [])
+        findings.visited_urls = set(data.get("visited_urls", []))
+        findings.iterations = data.get("iterations", 0)
+        for fd in data.get("findings", []):
+            findings.findings.append(ResearchFinding(**fd))
+        return findings
+
     def to_summary(self) -> str:
-        """Generate a summary for handoff to Main Brain."""
         if not self.findings:
             return f"No findings for query: {self.original_query}"
 
@@ -76,9 +110,8 @@ class ResearchFindings:
 
 
 class ResearchBrain:
-    """Time-aware research agent that explores topics deeply."""
-
-    CHECKPOINT_INTERVAL = 3
+    EMERGENCY_CHECKPOINT_MIN_FINDINGS = 5
+    EMERGENCY_CHECKPOINT_TIME_THRESHOLD = 0.3
 
     def __init__(self, session_id: str, time_budget_minutes: int = 10, search_config: Optional[Dict[str, Any]] = None):
         self.session_id = session_id
@@ -86,6 +119,45 @@ class ResearchBrain:
         self.search_config = search_config or {"provider": "duckduckgo"}
         self._cancelled = False
         self._last_checkpoint_iteration = 0
+        self._state_manager = self._get_state_manager()
+
+    def _get_state_manager(self):
+        try:
+            from data_scientist_chatbot.app.state.research_state_manager import ResearchStateManager
+
+            return ResearchStateManager()
+        except Exception:
+            return None
+
+    def _save_state(self, findings: "ResearchFindings", status: str):
+        if not self._state_manager:
+            return
+        from data_scientist_chatbot.app.state.research_state_manager import ResearchState
+
+        state = ResearchState(
+            session_id=self.session_id,
+            original_query=findings.original_query,
+            start_time=findings.start_time,
+            last_updated=time.time(),
+            time_budget_seconds=findings.time_budget_seconds,
+            elapsed_at_pause=findings.elapsed_seconds(),
+            status=status,
+            findings=[
+                {
+                    "content": f.content,
+                    "source_url": f.source_url,
+                    "source_title": f.source_title,
+                    "query": f.query,
+                    "timestamp": f.timestamp,
+                }
+                for f in findings.findings
+            ],
+            explored_subtopics=findings.explored_subtopics,
+            pending_subtopics=findings.pending_subtopics,
+            visited_urls=list(findings.visited_urls),
+            iterations=findings.iterations,
+        )
+        self._state_manager.save(state)
 
     def cancel(self) -> None:
         """Signal the research to stop gracefully."""
@@ -186,9 +258,14 @@ Output ONLY a JSON array of sub-questions, nothing else:
             "subtopics_explored": len(findings.explored_subtopics),
         }
 
-    def _should_checkpoint(self, iteration: int) -> bool:
-        """Check if we should save a checkpoint at this iteration."""
-        return (iteration - self._last_checkpoint_iteration) >= self.CHECKPOINT_INTERVAL
+    def _should_emergency_checkpoint(self, findings: "ResearchFindings") -> bool:
+        """Check if emergency checkpoint is needed (5+ findings AND <30% time remaining)."""
+        if self._last_checkpoint_iteration > 0:
+            return False
+        has_enough_findings = len(findings.findings) >= self.EMERGENCY_CHECKPOINT_MIN_FINDINGS
+        time_fraction_remaining = findings.time_remaining_seconds() / findings.time_budget_seconds
+        is_time_critical = time_fraction_remaining < self.EMERGENCY_CHECKPOINT_TIME_THRESHOLD
+        return has_enough_findings and is_time_critical
 
     def _checkpoint_to_knowledge(self, findings: ResearchFindings, is_final: bool = False) -> None:
         """Save current findings to knowledge store as checkpoint."""
@@ -221,6 +298,30 @@ Output ONLY a JSON array of sub-questions, nothing else:
         except Exception as e:
             logger.warning(f"[RESEARCH] Checkpoint failed: {e}")
 
+    async def resume_research(self) -> Optional[ResearchFindings]:
+        if not self._state_manager:
+            return None
+        state = self._state_manager.load(self.session_id)
+        if not state or state.status not in ("paused", "interrupted"):
+            return None
+
+        remaining_time = max(60, state.time_budget_seconds - int(state.elapsed_at_pause))
+        findings = ResearchFindings(
+            original_query=state.original_query,
+            time_budget_seconds=remaining_time,
+        )
+        findings.explored_subtopics = state.explored_subtopics
+        findings.pending_subtopics = state.pending_subtopics
+        findings.visited_urls = set(state.visited_urls)
+        findings.iterations = state.iterations
+        for fd in state.findings:
+            findings.findings.append(ResearchFinding(**fd))
+
+        logger.info(f"[RESEARCH] Resuming from pause: {len(findings.findings)} findings, {remaining_time}s remaining")
+        self._save_state(findings, "active")
+
+        return await self._continue_research(findings)
+
     @traceable(name="research_brain_execution", tags=["research", "deep"])
     async def research(self, query: str) -> ResearchFindings:
         """
@@ -240,10 +341,13 @@ Output ONLY a JSON array of sub-questions, nothing else:
 
         logger.info(f"[RESEARCH] Generated {len(subtopics)} initial subtopics")
 
-        # Main exploration loop
+        return await self._continue_research(findings)
+
+    async def _continue_research(self, findings: ResearchFindings) -> ResearchFindings:
+        query = findings.original_query
+
         while not findings.is_time_exhausted() and not self._is_cancelled():
             if not findings.pending_subtopics:
-                # Generate more subtopics based on current findings
                 if findings.findings:
                     new_subtopics = await self._generate_subtopics(query, findings.findings)
                     findings.pending_subtopics = [s for s in new_subtopics if s not in findings.explored_subtopics]
@@ -262,24 +366,32 @@ Output ONLY a JSON array of sub-questions, nothing else:
                 f"({int(findings.time_remaining_seconds())}s remaining)"
             )
 
-            # Search and extract findings
             topic_findings = await self._search_topic(current_topic)
             for f in topic_findings:
                 if f.source_url not in findings.visited_urls:
                     findings.add_finding(f)
 
-            if self._should_checkpoint(findings.iterations):
+            if self._should_emergency_checkpoint(findings):
                 self._checkpoint_to_knowledge(findings, is_final=False)
+                logger.info("[RESEARCH] Emergency checkpoint triggered")
 
+            self._save_state(findings, "active")
             await asyncio.sleep(0.1)
 
+        if self._is_cancelled():
+            self._save_state(findings, "paused")
+            await self._emit_progress(findings, "", "paused")
+            logger.info(f"[RESEARCH] Paused: {len(findings.findings)} findings saved")
+            return findings
+
         await self._emit_progress(findings, "", "complete")
-
         self._checkpoint_to_knowledge(findings, is_final=True)
+        self._save_state(findings, "completed")
 
-        reason = (
-            "cancelled" if self._is_cancelled() else ("time_exhausted" if findings.is_time_exhausted() else "complete")
-        )
+        if self._state_manager:
+            self._state_manager.delete(self.session_id)
+
+        reason = "time_exhausted" if findings.is_time_exhausted() else "complete"
         logger.info(
             f"[RESEARCH] Finished ({reason}): {len(findings.findings)} findings, "
             f"{findings.iterations} iterations, {int(findings.elapsed_seconds())}s elapsed"
