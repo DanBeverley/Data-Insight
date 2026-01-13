@@ -234,17 +234,64 @@ def query_knowledge(query: str, k: int = 5) -> str:
 
 
 @tool(args_schema=IngestFileInput)
-def ingest_file_to_knowledge(file_path: str) -> str:
+def save_file_to_knowledge(file_path: str) -> str:
     """
-    Add an uploaded file to the knowledge store.
+    Save a generated file to the knowledge store for future reference.
 
-    Use when the user explicitly asks to "add this file to knowledge" or
-    "remember this document". The file content will be extracted and indexed.
+    Use this to persist agent-generated reports, exports, or analysis outputs
+    so they can be recalled in future conversations.
 
     Args:
-        file_path: Path to the file (relative to uploads directory)
+        file_path: Path to the file to save
     """
-    return "This is a placeholder. File ingestion happens in the graph node."
+    return "This is a placeholder. File save happens in the graph node."
+
+
+class LoadDatasetInput(BaseModel):
+    filename: str = Field(description="Name of the dataset file to load (e.g., 'housing.csv')")
+
+
+class GetDatasetInfoInput(BaseModel):
+    filename: str = Field(description="Name of the dataset to get info about")
+
+
+@tool
+def list_datasets() -> str:
+    """
+    List all datasets available in the current session.
+
+    Returns filenames, row/column counts, and profiling status for all
+    datasets uploaded (via chat or Knowledge Store).
+    """
+    return "This is a placeholder. Dataset listing happens in the graph node."
+
+
+@tool(args_schema=LoadDatasetInput)
+def load_dataset(filename: str) -> str:
+    """
+    Load a dataset into the analysis sandbox for processing.
+
+    If this is the first time loading the dataset, profiling will run
+    automatically and results will be saved for future reference.
+
+    Args:
+        filename: The dataset filename (e.g., 'sales.xlsx', 'customers.csv')
+    """
+    return "This is a placeholder. Dataset loading happens in the graph node."
+
+
+@tool(args_schema=GetDatasetInfoInput)
+def get_dataset_info(filename: str) -> str:
+    """
+    Retrieve stored profiling information about a dataset.
+
+    Use this to recall column types, statistics, and insights from
+    previous profiling without re-loading the dataset.
+
+    Args:
+        filename: The dataset filename
+    """
+    return "This is a placeholder. Dataset info retrieval happens in the graph node."
 
 
 @tool
@@ -348,3 +395,99 @@ def combine_files(file_pattern: str) -> str:
     Returns combined dataframe info and loads it into session.
     """
     return "This is a placeholder. File combination happens in the graph node."
+
+
+class AlertInput(BaseModel):
+    name: str = Field(description="Alert name (e.g., 'Low Sales Alert')")
+    metric_query: str = Field(description="Python expression to evaluate on dataframe (e.g., 'df[\"sales\"].sum()')")
+    metric_name: str = Field(description="Human-readable metric name (e.g., 'Total Sales')")
+    condition: str = Field(description="Comparison operator - lt, gt, eq, ne, lte, gte")
+    threshold: float = Field(description="Threshold value to compare against")
+    notification_email: str = Field(description="Email address to send notification")
+
+
+@tool(args_schema=AlertInput)
+def create_alert(
+    name: str, metric_query: str, metric_name: str, condition: str, threshold: float, notification_email: str
+) -> str:
+    """
+    Create an alert to notify user when a metric condition is met.
+    The scheduler will check this alert periodically and send email when triggered.
+    """
+    import builtins
+
+    try:
+        from src.scheduler.service import get_alert_scheduler
+        from src.scheduler.models import Alert
+
+        session_id = getattr(builtins, "_current_session_id", "unknown")
+        scheduler = get_alert_scheduler()
+        alert = Alert(
+            name=name,
+            session_id=session_id,
+            metric_query=metric_query,
+            metric_name=metric_name,
+            condition=condition,
+            threshold=threshold,
+            notification_type="email",
+            notification_target=notification_email,
+        )
+        scheduler.create_alert(alert)
+        return f"Alert '{name}' created. You will be notified at {notification_email} when {metric_name} {condition} {threshold}."
+    except Exception as e:
+        return f"Failed to create alert: {e}"
+
+
+class ListAlertsInput(BaseModel):
+    pass
+
+
+@tool(args_schema=ListAlertsInput)
+def list_my_alerts() -> str:
+    """List all alerts for the current session."""
+    import builtins
+
+    try:
+        from src.scheduler.service import get_alert_scheduler
+
+        session_id = getattr(builtins, "_current_session_id", "unknown")
+        scheduler = get_alert_scheduler()
+        alerts = scheduler.get_alerts_by_session(session_id)
+
+        if not alerts:
+            return "No alerts configured for this session."
+
+        lines = [f"Found {len(alerts)} alert(s):"]
+        for a in alerts:
+            status_icon = "✅" if a.status == "active" else "⏸️"
+            lines.append(f"{status_icon} {a.name}: {a.metric_name} {a.condition} {a.threshold}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list alerts: {e}"
+
+
+class DeleteAlertInput(BaseModel):
+    alert_id: str = Field(description="The alert ID to delete")
+
+
+@tool(args_schema=DeleteAlertInput)
+def delete_alert(alert_id: str) -> str:
+    """Delete an alert by ID."""
+    import builtins
+
+    try:
+        from src.scheduler.service import get_alert_scheduler
+
+        session_id = getattr(builtins, "_current_session_id", "unknown")
+        scheduler = get_alert_scheduler()
+        alert = scheduler.get_alert(alert_id)
+
+        if not alert:
+            return f"Alert {alert_id} not found."
+        if alert.session_id != session_id:
+            return "Cannot delete alert from another session."
+
+        scheduler.delete_alert(alert_id)
+        return f"Alert '{alert.name}' deleted."
+    except Exception as e:
+        return f"Failed to delete alert: {e}"

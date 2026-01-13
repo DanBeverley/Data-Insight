@@ -194,7 +194,7 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
                         content = "No relevant knowledge found."
                     logger.info(f"[KNOWLEDGE] Query returned {len(results)} results")
 
-                elif tool_name == "ingest_file_to_knowledge":
+                elif tool_name == "save_file_to_knowledge":
                     from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
                     import builtins
 
@@ -207,6 +207,90 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
                     doc_id = store.add_file(file_path, source_type="user_upload")
                     content = f"File ingested to knowledge with ID: {doc_id}" if doc_id else "Failed to ingest file"
                     logger.info(f"[KNOWLEDGE] Ingested file: {file_path} -> {doc_id}")
+
+                elif tool_name == "list_datasets":
+                    from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
+
+                    registry = DatasetRegistry(session_id)
+                    datasets = registry.list_all()
+                    if datasets:
+                        content = "AVAILABLE DATASETS:\n"
+                        for ds in datasets:
+                            status = "✓ profiled" if ds.profiled else "○ not profiled"
+                            content += f"  • {ds.filename} ({ds.rows}×{ds.columns}) [{status}]\n"
+                        content += "\nNote: Text documents (.txt, .pdf, .docx) are in Knowledge Store. Use query_knowledge() to search them."
+                    else:
+                        content = (
+                            "No tabular datasets in this session. Use query_knowledge() to search uploaded documents."
+                        )
+                    logger.info(f"[DATASET] Listed {len(datasets)} datasets")
+
+                elif tool_name == "load_dataset":
+                    from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
+                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    from data_scientist_chatbot.app.tools import execute_python_in_sandbox
+
+                    filename = tool_args.get("filename", "")
+                    registry = DatasetRegistry(session_id)
+                    info = registry.get(filename)
+
+                    if not info:
+                        content = f"Dataset '{filename}' not found. Use list_datasets() to see available."
+                    else:
+                        df = registry.load_dataframe(filename)
+                        if df is None:
+                            content = f"Failed to load dataset '{filename}'."
+                        else:
+                            # Load into sandbox
+                            csv_data = df.to_csv(index=False)
+                            load_code = f"""
+import pandas as pd
+from io import StringIO
+csv_data = '''{csv_data}'''
+df = pd.read_csv(StringIO(csv_data))
+df.to_csv('dataset.csv', index=False)
+print(f"Loaded {filename}: {{df.shape[0]}} rows × {{df.shape[1]}} columns")
+"""
+                            execute_python_in_sandbox(load_code, session_id)
+
+                            # Lazy profiling: run if not profiled yet
+                            if not info.profiled:
+                                try:
+                                    from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+
+                                    profile = generate_dataset_profile_for_agent(df, {"filename": filename})
+
+                                    # Save to RAG
+                                    store = KnowledgeStore(session_id)
+                                    profile_content = f"# Dataset Profile: {filename}\n"
+                                    profile_content += f"Shape: {df.shape[0]} rows × {df.shape[1]} columns\n"
+                                    profile_content += f"Columns: {', '.join(df.columns.tolist())}\n"
+                                    if hasattr(profile, "dataset_insights"):
+                                        profile_content += f"Domain: {profile.dataset_insights.detected_domains}\n"
+                                    if hasattr(profile, "quality_assessment"):
+                                        score = profile.quality_assessment.get("overall_score", "N/A")
+                                        profile_content += f"Quality Score: {score}\n"
+
+                                    store.add_document(profile_content, "dataset_profile", f"Profile: {filename}")
+                                    registry.mark_profiled(filename)
+                                    logger.info(f"[DATASET] Profiled and saved to RAG: {filename}")
+                                except Exception as e:
+                                    logger.warning(f"[DATASET] Profiling failed: {e}")
+
+                            content = f"Dataset '{filename}' loaded ({df.shape[0]}×{df.shape[1]}). Available as 'df' and saved as 'dataset.csv'."
+                    logger.info(f"[DATASET] Load: {filename}")
+
+                elif tool_name == "get_dataset_info":
+                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+
+                    filename = tool_args.get("filename", "")
+                    store = KnowledgeStore(session_id)
+                    results = store.query(f"Dataset Profile: {filename}", k=1)
+                    if results:
+                        content = f"DATASET INFO FOR {filename}:\n{results[0]['content']}"
+                    else:
+                        content = f"No profiling information found for '{filename}'. Load it first with load_dataset()."
+                    logger.info(f"[DATASET] Get info: {filename}")
 
                 elif tool_name == "python_code_interpreter":
                     logger.debug(f"Received clean code from Pydantic schema ({len(tool_args.get('code', ''))} chars)")
@@ -284,3 +368,101 @@ def submit_dashboard_insights(insights_json: str, session_id: str) -> str:
         return f"Error parsing JSON: {e}"
     except Exception as e:
         return f"Error submitting insights: {e}"
+
+
+@tool
+def create_alert(
+    name: str,
+    metric_query: str,
+    metric_name: str,
+    condition: str,
+    threshold: float,
+    notification_email: str,
+    session_id: str,
+) -> str:
+    """
+    Create an alert to notify user when a metric condition is met.
+
+    Args:
+        name: Alert name (e.g., 'Low Sales Alert')
+        metric_query: Python expression to evaluate on dataframe (e.g., 'df["sales"].sum()')
+        metric_name: Human-readable metric name (e.g., 'Total Sales')
+        condition: Comparison operator - lt, gt, eq, ne, lte, gte
+        threshold: Threshold value to compare against
+        notification_email: Email address to send notification
+        session_id: Current session ID
+    """
+    try:
+        from src.scheduler.service import get_alert_scheduler
+        from src.scheduler.models import Alert
+
+        scheduler = get_alert_scheduler()
+        alert = Alert(
+            name=name,
+            session_id=session_id,
+            metric_query=metric_query,
+            metric_name=metric_name,
+            condition=condition,
+            threshold=threshold,
+            notification_type="email",
+            notification_target=notification_email,
+        )
+        created = scheduler.create_alert(alert)
+        logger.info(f"[TOOL] Created alert: {name} for session {session_id}")
+        return f"Alert '{name}' created. You will be notified at {notification_email} when {metric_name} {condition} {threshold}."
+    except Exception as e:
+        logger.error(f"[TOOL] Failed to create alert: {e}")
+        return f"Failed to create alert: {e}"
+
+
+@tool
+def list_my_alerts(session_id: str) -> str:
+    """
+    List all alerts for the current session.
+
+    Args:
+        session_id: Current session ID
+    """
+    try:
+        from src.scheduler.service import get_alert_scheduler
+
+        scheduler = get_alert_scheduler()
+        alerts = scheduler.get_alerts_by_session(session_id)
+
+        if not alerts:
+            return "No alerts configured for this session."
+
+        lines = [f"Found {len(alerts)} alert(s):"]
+        for a in alerts:
+            status_icon = "✅" if a.status == "active" else "⏸️"
+            lines.append(f"{status_icon} {a.name}: {a.metric_name} {a.condition} {a.threshold}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"[TOOL] Failed to list alerts: {e}")
+        return f"Failed to list alerts: {e}"
+
+
+@tool
+def delete_alert(alert_id: str, session_id: str) -> str:
+    """
+    Delete an alert by ID.
+
+    Args:
+        alert_id: The alert ID to delete
+        session_id: Current session ID (for validation)
+    """
+    try:
+        from src.scheduler.service import get_alert_scheduler
+
+        scheduler = get_alert_scheduler()
+        alert = scheduler.get_alert(alert_id)
+
+        if not alert:
+            return f"Alert {alert_id} not found."
+        if alert.session_id != session_id:
+            return "Cannot delete alert from another session."
+
+        scheduler.delete_alert(alert_id)
+        return f"Alert '{alert.name}' deleted."
+    except Exception as e:
+        return f"Failed to delete alert: {e}"

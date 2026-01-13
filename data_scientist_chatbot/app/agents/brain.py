@@ -26,7 +26,13 @@ from data_scientist_chatbot.app.tools.tool_definitions import (
     delegate_research_task,
     save_to_knowledge,
     query_knowledge,
-    ingest_file_to_knowledge,
+    save_file_to_knowledge,
+    list_datasets,
+    load_dataset,
+    get_dataset_info,
+    create_alert,
+    list_my_alerts,
+    delete_alert,
 )
 
 
@@ -103,15 +109,6 @@ def _build_context(
         context += insights_str
         logger.info(f"[BRAIN] Injected {len(agent_insights)} insights into context")
 
-    if artifacts and len(artifacts) > 0:
-        context += "\n\n**ANALYSIS COMPLETE:**\n"
-        context += f"Analysis has been completed successfully with {len(artifacts)} generated artifacts.\n"
-        context += "Now INTERPRET these results for the user:\n"
-        context += "1. Summarize the key findings based on the insights above.\n"
-        context += "2. Embed all generated visualizations using proper markdown syntax.\n"
-        context += "3. Provide actionable recommendations based on the analysis.\n"
-        context += "Do NOT run additional analysis - present the findings now."
-
     return context
 
 
@@ -177,7 +174,13 @@ def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
         submit_dashboard_insights,
         save_to_knowledge,
         query_knowledge,
-        ingest_file_to_knowledge,
+        save_file_to_knowledge,
+        list_datasets,
+        load_dataset,
+        get_dataset_info,
+        create_alert,
+        list_my_alerts,
+        delete_alert,
     ]
 
     model_name = getattr(llm, "model", "")
@@ -212,9 +215,25 @@ def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
         "\n".join(active_modes_list) if active_modes_list else "Standard chat mode - no special modes active"
     )
 
+    uploaded_documents_str = "No documents uploaded."
+    try:
+        from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+
+        store = KnowledgeStore(session_id)
+        injectable = store.list_injectable_items()
+        if injectable:
+            doc_lines = []
+            for item in injectable[:5]:
+                content = item.get("content", "")[:500]
+                doc_lines.append(f"- **{item['source_name']}**: {content}")
+            uploaded_documents_str = "\n".join(doc_lines)
+    except Exception:
+        pass
+
     invoke_state = {
         "messages": filtered_messages,
         "dataset_context": context,
+        "uploaded_documents": uploaded_documents_str,
         "current_date": datetime.now().strftime("%Y-%m-%d"),
         "active_modes": active_modes_str,
     }
