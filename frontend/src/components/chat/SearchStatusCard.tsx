@@ -13,6 +13,34 @@ interface SearchStatusCardProps {
     searchHistory?: SearchStatusItem[];
 }
 
+const AnimatedCounter = ({ value }: { value: number }) => {
+    const [count, setCount] = React.useState(1);
+
+    React.useEffect(() => {
+        if (value <= 1) {
+            setCount(value);
+            return;
+        }
+
+        let startTimestamp: number = 0;
+        const duration = 1000;
+
+        const step = (timestamp: number) => {
+            if (!startTimestamp) startTimestamp = timestamp;
+            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+            setCount(Math.floor(progress * (value - 1) + 1));
+
+            if (progress < 1) {
+                window.requestAnimationFrame(step);
+            }
+        };
+
+        window.requestAnimationFrame(step);
+    }, [value]);
+
+    return <>{count}</>;
+};
+
 export const SearchStatusCard: React.FC<SearchStatusCardProps> = ({ searchStatus, searchHistory = [] }) => {
     if (!searchStatus && searchHistory.length === 0) return null;
 
@@ -46,7 +74,7 @@ export const SearchStatusCard: React.FC<SearchStatusCardProps> = ({ searchStatus
                                 color: item.action === 'complete' ? '#4ade80' : '#60a5fa',
                                 fontWeight: 500
                             }}>
-                                {item.resultCount || 0} results
+                                <AnimatedCounter value={item.resultCount || 0} /> results
                             </span>
                         </>
                     )}

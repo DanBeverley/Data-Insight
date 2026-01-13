@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, memo } from 'react';
 
 interface PlotlyIframeProps {
   src: string;
@@ -40,12 +40,12 @@ const PLOTLY_DARK_THEME_CSS = `
     fill: rgba(20,20,20,0.95) !important;
     stroke: #333 !important;
   }
-  .hoverlayer .hovertext text, .hoverlayer .hovertext tspan {
+  .hoverlayer .hovertext tspan {
     fill: #eee !important;
   }
 `;
 
-export function PlotlyIframe({ src, title, className = '', height = '500px' }: PlotlyIframeProps) {
+function PlotlyIframeBase({ src, title, className = '', height = '500px' }: PlotlyIframeProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const injectDarkTheme = () => {
@@ -73,7 +73,7 @@ export function PlotlyIframe({ src, title, className = '', height = '500px' }: P
     if (!iframe) return;
 
     iframe.addEventListener('load', injectDarkTheme);
-    
+
     const retryTimeout = setTimeout(injectDarkTheme, 500);
 
     return () => {
@@ -94,4 +94,7 @@ export function PlotlyIframe({ src, title, className = '', height = '500px' }: P
   );
 }
 
+export const PlotlyIframe = memo(PlotlyIframeBase);
+
 export default PlotlyIframe;
+
