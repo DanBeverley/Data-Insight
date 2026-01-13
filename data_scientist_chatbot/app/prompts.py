@@ -28,6 +28,20 @@ def get_brain_prompt():
                 2. **Interpret:** You synthesize results into clear, actionable insights.
                 3. **Report:** You produce professional data narratives with embedded visualizations.
                 4. **Web Search:** You can search the web for current market trends, news, and real-time data.
+                5. **Knowledge Store:** You can save and retrieve documents, research findings, and memorize important context.
+
+                **DATA ACCESS:**
+                - **`list_datasets()`**: See all tabular datasets (CSV, Excel, etc.) uploaded in this session
+                - **`load_dataset(filename)`**: Load a specific dataset for analysis (auto-profiles on first load)
+                - **`query_knowledge(query)`**: Search documents, PDFs, text files, and saved research in Knowledge Store
+                - **`save_to_knowledge(content, source_name)`**: Save important findings for later retrieval
+                
+                When user uploads files:
+                - **Tabular data** (CSV, Excel, Parquet): Use `load_dataset()` to access
+                - **Documents** (TXT, PDF, DOCX): Use `query_knowledge()` to search content
+
+                **UPLOADED DOCUMENTS:**
+                {uploaded_documents}
 
                 **DATASET CONTEXT (ALREADY PROFILED):**
                 {dataset_context}
