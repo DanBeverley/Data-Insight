@@ -107,6 +107,8 @@ from .routers import (
     alert_router,
     connection_router,
     notification_router,
+    research_router,
+    scheduler_router,
 )
 from .auth.dependencies import get_optional_current_user
 from .database.models import User
@@ -193,8 +195,7 @@ async def lifespan(app: FastAPI):
                     from src.scheduler.service import get_alert_scheduler
 
                     scheduler = get_alert_scheduler()
-                    scheduler.start()
-                    logging.info("Alert scheduler started successfully")
+                    logging.info("Alert scheduler initialized successfully")
                 except Exception as scheduler_err:
                     logging.warning(f"Alert scheduler failed (non-critical): {scheduler_err}")
 
@@ -313,6 +314,40 @@ app.include_router(report_router)
 app.include_router(alert_router)
 app.include_router(connection_router)
 app.include_router(notification_router)
+app.include_router(research_router)
+app.include_router(scheduler_router)
+
+
+@app.on_event("startup")
+async def mark_interrupted_research():
+    try:
+        from data_scientist_chatbot.app.state.research_state_manager import ResearchStateManager
+
+        manager = ResearchStateManager()
+        manager.mark_interrupted_on_startup()
+    except Exception:
+        pass
+
+
+@app.on_event("startup")
+async def start_scheduler():
+    try:
+        from src.scheduler.service import initialize_scheduler
+
+        initialize_scheduler()
+    except Exception as e:
+        logging.warning(f"Scheduler startup failed: {e}")
+
+
+@app.on_event("shutdown")
+async def stop_scheduler():
+    try:
+        from src.scheduler.service import shutdown_scheduler
+
+        shutdown_scheduler()
+    except Exception:
+        pass
+
 
 from src.api_utils.session_management import session_data_manager
 
@@ -771,11 +806,14 @@ async def upload_data(
                 # We continue since the file is uploaded to the session/disk successfully
 
             if enable_profiling:
-                # [INTELLIGENCE UPGRADE] Await profiling to ensure context is ready for Planner
-                # We prioritize "Smart" behavior over "Fast Upload"
                 logging.info(f"Starting synchronous profiling for {file.filename}...")
                 await run_profiling_background(df.copy(), session_id, file.filename)
                 logging.info(f"Profiling completed for {file.filename}")
+
+            try:
+                enhance_with_agent_profile(df, session_id, file.filename, response_data)
+            except Exception as reg_error:
+                logging.warning(f"DatasetRegistry registration failed (non-critical): {reg_error}")
 
             uploaded_details.append(
                 {

@@ -7,6 +7,13 @@ from .helpers import convert_pandas_output_to_html
 def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str, response_data: Dict[str, Any]) -> None:
     try:
         from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+        from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
+        from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+
+        # Register in DatasetRegistry
+        registry = DatasetRegistry(session_id)
+        rows, cols = df.shape
+        registry.register(filename, f"data/uploads/{session_id}/{filename}", rows, cols)
 
         data_profile = generate_dataset_profile_for_agent(
             df, context={"filename": filename, "upload_session": session_id}
@@ -65,6 +72,22 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
         session_data_store.save_session_data(session_id, session_data)
 
         store_in_knowledge_graph(session_id, filename, df, data_profile)
+
+        # Save profile to RAG for context persistence
+        store = KnowledgeStore(session_id)
+        profile_content = f"# Dataset Profile: {filename}\n"
+        profile_content += f"Shape: {rows} rows × {cols} columns\n"
+        profile_content += f"Columns: {', '.join(df.columns.tolist())}\n"
+        if hasattr(data_profile, "dataset_insights"):
+            profile_content += f"Domain: {data_profile.dataset_insights.detected_domains}\n"
+        if hasattr(data_profile, "quality_assessment"):
+            score = data_profile.quality_assessment.get("overall_score", "N/A")
+            profile_content += f"Quality Score: {score}\n"
+        store.add_document(profile_content, "dataset_profile", f"Profile: {filename}")
+
+        registry.mark_profiled(filename)
+        registry.mark_rag_indexed(filename)
+        logging.info(f"[UPLOAD] Registered {filename} in registry and RAG")
 
     except Exception as e:
         logging.warning(f"Failed to generate dataset profile: {e}")

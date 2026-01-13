@@ -95,7 +95,7 @@ def handle_file_upload(file_path: Path, filename: str, session_id: str) -> Dict[
 
     try:
         if filename.endswith(".zip"):
-            extract_path = Path(tempfile.gettempdir()) / "datainsight" / session_id / "extracted"
+            extract_path = Path(tempfile.gettempdir()) / "Quorvix" / session_id / "extracted"
             extracted_root = extract_zip(file_path, extract_path)
 
             # Use HierarchicalDatasetScanner for richer manifest
@@ -137,7 +137,7 @@ def handle_file_upload(file_path: Path, filename: str, session_id: str) -> Dict[
             result["data_path"] = str(extracted_root)
 
         else:
-            single_file_dir = Path(tempfile.gettempdir()) / "datainsight" / session_id / "single_file"
+            single_file_dir = Path(tempfile.gettempdir()) / "Quorvix" / session_id / "single_file"
             single_file_dir.mkdir(parents=True, exist_ok=True)
 
             dest_path = single_file_dir / filename
