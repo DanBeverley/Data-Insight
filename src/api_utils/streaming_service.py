@@ -83,10 +83,34 @@ def strip_model_tokens(content: str) -> str:
     return content.strip()
 
 
+def sanitize_artifact_paths(content: str) -> str:
+    """
+    Sanitize malformed artifact paths that Brain may hallucinate.
+
+    Converts paths like:
+    - sandbox:/mnt/data/file.html -> /static/plots/file.html
+    - /mnt/data/file.png -> /static/plots/file.png
+    - sandbox%3A/mnt/data/file.html -> /static/plots/file.html
+    """
+    if not content or not isinstance(content, str):
+        return content
+
+    # Pattern 1: sandbox:/mnt/data/filename or sandbox%3A/mnt/data/filename
+    content = re.sub(r'sandbox(%3A|:)/mnt/data/([^)\s"\']+)', r"/static/plots/\2", content)
+
+    # Pattern 2: Just /mnt/data/filename (in URLs/links)
+    content = re.sub(r'(?<![a-zA-Z])(/mnt/data/)([^)\s"\']+)', r"/static/plots/\2", content)
+
+    return content
+
+
 def format_agent_output(content: str) -> str:
     """Universal formatter for various data types in agent output"""
     if not content or not isinstance(content, str):
         return content
+
+    # Always sanitize artifact paths first (fix sandbox:/mnt/data/... paths)
+    content = sanitize_artifact_paths(content)
 
     # Try pandas DataFrame
     df_result = _try_format_dataframe(content)
@@ -492,7 +516,7 @@ async def stream_agent_chat(
             if hasattr(agent, "astream_events"):
                 logging.warning(f"[STREAMING] Falling back to astream_events() for session {session_id}")
                 try:
-                    async for event_data in _stream_with_events(message, session_id, agent, thinking_mode):
+                    async for event_data in _stream_with_events(message, session_id, agent, thinking_mode, message_id):
                         yield event_data
                 except Exception as e:
                     logging.error(f"[STREAMING] astream_events() also failed: {e}")
@@ -516,7 +540,7 @@ async def stream_agent_chat(
 
 
 async def _stream_with_events(
-    message: str, session_id: str, agent, thinking_mode: bool = False
+    message: str, session_id: str, agent, thinking_mode: bool = False, message_id: str = None
 ) -> AsyncGenerator[str, None]:
     await asyncio.sleep(0.01)
 
@@ -825,7 +849,7 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
     from langchain_core.messages import HumanMessage
     import builtins
 
-    config = {"configurable": {"thread_id": session_id}}
+    config = {"configurable": {"thread_id": session_id}, "recursion_limit": 50}
     final_response = None
     all_messages = []
     final_brain_response = None
@@ -980,19 +1004,50 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
                                         yield f"data: {json.dumps({'type': 'search_status', **search_status})}\n\n"
                                         builtins._session_store[session_id]["search_status"] = None
 
-                                # Parse SEARCH_DATA_JSON from web search results for accurate count/sources
-                                if "SEARCH_DATA_JSON" in action_content:
+                                # Parse SEARCH_DATA from web search results (Try B64 first, then JSON)
+                                if "SEARCH_DATA_B64" in action_content:
+                                    try:
+                                        import base64
+
+                                        b64_match = re.search(
+                                            r"<!-- SEARCH_DATA_B64\s*\n(.*?)\nSEARCH_DATA_END\s*-->",
+                                            action_content,
+                                            re.DOTALL,
+                                        )
+                                        if b64_match:
+                                            b64_str = b64_match.group(1).strip()
+                                            json_str = base64.b64decode(b64_str).decode("utf-8")
+                                            search_data = json.loads(json_str)
+                                            result_count = search_data.get("result_count", 0)
+                                            sources = search_data.get("sources", [])
+                                            results_list = search_data.get("results", [])
+
+                                            # Emit browsing events for each result URL
+                                            for result in results_list[:5]:
+                                                url = result.get("url", "")
+                                                if url:
+                                                    yield f"data: {json.dumps({'type': 'search_status', 'action': 'browsing', 'url': url})}\n\n"
+
+                                            # Emit final complete event
+                                            yield f"data: {json.dumps({'type': 'search_status', 'action': 'complete', 'resultCount': result_count, 'sources': sources[:5]})}\n\n"
+                                    except Exception as e:
+                                        logging.error(f"[STREAM] Failed to parse B64 search data: {e}")
+
+                                elif "SEARCH_DATA_JSON" in action_content:
                                     try:
                                         json_match = re.search(
-                                            r"<!-- SEARCH_DATA_JSON\n(.*?)\nSEARCH_DATA_END -->",
+                                            r"<!-- SEARCH_DATA_JSON\s*\n(.*?)\nSEARCH_DATA_END\s*-->",
                                             action_content,
                                             re.DOTALL,
                                         )
                                         if json_match:
-                                            search_data = json.loads(json_match.group(1))
+                                            json_str = json_match.group(1).strip()
+                                            search_data = json.loads(json_str)
                                             result_count = search_data.get("result_count", 0)
                                             sources = search_data.get("sources", [])
                                             yield f"data: {json.dumps({'type': 'search_status', 'action': 'complete', 'resultCount': result_count, 'sources': sources[:5]})}\n\n"
+                                    except json.JSONDecodeError as e:
+                                        logging.warning(f"[STREAM] Invalid search JSON: {e}")
                                     except Exception as e:
                                         logging.error(f"[STREAM] Failed to parse search data: {e}")
 
@@ -1214,6 +1269,15 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
         metadata = {"plots": plots} if plots else None
         save_message(session_id, "ai", content, metadata=metadata)
         logging.info(f"[STREAM] Message saved to storage")
+
+        try:
+            from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
+
+            store = get_knowledge_store(session_id)
+            store.add_conversation_turn(message, content)
+            logging.info(f"[STREAM] Conversation turn saved to memory ({store.memory_count()} total)")
+        except Exception as mem_error:
+            logging.warning(f"[STREAM] Failed to save to memory: {mem_error}")
 
         # [REPORT UI TRIGGER] Extract report_id from action outputs for final response
         report_id = None

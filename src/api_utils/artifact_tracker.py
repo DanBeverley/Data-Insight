@@ -73,6 +73,18 @@ class ArtifactTracker:
             try:
                 with open(self.STORAGE_FILE, "r") as f:
                     self.session_artifacts = json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"[ArtifactTracker] Corrupted JSON, backing up and starting fresh: {e}")
+                backup_path = self.STORAGE_FILE.with_suffix(".json.bak")
+                try:
+                    import shutil
+
+                    shutil.copy(self.STORAGE_FILE, backup_path)
+                    print(f"[ArtifactTracker] Backup saved to {backup_path}")
+                except Exception:
+                    pass
+                self.session_artifacts = {}
+                self._save_to_file()
             except Exception as e:
                 print(f"[ArtifactTracker] ERROR loading: {e}")
                 self.session_artifacts = {}
