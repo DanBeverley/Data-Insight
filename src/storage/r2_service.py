@@ -27,7 +27,7 @@ class R2StorageService:
         account_id: Optional[str] = None,
         access_key_id: Optional[str] = None,
         secret_access_key: Optional[str] = None,
-        bucket_name: str = "Quorvix-artifacts",
+        bucket_name: Optional[str] = None,
         public_url: Optional[str] = None,
     ):
         if not R2_AVAILABLE:
@@ -36,7 +36,7 @@ class R2StorageService:
         self.account_id = account_id or os.getenv("R2_ACCOUNT_ID")
         self.access_key_id = access_key_id or os.getenv("R2_ACCESS_KEY_ID")
         self.secret_access_key = secret_access_key or os.getenv("R2_SECRET_ACCESS_KEY")
-        self.bucket_name = bucket_name or os.getenv("R2_BUCKET_NAME", "Quorvix-artifacts")
+        self.bucket_name = bucket_name or os.getenv("R2_BUCKET_NAME", "datainsight-artifacts")
         self.public_url = public_url or os.getenv("R2_PUBLIC_URL")
 
         if not self.account_id or not self.access_key_id or not self.secret_access_key:
