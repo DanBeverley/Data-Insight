@@ -125,15 +125,15 @@ class TrainingExecutor:
             return {"success": False, "stderr": f"CPU execution failed: {str(e)}", "execution_environment": "cpu"}
 
     def _execute_on_gpu(self, code: str, session_id: str, user_format: Optional[str], decision) -> Dict[str, Any]:
-        """Execute on GPU (Azure primary, AWS fallback)"""
+        """Execute on GPU (GCP Vertex AI primary, CPU fallback)"""
 
-        # Try Azure first
-        logger.info("[TrainingExecutor] Attempting Azure ML GPU execution")
+        # Try GCP Vertex AI first
+        logger.info("[TrainingExecutor] Attempting GCP Vertex AI GPU execution")
         try:
-            sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-            from tools import azure_gpu_train
+            sys.path.append(os.path.join(os.path.dirname(__file__), "..", "tools"))
+            from gcp_training import gcp_gpu_train
 
-            result_str = azure_gpu_train(code, session_id, user_format)
+            result_str = gcp_gpu_train(code, session_id, user_format)
             success = "successfully" in result_str.lower()
 
             if success:
@@ -142,7 +142,7 @@ class TrainingExecutor:
                     "success": True,
                     "stdout": result_str,
                     "stderr": "",
-                    "execution_environment": "gpu_azure",
+                    "execution_environment": "gpu_gcp",
                     "decision_reasoning": decision.reasoning,
                     "plots": [],
                     "model_files": model_files,
@@ -152,9 +152,9 @@ class TrainingExecutor:
 
         except Exception as e:
             error_msg = str(e)
-            logger.warning(f"[TrainingExecutor] Azure GPU failed: {error_msg}")
-            logger.info("[TrainingExecutor] Attempting AWS fallback")
-            return self._fallback_to_aws(code, session_id, user_format, decision)
+            logger.warning(f"[TrainingExecutor] GCP GPU failed: {error_msg}")
+            logger.info("[TrainingExecutor] Falling back to CPU execution")
+            return self._execute_on_cpu(code, session_id, decision)
 
     def _fallback_to_aws(self, code: str, session_id: str, user_format: Optional[str], decision) -> Dict[str, Any]:
         """Fallback to AWS SageMaker"""
