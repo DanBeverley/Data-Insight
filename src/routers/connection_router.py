@@ -182,31 +182,61 @@ async def load_table_to_session(connection_id: str, request: LoadTableRequest):
     try:
         df = manager.load_table(connection_id, request.table_name, request.limit)
 
-        from src.api_utils.session_management import session_data_manager
+        # Register with DatasetRegistry so agent can see it via list_datasets()
+        from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
         from pathlib import Path
         import tempfile
 
-        temp_dir = Path(tempfile.gettempdir()) / "datasets" / request.session_id
+        # Save CSV to temp location first
+        temp_dir = Path(tempfile.gettempdir()) / "db_exports"
         temp_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = temp_dir / f"{request.table_name}.csv"
-        df.to_csv(csv_path, index=False)
+        csv_filename = f"{request.table_name}.csv"
+        temp_csv_path = temp_dir / csv_filename
+        df.to_csv(temp_csv_path, index=False)
 
-        session_data_manager.set_session(
-            request.session_id,
-            {
-                "dataset_path": str(csv_path),
-                "dataset_name": request.table_name,
-                "source": "database",
-                "connection_id": connection_id,
-            },
-        )
+        # Register with DatasetRegistry (copies to data/datasets/{session_id}/)
+        registry = DatasetRegistry(request.session_id)
+        registry.register(filename=csv_filename, source_path=str(temp_csv_path), rows=len(df), columns=len(df.columns))
+
+        # Clean up temp file
+        temp_csv_path.unlink(missing_ok=True)
+
+        # Clear stale artifacts/insights from previous analysis
+        from src.api_utils.session_management import session_data_manager, clear_transient_agent_state
+
+        clear_transient_agent_state(request.session_id, f"database table {request.table_name} loaded")
+
+        session_data = session_data_manager.get_session(request.session_id)
+        if not session_data:
+            session_data = session_data_manager.create_session(request.session_id)
+
+        # Store in datasets dict (supports multiple datasets)
+        if "datasets" not in session_data:
+            session_data["datasets"] = {}
+        session_data["datasets"][csv_filename] = df
+
+        # Also set as current dataframe for backward compat
+        session_data["dataframe"] = df
+        session_data["filename"] = csv_filename
+        session_data["source"] = "database"
+        session_data_manager.set_session(request.session_id, session_data)
+
+        # Sync to sandbox immediately with unique filename
+        try:
+            from data_scientist_chatbot.app.tools import refresh_sandbox_data
+
+            refresh_sandbox_data(request.session_id, df, csv_filename)
+        except Exception as sandbox_err:
+            import logging
+
+            logging.warning(f"Sandbox sync deferred (sandbox may not be active yet): {sandbox_err}")
 
         return {
             "success": True,
             "rows": len(df),
             "columns": list(df.columns),
             "session_id": request.session_id,
-            "message": f"Loaded {len(df)} rows from {request.table_name}",
+            "message": f"Loaded {len(df)} rows from {request.table_name}. Use list_datasets() to see it.",
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 @router.get("/{session_id}")
 async def list_knowledge_items(session_id: str):
     """List all items in a session's knowledge store."""
-    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
     try:
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         items = store.list_items()
         return {"session_id": session_id, "count": len(items), "items": items}
     except Exception as e:
@@ -27,7 +27,7 @@ async def list_knowledge_items(session_id: str):
 @router.post("/{session_id}")
 async def upload_to_knowledge(session_id: str, file: UploadFile = File(...)):
     """Upload a file directly to knowledge store."""
-    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
     from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
     import pandas as pd
 
@@ -74,7 +74,7 @@ async def upload_to_knowledge(session_id: str, file: UploadFile = File(...)):
             registry_registered = True
 
             # Index basic info to RAG for semantic search
-            store = KnowledgeStore(session_id)
+            store = get_knowledge_store(session_id)
             summary = f"Dataset: {file.filename}\nRows: {rows}, Columns: {cols}"
             if cols > 0:
                 summary += f"\nColumn Names: {', '.join(df.columns.tolist()[:20])}"
@@ -82,7 +82,7 @@ async def upload_to_knowledge(session_id: str, file: UploadFile = File(...)):
             registry.mark_rag_indexed(file.filename)
         else:
             # Non-data files: just index to RAG
-            store = KnowledgeStore(session_id)
+            store = get_knowledge_store(session_id)
             doc_id = store.add_file(str(temp_path), source_type="user_upload")
 
         temp_path.unlink(missing_ok=True)
@@ -106,10 +106,10 @@ async def upload_to_knowledge(session_id: str, file: UploadFile = File(...)):
 @router.delete("/{session_id}/{doc_id}")
 async def delete_knowledge_item(session_id: str, doc_id: str):
     """Delete an item from knowledge store."""
-    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
     try:
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         success = store.delete_item(doc_id)
 
         if not success:
@@ -126,10 +126,10 @@ async def delete_knowledge_item(session_id: str, doc_id: str):
 @router.get("/{session_id}/doc/{doc_id}")
 async def get_knowledge_document(session_id: str, doc_id: str):
     """Get full content of a specific knowledge document."""
-    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
     try:
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         doc = store.get_document(doc_id)
 
         if not doc:
@@ -153,10 +153,10 @@ async def get_knowledge_document(session_id: str, doc_id: str):
 @router.get("/{session_id}/query")
 async def query_knowledge(session_id: str, q: str, k: int = 5):
     """Query knowledge store for relevant items."""
-    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
     try:
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         results = store.query(q, k=k)
         return {"session_id": session_id, "query": q, "count": len(results), "results": results}
     except Exception as e:
@@ -167,10 +167,10 @@ async def query_knowledge(session_id: str, q: str, k: int = 5):
 @router.patch("/{session_id}/{doc_id}")
 async def update_knowledge_item(session_id: str, doc_id: str, inject_to_context: bool):
     """Update item metadata (toggle context injection)."""
-    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
     try:
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         success = store.update_item_metadata(doc_id, {"inject_to_context": inject_to_context})
 
         if not success:

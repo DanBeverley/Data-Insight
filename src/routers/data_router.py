@@ -749,7 +749,17 @@ async def get_session_insights(session_id: str):
         agent_insights = []
         if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
             agent_insights = builtins._session_store[session_id].get("agent_insights", [])
-            print(f"DEBUG: get_session_insights found {len(agent_insights)} agent insights")
+            print(f"DEBUG: get_session_insights found {len(agent_insights)} agent insights from builtins")
+
+        if not agent_insights:
+            from src.api_utils.session_management import session_data_manager
+
+            session_mgr_data = session_data_manager.get_session(session_id)
+            if session_mgr_data:
+                agent_insights = session_mgr_data.get("agent_insights", [])
+                print(
+                    f"DEBUG: get_session_insights found {len(agent_insights)} agent insights from session_data_manager"
+                )
 
         system_insights = []
         if data_profile:
