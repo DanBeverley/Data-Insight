@@ -205,12 +205,25 @@ def run_hands_agent(state: GlobalState) -> Dict[str, Any]:
 
     try:
         session_data = session_data_manager.get_session(session_id)
-        if session_data and session_data.get("dataframe") is not None:
-            expected_df = session_data["dataframe"]
+        if session_data:
             from data_scientist_chatbot.app.tools import refresh_sandbox_data
 
-            refresh_sandbox_data(session_id, expected_df)
-            logger.info(f"[HANDS] Sandbox refreshed with {expected_df.shape[0]} rows, {expected_df.shape[1]} cols")
+            # Sync ALL datasets if available (multi-dataset support)
+            datasets_dict = session_data.get("datasets", {})
+            if datasets_dict:
+                synced_count = 0
+                for filename, df in datasets_dict.items():
+                    if df is not None:
+                        refresh_sandbox_data(session_id, df, filename)
+                        synced_count += 1
+                if synced_count > 0:
+                    logger.info(f"[HANDS] Synced {synced_count} datasets to sandbox")
+            elif session_data.get("dataframe") is not None:
+                # Fallback: single dataframe (backward compat)
+                expected_df = session_data["dataframe"]
+                filename = session_data.get("filename")
+                refresh_sandbox_data(session_id, expected_df, filename)
+                logger.info(f"[HANDS] Sandbox refreshed with {expected_df.shape[0]} rows, {expected_df.shape[1]} cols")
     except Exception as e:
         logger.warning(f"[HANDS] Sandbox refresh check failed: {e}")
 

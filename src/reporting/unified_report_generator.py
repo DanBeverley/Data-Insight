@@ -173,7 +173,7 @@ class UnifiedReportGenerator:
 
         artifact_list = ", ".join([a.get("filename", "") for a in artifacts]) if artifacts else "None"
 
-        styling_context = user_request if user_request else "Use default professional dark theme with cyan accents"
+        styling_context = user_request if user_request else "Use default professional dark theme with grey accents"
 
         prompt = f"""You are a frontend developer specializing in CSS and HTML styling.
 Your ONLY task is to style the report content below. DO NOT modify the content itself.
@@ -189,7 +189,7 @@ AVAILABLE ARTIFACTS TO EMBED:
 
 YOUR TASK:
 1. Extract any styling preferences from the user's request (colors, fonts, layout, etc.)
-2. If no specific styling is mentioned, use a professional dark theme with cyan accents
+2. If no specific styling is mentioned, use a professional dark theme with grey accents
 3. Apply CSS styling to make the report visually polished and professional
 4. Embed artifact references using iframes where data-filename attributes exist
 5. Ensure responsive design
@@ -302,7 +302,7 @@ Return only the styled HTML. No markdown code blocks."""
         :root {{
             --background: hsl(240, 10%, 3.9%);
             --foreground: hsl(0, 0%, 98%);
-            --primary: hsl(180, 100%, 50%);
+            --primary: hsl(0, 0%, 45%);
             --muted: hsl(240, 3.7%, 15.9%);
             --border: hsl(240, 3.7%, 25%);
         }}
@@ -338,7 +338,7 @@ Return only the styled HTML. No markdown code blocks."""
             overflow: hidden;
         }}
         .report-table th {{
-            background: rgba(0, 242, 234, 0.1);
+            background: rgba(89, 89, 89, 0.1);
             color: var(--primary);
             padding: 0.75rem 1rem;
             text-align: left;
@@ -353,7 +353,7 @@ Return only the styled HTML. No markdown code blocks."""
             border-bottom: none;
         }}
         .report-table tr:hover {{
-            background: rgba(0, 242, 234, 0.05);
+            background: rgba(89, 89, 89, 0.05);
         }}
     </style>
 </head>
@@ -455,7 +455,7 @@ Return only the styled HTML. No markdown code blocks."""
         :root {{
             --background: hsl(240, 10%, 3.9%);
             --foreground: hsl(0, 0%, 98%);
-            --primary: hsl(180, 100%, 50%);
+            --primary: hsl(0, 0%, 45%);
             --muted: hsl(240, 3.7%, 15.9%);
             --muted-foreground: hsl(240, 5%, 64.9%);
             --border: hsl(240, 3.7%, 15.9%);
@@ -524,7 +524,7 @@ Return only the styled HTML. No markdown code blocks."""
         }}
         
         .insight-card {{
-            background: rgba(0, 255, 255, 0.05);
+            background: rgba(89, 89, 89, 0.05);
             border-left: 3px solid var(--primary);
             padding: 1rem 1.5rem;
             margin: 1rem 0;
@@ -673,7 +673,7 @@ Return only the styled HTML. No markdown code blocks."""
                 display: block;
                 font-size: 1.8rem;
                 font-weight: 700;
-                background: linear-gradient(45deg, #4ade80, #22d3ee);
+                background: linear-gradient(45deg, #666666, #888888);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
             }
@@ -721,7 +721,7 @@ Return only the styled HTML. No markdown code blocks."""
         """,
         "driver_card": """
         <div class="premium-card driver-card">
-            <h3>Key Drivers: <span style="color: #22d3ee;">{target_column}</span></h3>
+            <h3>Key Drivers: <span style="color: #888888;">{target_column}</span></h3>
             <p style="margin-bottom: 16px; color: #ccc;">{insight}</p>
             <ul style="list-style: none; padding: 0;">{drivers_html}</ul>
         </div>

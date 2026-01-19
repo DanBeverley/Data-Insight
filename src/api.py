@@ -254,6 +254,17 @@ from src.routers.knowledge_router import router as knowledge_router
 app.include_router(knowledge_router)
 
 
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for deployment monitoring."""
+    return {
+        "status": "healthy",
+        "version": "2.0.0",
+        "chat_available": CHAT_AVAILABLE,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize database schema on application startup"""
