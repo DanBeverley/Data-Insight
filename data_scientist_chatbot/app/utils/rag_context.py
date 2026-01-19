@@ -7,6 +7,23 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_rag_embedding_cache = None
+
+
+def _get_embedding_function():
+    """Singleton for SentenceTransformer - reuses knowledge_store cache if available."""
+    global _rag_embedding_cache
+    if _rag_embedding_cache is None:
+        try:
+            from data_scientist_chatbot.app.utils.knowledge_store import get_embedding_function
+
+            _rag_embedding_cache = get_embedding_function()
+        except ImportError:
+            _rag_embedding_cache = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="all-MiniLM-L6-v2"
+            )
+    return _rag_embedding_cache
+
 
 class RAGContextManager:
     def __init__(self, session_id: str):
@@ -14,8 +31,7 @@ class RAGContextManager:
         self.client = chromadb.Client()
         self.collection_name = f"session_{session_id}"
 
-        # Use a lightweight local embedding model
-        self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        self.ef = _get_embedding_function()
 
         try:
             self.collection = self.client.get_or_create_collection(

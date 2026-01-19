@@ -15,6 +15,29 @@ logger = logging.getLogger(__name__)
 
 KNOWLEDGE_BASE_DIR = Path("data/knowledge")
 
+_embedding_function_cache = None
+_knowledge_store_cache: Dict[str, "KnowledgeStore"] = {}
+
+
+def get_embedding_function():
+    """Singleton for SentenceTransformer embedding function - loads once, reused forever."""
+    global _embedding_function_cache
+    if _embedding_function_cache is None:
+        logger.info("[KNOWLEDGE] Loading SentenceTransformer model (one-time)...")
+        _embedding_function_cache = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
+        logger.info("[KNOWLEDGE] SentenceTransformer model loaded and cached.")
+    return _embedding_function_cache
+
+
+def get_knowledge_store(session_id: str) -> "KnowledgeStore":
+    """Get or create KnowledgeStore for session (cached by session_id)."""
+    global _knowledge_store_cache
+    if session_id not in _knowledge_store_cache:
+        _knowledge_store_cache[session_id] = KnowledgeStore(session_id)
+    return _knowledge_store_cache[session_id]
+
 
 class KnowledgeStore:
     """Per-session persistent vector store for documents and research."""
@@ -25,11 +48,14 @@ class KnowledgeStore:
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
         self.client = chromadb.PersistentClient(path=str(self.storage_path))
-        self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        self.ef = get_embedding_function()
         self.r2_service = self._get_r2_service()
 
         try:
             self.collection = self.client.get_or_create_collection(name="knowledge", embedding_function=self.ef)
+            self.memory_collection = self.client.get_or_create_collection(
+                name="conversation_memory", embedding_function=self.ef
+            )
             logger.info(f"[KNOWLEDGE] Initialized store for session {session_id}")
 
             if self.collection.count() == 0 and self.r2_service:
@@ -37,6 +63,7 @@ class KnowledgeStore:
         except Exception as e:
             logger.error(f"[KNOWLEDGE] Failed to create collection: {e}")
             self.collection = None
+            self.memory_collection = None
 
     def _get_r2_service(self):
         try:
@@ -417,3 +444,98 @@ class KnowledgeStore:
         except Exception as e:
             logger.error(f"[KNOWLEDGE] Update metadata failed: {e}")
             return False
+
+    def add_conversation_turn(self, user_message: str, ai_response: str, turn_index: int = None) -> str:
+        if not self.memory_collection:
+            return ""
+
+        try:
+            combined_text = f"User: {user_message}\n\nAssistant: {ai_response[:1500]}"
+            turn_id = f"turn_{self._generate_id(combined_text)}_{datetime.now().strftime('%H%M%S')}"
+
+            metadata = {
+                "user_message": user_message[:500],
+                "response_preview": ai_response[:300],
+                "timestamp": datetime.now().isoformat(),
+                "turn_index": turn_index or self.memory_collection.count(),
+            }
+
+            self.memory_collection.add(documents=[combined_text], metadatas=[metadata], ids=[turn_id])
+            logger.info(f"[MEMORY] Stored conversation turn {turn_id}")
+            return turn_id
+        except Exception as e:
+            logger.error(f"[MEMORY] Failed to store turn: {e}")
+            return ""
+
+    def get_relevant_history(self, query: str, k: int = 5, min_score: float = 0.3) -> List[Dict[str, Any]]:
+        if not self.memory_collection or self.memory_collection.count() == 0:
+            return []
+
+        try:
+            results = self.memory_collection.query(
+                query_texts=[query],
+                n_results=min(k, self.memory_collection.count()),
+                include=["documents", "metadatas", "distances"],
+            )
+
+            items = []
+            if results["documents"] and results["documents"][0]:
+                for i, doc in enumerate(results["documents"][0]):
+                    distance = results["distances"][0][i] if results.get("distances") else 1.0
+                    relevance_score = 1.0 - distance
+
+                    if relevance_score >= min_score:
+                        items.append(
+                            {
+                                "content": doc,
+                                "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
+                                "relevance": relevance_score,
+                            }
+                        )
+
+            items.sort(key=lambda x: x["metadata"].get("turn_index", 0))
+            return items
+        except Exception as e:
+            logger.error(f"[MEMORY] Query failed: {e}")
+            return []
+
+    def get_recent_history(self, k: int = 10) -> List[Dict[str, Any]]:
+        if not self.memory_collection or self.memory_collection.count() == 0:
+            return []
+
+        try:
+            results = self.memory_collection.get(include=["documents", "metadatas"])
+            items = []
+            for i, doc_id in enumerate(results.get("ids", [])):
+                items.append(
+                    {
+                        "id": doc_id,
+                        "content": results["documents"][i] if results.get("documents") else "",
+                        "metadata": results["metadatas"][i] if results.get("metadatas") else {},
+                    }
+                )
+
+            items.sort(key=lambda x: x["metadata"].get("turn_index", 0), reverse=True)
+            return items[:k]
+        except Exception as e:
+            logger.error(f"[MEMORY] Get recent failed: {e}")
+            return []
+
+    def clear_conversation_memory(self) -> bool:
+        if not self.memory_collection:
+            return False
+
+        try:
+            all_ids = self.memory_collection.get()["ids"]
+            if all_ids:
+                self.memory_collection.delete(ids=all_ids)
+            logger.info(f"[MEMORY] Cleared conversation memory for {self.session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[MEMORY] Clear failed: {e}")
+            return False
+
+    def memory_count(self) -> int:
+        if not self.memory_collection:
+            return 0
+        return self.memory_collection.count()
