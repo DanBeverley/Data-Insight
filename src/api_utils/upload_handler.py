@@ -9,6 +9,9 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
         from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
         from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
         from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+        from src.api_utils.session_management import clear_transient_agent_state
+
+        clear_transient_agent_state(session_id, f"file upload {filename}")
 
         # Register in DatasetRegistry
         registry = DatasetRegistry(session_id)

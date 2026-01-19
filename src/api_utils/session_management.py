@@ -46,6 +46,12 @@ class SessionDataManager:
         if session_id in self.store:
             del self.store[session_id]
 
+    def set_session(self, session_id: str, data: Dict[str, Any]):
+        """Set or update session data. Creates session if it doesn't exist."""
+        if session_id not in self.store:
+            self.create_session(session_id)
+        self.store[session_id].update(data)
+
 
 session_data_manager = SessionDataManager()
 
@@ -62,6 +68,57 @@ async def clean_checkpointer_state(session_id: str, operation: str = "new sessio
             return True
     except Exception as e:
         print(f"WARNING: Failed to clean checkpointer state for {operation} {session_id}: {e}")
+        return False
+
+
+def clear_transient_agent_state(session_id: str, reason: str = "new data loaded") -> bool:
+    """Clear transient execution state (artifacts, insights) while preserving conversation.
+
+    Called when new data is loaded to prevent stale analysis from polluting new requests.
+    """
+    try:
+        from data_scientist_chatbot.app.core.graph_builder import get_checkpointer
+        import asyncio
+
+        checkpointer = get_checkpointer()
+        if not checkpointer:
+            logging.debug(f"[SESSION] No checkpointer available for {session_id}")
+            return True
+
+        config = {"configurable": {"thread_id": session_id}}
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                current_state = asyncio.run_coroutine_threadsafe(checkpointer.aget(config), loop).result(timeout=2)
+            else:
+                current_state = loop.run_until_complete(checkpointer.aget(config))
+        except Exception:
+            current_state = None
+
+        if current_state and hasattr(current_state, "values"):
+            state_values = current_state.values
+            cleared_fields = []
+
+            if state_values.get("artifacts"):
+                state_values["artifacts"] = []
+                cleared_fields.append("artifacts")
+            if state_values.get("agent_insights"):
+                state_values["agent_insights"] = []
+                cleared_fields.append("insights")
+            if state_values.get("execution_result"):
+                state_values["execution_result"] = None
+                cleared_fields.append("execution_result")
+
+            if cleared_fields:
+                logging.info(f"[SESSION] Cleared transient state for {session_id} ({reason}): {cleared_fields}")
+                return True
+
+        logging.debug(f"[SESSION] No transient state to clear for {session_id}")
+        return True
+
+    except Exception as e:
+        logging.warning(f"[SESSION] Could not clear transient state for {session_id}: {e}")
         return False
 
 
