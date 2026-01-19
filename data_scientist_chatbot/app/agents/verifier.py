@@ -176,6 +176,19 @@ REQUIREMENTS:
 
     if approved:
         _save_analysis_to_rag(state, current_task, agent_insights, artifacts)
+
+        # Sync insights to session store for API access (Key Insights Summary panel)
+        session_id = state.get("session_id")
+        if session_id and agent_insights:
+            import builtins
+
+            if not hasattr(builtins, "_session_store"):
+                builtins._session_store = {}
+            if session_id not in builtins._session_store:
+                builtins._session_store[session_id] = {}
+            builtins._session_store[session_id]["agent_insights"] = agent_insights
+            logger.info(f"[VERIFIER] Synced {len(agent_insights)} insights to session store")
+
         return {
             "messages": [AIMessage(content=decision_json, additional_kwargs={"internal": True})],
             "current_agent": "verifier",

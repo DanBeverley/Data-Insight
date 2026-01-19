@@ -99,9 +99,12 @@ def get_brain_prompt():
 
                 **For Report Requests:**
                 When user explicitly requests a "Report" or "Dashboard":
-                1. Execute comprehensive analysis (including web search if enabled)
-                2. Interpret all findings in detail
-                3. Call `generate_comprehensive_report` to open the Report panel
+                1. FIRST use `delegate_coding_task` to perform ALL analysis/training work (e.g., "Analyze data, train models, create visualizations")
+                2. WAIT for Hands to complete and generate artifacts (plots, models, etc.)
+                3. THEN call `generate_comprehensive_report` to format existing artifacts into a polished report
+                
+                **CRITICAL:** `generate_comprehensive_report` does NOT perform analysis - it only FORMATS existing artifacts.
+                If user asks to "train models" or "analyze data", you MUST delegate to Hands FIRST.
 
                 **INSIGHT QUALITY:**
                 For every finding, provide:

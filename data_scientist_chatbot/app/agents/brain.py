@@ -66,14 +66,8 @@ def _filter_messages_for_brain(messages: List, artifacts: List, agent_insights: 
         elif msg.type == "tool" or isinstance(msg, ToolMessage):
             filtered.append(msg)
 
-    if artifacts and len(artifacts) > 0:
-        artifact_summary = f"Analysis complete with {len(artifacts)} artifacts"
-        if agent_insights:
-            insight_labels = [i.get("label", "") for i in agent_insights[:5]]
-            artifact_summary += f" and insights: {', '.join(insight_labels)}"
-        artifact_summary += ". Present the findings with embedded visualizations."
-
-        filtered.append(HumanMessage(content=artifact_summary))
+    # NOTE: Removed automatic "Present findings" injection (synthesis mode hijacking)
+    # Artifacts info is available via _build_context. Brain uses tools to discover context.
 
     return filtered
 
