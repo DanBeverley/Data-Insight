@@ -297,7 +297,8 @@ print(f"Dataset reloaded: {{df.shape}} shape, {{len(df.columns)}} columns")
             print(f"DEBUG: Could not reload dataset for session {session_id}: {fallback_error}")
 
 
-def refresh_sandbox_data(session_id: str, df: "pd.DataFrame" = None) -> bool:
+def refresh_sandbox_data(session_id: str, df: "pd.DataFrame" = None, filename: str = None) -> bool:
+    """Sync dataframe to sandbox as parquet. Supports multiple datasets with unique filenames."""
     import io
 
     try:
@@ -317,6 +318,7 @@ def refresh_sandbox_data(session_id: str, df: "pd.DataFrame" = None) -> bool:
             if not (session_store and session_id in session_store and "dataframe" in session_store[session_id]):
                 return False
             df = session_store[session_id]["dataframe"]
+            filename = session_store[session_id].get("filename", "dataset.csv")
 
         df_to_upload = df.sample(n=min(50000, len(df)), random_state=42) if len(df) > 50000 else df
 
@@ -324,12 +326,30 @@ def refresh_sandbox_data(session_id: str, df: "pd.DataFrame" = None) -> bool:
         df_to_upload.to_parquet(parquet_buffer, engine="pyarrow", compression="snappy")
         parquet_bytes = parquet_buffer.getvalue()
 
-        print(f"DEBUG: Refreshing sandbox with {len(df_to_upload)} rows, {len(df_to_upload.columns)} cols")
+        # Derive parquet filename from original filename
+        if filename:
+            base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+            unique_parquet_path = f"/tmp/{base_name}.parquet"
+        else:
+            unique_parquet_path = "/tmp/dataset.parquet"
 
-        try:
-            sandbox.filesystem.write_bytes("/tmp/dataset.parquet", parquet_bytes)
-        except AttributeError:
-            sandbox.files.write("/tmp/dataset.parquet", parquet_bytes)
+        print(
+            f"DEBUG: Refreshing sandbox with {len(df_to_upload)} rows, {len(df_to_upload.columns)} cols -> {unique_parquet_path}"
+        )
+
+        def write_parquet(path, data):
+            try:
+                sandbox.filesystem.write_bytes(path, data)
+            except AttributeError:
+                sandbox.files.write(path, data)
+
+        # Save to unique path
+        write_parquet(unique_parquet_path, parquet_bytes)
+
+        # Only write to default path if no filename provided (backward compat for uploads)
+        # Skip for multi-dataset scenarios to avoid overwriting
+        if not filename or unique_parquet_path == "/tmp/dataset.parquet":
+            write_parquet("/tmp/dataset.parquet", parquet_bytes)
 
         return True
     except Exception as e:
@@ -503,11 +523,38 @@ pd.set_option('display.max_columns', 20)
 pd.set_option('display.width', 120)
 pd.set_option('display.max_colwidth', 50)
 
-# Conditionally load dataset if available (not required for web search data tasks)
+# Load all available datasets from sandbox
+datasets = {{}}
+parquet_files = glob.glob('/tmp/*.parquet')
+for pf in parquet_files:
+    name = os.path.basename(pf).replace('.parquet', '')
+    datasets[name] = pd.read_parquet(pf)
+
+# Set df to primary dataset (backward compat)
 df = None
-if os.path.exists('/tmp/dataset.parquet'):
-    df = pd.read_parquet('/tmp/dataset.parquet')
-    print(f"Dataset loaded: {{df.shape}}")
+if datasets:
+    # Prefer 'dataset' (backward compat), else use first available
+    if 'dataset' in datasets:
+        df = datasets['dataset']
+        other_datasets = {{k: v for k, v in datasets.items() if k != 'dataset'}}
+        if other_datasets:
+            print(f"Primary dataset loaded: {{df.shape}}")
+            print(f"Additional datasets: {{{{name: data.shape for name, data in other_datasets.items()}}}}")
+            # Also create named variables for each dataset
+            for name, data in other_datasets.items():
+                globals()[name] = data
+                print(f"  -> '{{name}}' variable available: {{data.shape}}")
+        else:
+            print(f"Dataset loaded: {{df.shape}}")
+    else:
+        # No default, use first available
+        first_name = list(datasets.keys())[0]
+        df = datasets[first_name]
+        print(f"Dataset '{{first_name}}' loaded: {{df.shape}}")
+        # Create named variables for all datasets
+        for name, data in datasets.items():
+            globals()[name] = data
+            print(f"  -> '{{name}}' variable available: {{data.shape}}")
 else:
     print("No dataset file - this may be a web search data visualization task")
 

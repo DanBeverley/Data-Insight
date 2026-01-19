@@ -53,12 +53,57 @@ To zip artifacts: use zip_artifacts tool with the ID values (not filenames)
         return ""
 
 
+def _build_multi_dataset_context(datasets_dict: dict, session_data: dict) -> str:
+    """Build rich context for multiple datasets so Brain doesn't need tool calls."""
+    import pandas as pd
+
+    parts = [f"AVAILABLE DATASETS ({len(datasets_dict)} tables loaded):"]
+
+    all_columns = {}
+    for filename, df in datasets_dict.items():
+        if df is None:
+            continue
+
+        base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+        cols = df.columns.tolist()
+        all_columns[base_name] = set(cols)
+
+        dtypes_summary = df.dtypes.value_counts().to_dict()
+        dtype_str = ", ".join([f"{v} {k}" for k, v in dtypes_summary.items()])
+
+        col_preview = ", ".join(cols[:12])
+        if len(cols) > 12:
+            col_preview += f"... (+{len(cols)-12} more)"
+
+        missing_pct = (df.isnull().sum().sum() / (df.shape[0] * df.shape[1]) * 100) if df.size > 0 else 0
+
+        parts.append(
+            f"""
+📊 {filename}:
+   Shape: {df.shape[0]:,} rows × {df.shape[1]} cols | Types: {dtype_str} | Missing: {missing_pct:.1f}%
+   Columns: [{col_preview}]"""
+        )
+
+    # Detect potential foreign key relationships
+    relationships = []
+    table_names = list(all_columns.keys())
+    for i, t1 in enumerate(table_names):
+        for t2 in table_names[i + 1 :]:
+            common = all_columns[t1] & all_columns[t2]
+            if common:
+                relationships.append(f"   • {t1} ↔ {t2}: shared columns [{', '.join(sorted(common)[:5])}]")
+
+    if relationships:
+        parts.append("\n🔗 DETECTED RELATIONSHIPS:")
+        parts.extend(relationships[:10])
+
+    parts.append("\n💡 All datasets are available in sandbox as: datasets['customers'], datasets['orders'], etc.")
+
+    return "\n".join(parts)
+
+
 def get_data_context(session_id: str, query: str = None) -> str:
-    """
-    Get data context, optionally using RAG for specific queries.
-    If query is provided, retrieves relevant columns/insights.
-    If no query, provides a high-level summary (not a full dump).
-    """
+    """Get data context for Brain agent. Supports multiple datasets."""
     try:
         from src.api_utils.session_management import session_data_manager
         import pandas as pd
@@ -69,6 +114,11 @@ def get_data_context(session_id: str, query: str = None) -> str:
 
         if not session_data:
             return "No dataset available. Please upload data first."
+
+        # Multi-dataset support: check datasets dict first
+        datasets_dict = session_data.get("datasets", {})
+        if datasets_dict and len(datasets_dict) > 1:
+            return _build_multi_dataset_context(datasets_dict, session_data)
 
         unified_context = session_data.get("unified_context")
         if unified_context:
