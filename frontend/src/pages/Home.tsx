@@ -160,21 +160,32 @@ export default function Home() {
 
         <div className="flex h-full w-full">
           <div className="flex-1 flex flex-col h-full min-w-0 relative transition-all duration-500">
-            {currentView === 'chat' && (
-              <ChatArea
-                onTriggerReport={handleTriggerReport}
-                sessionId={sessionId}
-                onSessionUpdate={handleSessionUpdate}
-              />
-            )}
+            {sessionId && (
+              <>
+                <div className={currentView === 'chat' ? 'flex flex-col h-full' : 'hidden'}>
+                  <ChatArea
+                    onTriggerReport={handleTriggerReport}
+                    sessionId={sessionId}
+                    onSessionUpdate={handleSessionUpdate}
+                  />
+                </div>
 
-            {currentView !== 'chat' && (
-              <ScrollArea className="h-full">
-                {currentView === 'dashboards' && <DashboardView sessionId={sessionId} />}
-                {currentView === 'datasets' && <KnowledgeStoreView sessionId={sessionId} />}
-              </ScrollArea>
+                <div className={currentView === 'dashboards' ? 'flex flex-col h-full' : 'hidden'}>
+                  <ScrollArea className="h-full">
+                    <DashboardView sessionId={sessionId} />
+                  </ScrollArea>
+                </div>
+
+                <div className={currentView === 'datasets' ? 'flex flex-col h-full' : 'hidden'}>
+                  <ScrollArea className="h-full">
+                    <KnowledgeStoreView sessionId={sessionId} />
+                  </ScrollArea>
+                </div>
+              </>
             )}
           </div>
+
+
 
           {hasReport && !isReportOpen && (
             <Button

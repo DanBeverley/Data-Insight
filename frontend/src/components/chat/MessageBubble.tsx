@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { VersionSlider } from "./VersionSlider";
-import { Bot, User, Cpu, RefreshCw, Pencil, Check, X, Paperclip, Download, MoreVertical, Image as ImageIcon, FileDown, ExternalLink } from "lucide-react";
+import { Bot, User, Cpu, RefreshCw, Pencil, Check, X, Paperclip, Download, MoreVertical, Image as ImageIcon, FileDown, ExternalLink, Camera } from "lucide-react";
 import { ReactNode, useState, useRef, memo } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,18 +9,17 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { ResponseLoadingIndicator } from "./ResponseLoadingIndicator";
 import { PlanProgress, Task } from "./PlanProgress";
-import { PlotlyIframe } from "@/components/viz/PlotlyIframe";
+import { PlotlyIframe, PlotlyIframeHandle } from "@/components/viz/PlotlyIframe";
 
-function ArtifactWithDownload({ children, src, filename, type }: {
+function ArtifactWithDownload({ children, src, filename, type, onSnapshot }: {
   children: ReactNode;
   src: string;
   filename?: string;
   type: 'image' | 'chart';
+  onSnapshot?: () => void;
 }) {
-  const [showMenu, setShowMenu] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
   const derivedFilename = filename || src.split('/').pop() || 'artifact';
+  const [isCapturing, setIsCapturing] = useState(false);
 
   const handleDownloadFile = async () => {
     try {
@@ -37,68 +36,69 @@ function ArtifactWithDownload({ children, src, filename, type }: {
     } catch (err) {
       console.error('Download failed:', err);
     }
-    setShowMenu(false);
   };
 
   const handleOpenInNewTab = () => {
     window.open(src, '_blank');
-    setShowMenu(false);
+  };
+
+  const handleSnapshot = async () => {
+    if (onSnapshot) {
+      setIsCapturing(true);
+      try {
+        await onSnapshot();
+      } finally {
+        setIsCapturing(false);
+      }
+    }
   };
 
   return (
-    <div className="relative group">
+    <div className="relative">
       {children}
-      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <div className="relative" ref={menuRef}>
+      <div className="flex items-center justify-end gap-1 mt-2 px-2 py-1.5 bg-white/5 backdrop-blur-sm border border-white/10 rounded-lg">
+        <span className="text-xs text-muted-foreground mr-auto truncate max-w-[200px]" title={derivedFilename}>
+          {derivedFilename}
+        </span>
+        {type === 'chart' && onSnapshot && (
           <button
-            onClick={() => setShowMenu(!showMenu)}
-            className="p-1.5 bg-background/80 backdrop-blur-sm border border-border rounded-md shadow-sm hover:bg-accent transition-colors"
-            title="Download options"
+            onClick={handleSnapshot}
+            disabled={isCapturing}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors disabled:opacity-50"
+            title="Save as PNG"
           >
-            <Download className="w-4 h-4 text-muted-foreground" />
+            <Camera className="w-3.5 h-3.5" />
+            {isCapturing ? 'Saving...' : 'Snapshot'}
           </button>
-          {showMenu && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
-              <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] bg-popover border border-border rounded-md shadow-lg py-1 animate-in fade-in slide-in-from-top-1 duration-150">
-                {type === 'image' && (
-                  <button
-                    onClick={handleDownloadFile}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
-                  >
-                    <ImageIcon className="w-4 h-4" />
-                    Download PNG
-                  </button>
-                )}
-                {type === 'chart' && (
-                  <button
-                    onClick={handleDownloadFile}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
-                  >
-                    <FileDown className="w-4 h-4" />
-                    Download HTML
-                  </button>
-                )}
-                <button
-                  onClick={handleOpenInNewTab}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent transition-colors text-left"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  Open in new tab
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        )}
+        <button
+          onClick={handleDownloadFile}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors"
+          title={type === 'image' ? 'Download PNG' : 'Download HTML'}
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download
+        </button>
+        <button
+          onClick={handleOpenInNewTab}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors"
+          title="Open in new tab"
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+          Open
+        </button>
       </div>
     </div>
   );
 }
 
 
+
 function InteractiveChart({ href, title }: { href: string; title: string }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [animationKey, setAnimationKey] = useState(0);
+  const plotlyRef = useRef<PlotlyIframeHandle>(null);
 
   const handleToggle = () => {
     if (!isOpen) {
@@ -107,31 +107,81 @@ function InteractiveChart({ href, title }: { href: string; title: string }) {
     setIsOpen(!isOpen);
   };
 
+  const handleSnapshot = async () => {
+    if (plotlyRef.current) {
+      await plotlyRef.current.snapshot();
+    }
+  };
+
   return (
-    <div className="my-4 w-full">
-      <button
-        onClick={handleToggle}
-        className="inline-flex items-center gap-2 text-primary hover:underline cursor-pointer select-none text-left"
-      >
-        <span className={cn("transition-transform duration-300 ease-out", isOpen && "rotate-90")}>▶</span>
-        {title}
-      </button>
-      {isOpen && (
-        <ArtifactWithDownload src={href} type="chart">
+    <>
+      <div className="my-4 w-full">
+        <button
+          onClick={handleToggle}
+          className="inline-flex items-center gap-2 text-primary hover:underline cursor-pointer select-none text-left"
+        >
+          <span className={cn("transition-transform duration-300 ease-out", isOpen && "rotate-90")}>▶</span>
+          {title}
+        </button>
+        {isOpen && !isExpanded && (
+          <ArtifactWithDownload src={href} type="chart" onSnapshot={handleSnapshot}>
+            <div
+              key={animationKey}
+              className="mt-3 rounded-xl overflow-auto max-h-[600px] artifact-scroll border border-border/50 shadow-xl animate-in fade-in slide-in-from-top-2 duration-400 relative"
+            >
+              <PlotlyIframe
+                ref={plotlyRef}
+                src={href}
+                title={title || 'Interactive Chart'}
+                className="bg-transparent"
+                height="500px"
+              />
+            </div>
+          </ArtifactWithDownload>
+        )}
+      </div>
+
+      {/* Fullscreen Modal */}
+      {isExpanded && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-8 animate-in fade-in duration-200"
+          onClick={() => setIsExpanded(false)}
+        >
           <div
-            key={animationKey}
-            className="mt-3 rounded-xl overflow-hidden border border-border/50 shadow-xl animate-in fade-in slide-in-from-top-2 duration-400"
+            className="relative w-full max-w-[90vw] max-h-[90vh] bg-background border border-white/10 rounded-2xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300"
+            onClick={e => e.stopPropagation()}
           >
-            <PlotlyIframe
-              src={href}
-              title={title || 'Interactive Chart'}
-              className="bg-transparent"
-              height="500px"
-            />
+            <div className="flex items-center justify-between p-4 border-b border-white/10 bg-white/5">
+              <h3 className="font-semibold text-lg truncate">{title}</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => window.open(href, '_blank')}
+                  className="p-2 text-muted-foreground hover:text-foreground bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors"
+                  title="Open in new tab"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setIsExpanded(false)}
+                  className="p-2 text-muted-foreground hover:text-foreground bg-white/5 hover:bg-white/10 border border-white/10 rounded-md transition-colors"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="p-4 overflow-auto max-h-[calc(90vh-80px)] artifact-scroll">
+              <PlotlyIframe
+                src={href}
+                title={title || 'Interactive Chart'}
+                className="bg-transparent"
+                height="75vh"
+              />
+            </div>
           </div>
-        </ArtifactWithDownload>
+        </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -364,10 +414,10 @@ function MessageBubbleBase({ id, role, content, timestamp, onRegenerate, onEdit,
                       );
                     },
                     th({ children }) {
-                      return <th className="border border-border px-4 py-2 text-left font-bold bg-muted/50">{children}</th>
+                      return <th className="border border-border px-4 py-2 text-left font-bold bg-muted/50 text-foreground">{children}</th>
                     },
                     td({ children }) {
-                      return <td className="border border-border px-4 py-2">{children}</td>
+                      return <td className="border border-border px-4 py-2 text-foreground">{children}</td>
                     }
                   }}
                 >

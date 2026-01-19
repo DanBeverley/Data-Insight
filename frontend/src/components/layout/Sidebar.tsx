@@ -34,6 +34,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useTheme } from "@/components/theme-provider";
+import { SearchSettingsModal, loadSearchSettings, SearchSettings } from "@/components/chat/SearchSettingsModal";
 
 interface Session {
   id: string;
@@ -60,6 +61,8 @@ export function Sidebar({ isOpen, onToggle, currentView, onViewChange, currentSe
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const { theme, setTheme } = useTheme();
+  const [searchSettingsOpen, setSearchSettingsOpen] = useState(false);
+  const [searchSettings, setSearchSettings] = useState<SearchSettings>(loadSearchSettings);
 
   useEffect(() => {
     fetchSessions();
@@ -167,7 +170,7 @@ export function Sidebar({ isOpen, onToggle, currentView, onViewChange, currentSe
           className={cn(
             "h-10 w-10 rounded-xl transition-all duration-300",
             currentView === id
-              ? "bg-primary/20 text-primary shadow-[0_0_15px_rgba(0,242,234,0.3)] scale-105"
+              ? "bg-primary/20 text-primary shadow-[0_0_15px_hsl(var(--primary)/0.3)] scale-105"
               : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
           )}
         >
@@ -370,6 +373,7 @@ export function Sidebar({ isOpen, onToggle, currentView, onViewChange, currentSe
             <Button
               variant="ghost"
               size="icon"
+              onClick={() => setSearchSettingsOpen(true)}
               className={cn(
                 "h-10 w-10 rounded-xl text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground",
                 isOpen && "w-full justify-start px-3 gap-3"
@@ -507,6 +511,13 @@ export function Sidebar({ isOpen, onToggle, currentView, onViewChange, currentSe
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <SearchSettingsModal
+        open={searchSettingsOpen}
+        onOpenChange={setSearchSettingsOpen}
+        settings={searchSettings}
+        onSave={setSearchSettings}
+      />
     </>
   );
 }

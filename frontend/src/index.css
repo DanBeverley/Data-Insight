@@ -104,8 +104,8 @@
     --card-foreground: 0 0% 93%;
     --popover: 0 0% 6%;
     --popover-foreground: 0 0% 93%;
-    --primary: 180 100% 50%;
-    --primary-foreground: 0 0% 4%;
+    --primary: 0 0% 35%;
+    --primary-foreground: 0 0% 100%;
     --secondary: 0 0% 12%;
     --secondary-foreground: 0 0% 93%;
     --muted: 0 0% 12%;
@@ -116,8 +116,8 @@
     --destructive-foreground: 0 0% 93%;
     --border: 0 0% 15%;
     --input: 0 0% 15%;
-    --ring: 180 100% 50%;
-    --chart-1: 180 100% 50%;
+    --ring: 0 0% 35%;
+    --chart-1: 0 0% 50%;
     --chart-2: 280 100% 70%;
     --chart-3: 30 100% 60%;
     --chart-4: 150 100% 40%;
@@ -125,18 +125,18 @@
 
     --sidebar: 0 0% 4%;
     --sidebar-foreground: 0 0% 93%;
-    --sidebar-primary: 180 100% 50%;
-    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-primary: 0 0% 35%;
+    --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 0 0% 12%;
     --sidebar-accent-foreground: 0 0% 93%;
     --sidebar-border: 0 0% 15%;
-    --sidebar-ring: 180 100% 50%;
+    --sidebar-ring: 0 0% 35%;
   }
 }
 
 @layer base {
   html {
-    font-size: 18.4px;
+    font-size: 16.5px;
   }
 
   * {
@@ -159,9 +159,10 @@
   }
 }
 
-/* Custom Scrollbar for Minimalism */
+/* Custom Scrollbar - Sleek Dark Theme */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -169,10 +170,33 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted));
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground));
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Artifact container scrollbar - more visible */
+.artifact-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.artifact-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }

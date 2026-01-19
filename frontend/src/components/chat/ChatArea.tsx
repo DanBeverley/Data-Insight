@@ -417,11 +417,22 @@ export function ChatArea({ onTriggerReport, sessionId, onSessionUpdate }: ChatAr
 
                 if (data.action === 'browsing' || data.action === 'results' || data.action === 'complete') {
                   setCurrentSearchHistory(prev => {
-                    const exists = prev.some(item =>
+                    // Find if an identical item exists (same URL or same count AND same sources)
+                    const existingIndex = prev.findIndex(item =>
                       (item.url && item.url === data.url) ||
-                      (item.resultCount && item.resultCount === data.resultCount)
+                      (item.resultCount === data.resultCount && data.sources && item.sources) || // Skip if both have sources and same count
+                      (item.resultCount === data.resultCount && !data.sources && !item.sources)  // Skip if neither have sources and same count
                     );
-                    if (exists) return prev;
+
+                    if (existingIndex !== -1) {
+                      // If we found a match, but the new one has sources and old one doesn't, UPDATE it
+                      if (data.sources && !prev[existingIndex].sources) {
+                        const newHistory = [...prev];
+                        newHistory[existingIndex] = newStatus;
+                        return newHistory;
+                      }
+                      return prev;
+                    }
                     return [...prev, newStatus];
                   });
                 }

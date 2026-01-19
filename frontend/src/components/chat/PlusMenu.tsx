@@ -110,25 +110,12 @@ export function PlusMenu({
                                         <span className="text-[10px] text-muted-foreground font-normal">Search the internet</span>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-1">
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-6 w-6 rounded-md hover:bg-muted"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            onOpenSearchSettings();
-                                        }}
-                                    >
-                                        <Settings className="w-3.5 h-3.5 text-muted-foreground" />
-                                    </Button>
-                                    <Switch
-                                        checked={webSearchMode}
-                                        onCheckedChange={onWebSearchModeChange}
-                                        disabled={researchMode}
-                                        className="scale-75 data-[state=checked]:bg-blue-500"
-                                    />
-                                </div>
+                                <Switch
+                                    checked={webSearchMode}
+                                    onCheckedChange={onWebSearchModeChange}
+                                    disabled={researchMode}
+                                    className="scale-75 data-[state=checked]:bg-blue-500"
+                                />
                             </div>
 
                             <div className="h-px bg-border/50 mx-2 my-1" />

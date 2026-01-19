@@ -1,4 +1,5 @@
 import React from 'react';
+import { Search, Globe } from 'lucide-react';
 
 interface SearchStatusItem {
     action: 'searching' | 'browsing' | 'complete';
@@ -6,6 +7,7 @@ interface SearchStatusItem {
     provider?: string;
     url?: string;
     resultCount?: number;
+    sources?: string[];
 }
 
 interface SearchStatusCardProps {
@@ -13,101 +15,49 @@ interface SearchStatusCardProps {
     searchHistory?: SearchStatusItem[];
 }
 
-const AnimatedCounter = ({ value }: { value: number }) => {
-    const [count, setCount] = React.useState(1);
-
-    React.useEffect(() => {
-        if (value <= 1) {
-            setCount(value);
-            return;
-        }
-
-        let startTimestamp: number = 0;
-        const duration = 1000;
-
-        const step = (timestamp: number) => {
-            if (!startTimestamp) startTimestamp = timestamp;
-            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
-            setCount(Math.floor(progress * (value - 1) + 1));
-
-            if (progress < 1) {
-                window.requestAnimationFrame(step);
-            }
-        };
-
-        window.requestAnimationFrame(step);
-    }, [value]);
-
-    return <>{count}</>;
-};
-
 export const SearchStatusCard: React.FC<SearchStatusCardProps> = ({ searchStatus, searchHistory = [] }) => {
     if (!searchStatus && searchHistory.length === 0) return null;
 
-    const allItems = searchHistory.length > 0 ? searchHistory : (searchStatus ? [searchStatus] : []);
+    // Get the latest search result count (from complete status or most recent with count)
+    const latestComplete = [...searchHistory].reverse().find(item =>
+        item.action === 'complete' || (item.resultCount && item.resultCount > 0)
+    );
+    const resultCount = latestComplete?.resultCount || searchStatus?.resultCount || 0;
+
+    // Get current browsing URL (most recent browsing action)
+    const currentBrowsing = searchStatus?.action === 'browsing' ? searchStatus :
+        [...searchHistory].reverse().find(item => item.action === 'browsing');
+
+    // Determine if still searching
+    const isSearching = searchStatus?.action === 'searching';
+    const isComplete = latestComplete?.action === 'complete' || resultCount > 0;
 
     return (
-        <div className="search-status-inline" style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '6px',
-            marginBottom: '12px',
-            paddingLeft: '8px'
-        }}>
-            {allItems.map((item, index) => (
-                <div key={index} style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    fontSize: '14px',
-                    color: 'rgba(255, 255, 255, 0.7)'
-                }}>
-                    {(item.action === 'searching' || item.action === 'complete') && (
-                        <>
-                            <span style={{ fontSize: '14px' }}>
-                                {item.action === 'searching' ? '○' : '✓'}
-                            </span>
-                            <span style={{ color: 'rgba(255, 255, 255, 0.85)' }}>
-                                Searching the web
-                            </span>
-                            <span style={{
-                                color: item.action === 'complete' ? '#4ade80' : '#60a5fa',
-                                fontWeight: 500
-                            }}>
-                                <AnimatedCounter value={item.resultCount || 0} /> results
-                            </span>
-                        </>
-                    )}
+        <div className="flex flex-col gap-1.5 mb-3 pl-2">
+            {/* Main search status line */}
+            <div className="flex items-center gap-2 text-sm">
+                <Search className={`w-4 h-4 ${isSearching ? 'animate-pulse text-primary' : 'text-muted-foreground'}`} />
+                <span className="text-foreground/85">
+                    {isSearching ? 'Searching the web' : 'Searched the web'}
+                </span>
+                <span className={`font-medium ${isComplete ? 'text-green-400' : 'text-primary'}`}>
+                    {resultCount} results
+                </span>
+            </div>
 
-                    {item.action === 'browsing' && item.url && (
-                        <>
-                            <span style={{ fontSize: '14px' }}>🌐</span>
-                            <span style={{ color: 'rgba(255, 255, 255, 0.6)' }}>Browsing</span>
-                            <span style={{
-                                color: 'rgba(100, 160, 255, 0.8)',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                maxWidth: '400px'
-                            }}>
-                                {item.url}
-                            </span>
-                        </>
-                    )}
+            {/* Current browsing URL */}
+            {currentBrowsing?.url && (
+                <div className="flex items-center gap-2 text-sm animate-in fade-in slide-in-from-left-2 duration-200">
+                    <Globe className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-muted-foreground">Browsing</span>
+                    <span className="text-blue-400/80 truncate max-w-[400px]" title={currentBrowsing.url}>
+                        {currentBrowsing.url}
+                    </span>
                 </div>
-            ))}
-
-            <style>{`
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(-3px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .search-status-inline > div {
-          animation: fadeIn 0.3s ease-in-out;
-        }
-      `}</style>
+            )}
         </div>
     );
 };
 
 export default SearchStatusCard;
+

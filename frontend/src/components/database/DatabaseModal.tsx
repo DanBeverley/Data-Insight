@@ -1,9 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { X, Database, Loader2, CheckCircle, AlertCircle, Table } from "lucide-react";
+import { X, Database, Loader2, CheckCircle, AlertCircle, Table, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "@/hooks/use-toast";
+
+const STORAGE_KEY = "datainsight_db_credentials";
 
 interface DatabaseModalProps {
     isOpen: boolean;
@@ -28,12 +31,23 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
     const [password, setPassword] = useState("");
     const [filePath, setFilePath] = useState("");
 
-    const [status, setStatus] = useState<"idle" | "testing" | "connected" | "loading" | "error">("idle");
+    const [status, setStatus] = useState<"idle" | "testing" | "tested" | "connected" | "loading" | "error">("idle");
     const [loadingTable, setLoadingTable] = useState(false);
     const [errorMsg, setErrorMsg] = useState("");
     const [connectionId, setConnectionId] = useState<string | null>(null);
     const [tables, setTables] = useState<TableInfo[]>([]);
     const [selectedTable, setSelectedTable] = useState<string | null>(null);
+    const [loadedTables, setLoadedTables] = useState<Set<string>>(new Set());
+    const [isClosing, setIsClosing] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+
+    const handleClose = useCallback(() => {
+        setIsClosing(true);
+        setTimeout(() => {
+            setIsClosing(false);
+            onClose();
+        }, 150);
+    }, [onClose]);
 
     const dbTypes: { id: DbType; label: string; icon: string }[] = [
         { id: "postgresql", label: "PostgreSQL", icon: "🐘" },
@@ -47,11 +61,53 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
         sqlite: "",
     };
 
+    // Load saved credentials on mount
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                const creds = JSON.parse(saved);
+                if (creds.dbType) setDbType(creds.dbType);
+                if (creds.host) setHost(creds.host);
+                if (creds.port) setPort(creds.port);
+                if (creds.database) setDatabase(creds.database);
+                if (creds.username) setUsername(creds.username);
+                if (creds.password) setPassword(creds.password);
+                if (creds.filePath) setFilePath(creds.filePath);
+            }
+        } catch (e) {
+            console.warn("Failed to load saved credentials");
+        }
+    }, []);
+
+    // Auto-save credentials when they change
+    const saveCredentials = useCallback(() => {
+        try {
+            const creds = { dbType, host, port, database, username, password, filePath };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(creds));
+        } catch (e) {
+            console.warn("Failed to save credentials");
+        }
+    }, [dbType, host, port, database, username, password, filePath]);
+
+    useEffect(() => {
+        saveCredentials();
+    }, [saveCredentials]);
+
     useEffect(() => {
         if (dbType !== "sqlite") {
             setPort(defaultPorts[dbType]);
         }
     }, [dbType]);
+
+    // Reset session-specific state when sessionId changes
+    useEffect(() => {
+        setLoadedTables(new Set());
+        setConnectionId(null);
+        setTables([]);
+        setSelectedTable(null);
+        setStatus("idle");
+    }, [sessionId]);
 
     const handleTest = async () => {
         setStatus("testing");
@@ -75,7 +131,7 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
             const data = await response.json();
 
             if (data.success) {
-                setStatus("connected");
+                setStatus("tested");
                 setTables(data.tables || []);
             } else {
                 setStatus("error");
@@ -121,10 +177,37 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
         }
     };
 
+    const handleRefresh = async () => {
+        if (!connectionId) return;
+
+        setRefreshing(true);
+        try {
+            const response = await fetch(`/api/connections/${connectionId}/tables`);
+            const data = await response.json();
+
+            if (data.tables) {
+                setTables(data.tables);
+                toast({
+                    title: "Tables Refreshed",
+                    description: `Found ${data.tables.length} table(s)`,
+                });
+            }
+        } catch (e) {
+            toast({
+                title: "Refresh Failed",
+                description: "Could not refresh tables",
+                variant: "destructive",
+            });
+        } finally {
+            setRefreshing(false);
+        }
+    };
+
     const handleLoadTable = async () => {
         if (!connectionId || !selectedTable) return;
 
         setLoadingTable(true);
+        setErrorMsg("");
 
         try {
             const response = await fetch(`/api/connections/${connectionId}/load`, {
@@ -141,30 +224,53 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
 
             if (data.success) {
                 onDataLoaded?.(selectedTable, data.rows);
-                onClose();
+                setLoadedTables(prev => new Set(prev).add(selectedTable));
+                setSelectedTable(null);
+                toast({
+                    title: "Table Loaded",
+                    description: `Loaded ${data.rows.toLocaleString()} rows from ${selectedTable}`,
+                });
             } else {
                 setStatus("error");
                 setErrorMsg(data.detail || "Failed to load table");
+                toast({
+                    title: "Load Failed",
+                    description: data.detail || "Failed to load table",
+                    variant: "destructive",
+                });
             }
         } catch (e) {
             setStatus("error");
             setErrorMsg("Failed to load table");
+            toast({
+                title: "Load Failed",
+                description: "Failed to load table",
+                variant: "destructive",
+            });
         } finally {
             setLoadingTable(false);
         }
     };
 
-    if (!isOpen) return null;
+    if (!isOpen && !isClosing) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="w-[480px] bg-card border border-white/10 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className={cn(
+            "fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-opacity duration-150",
+            isClosing ? "opacity-0" : "opacity-100"
+        )}>
+            <div className={cn(
+                "w-[480px] bg-card border border-white/10 rounded-xl shadow-2xl overflow-hidden transition-all duration-150",
+                isClosing
+                    ? "animate-out fade-out zoom-out-95"
+                    : "animate-in fade-in zoom-in-95"
+            )}>
                 <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
                     <div className="flex items-center gap-2">
                         <Database className="h-5 w-5 text-primary" />
                         <span className="font-semibold">Connect Database</span>
                     </div>
-                    <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
+                    <Button variant="ghost" size="icon" onClick={handleClose} className="h-8 w-8">
                         <X className="h-4 w-4" />
                     </Button>
                 </div>
@@ -234,9 +340,26 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                         </div>
                     )}
 
-                    {status === "connected" && tables.length > 0 && (
+                    {(status === "tested" || status === "connected") && tables.length > 0 && (
                         <div className="space-y-2 animate-in fade-in slide-in-from-bottom-3 duration-300">
-                            <Label className="text-xs text-muted-foreground">Select Table</Label>
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Label className="text-xs text-muted-foreground">Select Table</Label>
+                                    <button
+                                        onClick={handleRefresh}
+                                        disabled={refreshing}
+                                        className="p-1 rounded hover:bg-white/10 transition-colors disabled:opacity-50"
+                                        title="Refresh tables"
+                                    >
+                                        <RefreshCw className={cn("h-3.5 w-3.5 text-muted-foreground", refreshing && "animate-spin")} />
+                                    </button>
+                                </div>
+                                {loadedTables.size > 0 && (
+                                    <span className="text-xs text-primary">
+                                        {loadedTables.size} table{loadedTables.size > 1 ? 's' : ''} loaded
+                                    </span>
+                                )}
+                            </div>
                             <div className="max-h-40 overflow-y-auto space-y-1 bg-background/30 rounded-lg p-2 border border-white/5">
                                 {tables.map((table) => (
                                     <button
@@ -244,16 +367,24 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                                         onClick={() => setSelectedTable(table.name)}
                                         className={cn(
                                             "w-full flex items-center justify-between px-3 py-2 rounded text-sm transition-all duration-150",
-                                            selectedTable === table.name
-                                                ? "bg-primary/20 text-primary"
-                                                : "hover:bg-white/5 text-muted-foreground"
+                                            loadedTables.has(table.name)
+                                                ? "bg-primary/10 text-primary/70"
+                                                : selectedTable === table.name
+                                                    ? "bg-primary/20 text-primary"
+                                                    : "hover:bg-white/5 text-muted-foreground"
                                         )}
                                     >
                                         <span className="flex items-center gap-2">
-                                            <Table className="h-3.5 w-3.5" />
+                                            {loadedTables.has(table.name) ? (
+                                                <CheckCircle className="h-3.5 w-3.5 text-primary" />
+                                            ) : (
+                                                <Table className="h-3.5 w-3.5" />
+                                            )}
                                             {table.name}
                                         </span>
-                                        <span className="text-xs opacity-60">{table.row_count?.toLocaleString()} rows</span>
+                                        <span className="text-xs opacity-60">
+                                            {loadedTables.has(table.name) ? "Loaded" : `${table.row_count?.toLocaleString()} rows`}
+                                        </span>
                                     </button>
                                 ))}
                             </div>
@@ -264,28 +395,46 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                 <div className="flex gap-2 px-5 py-4 border-t border-white/10 bg-white/[0.02]">
                     {status !== "connected" ? (
                         <>
-                            <Button variant="outline" onClick={handleTest} disabled={status === "testing"} className="flex-1 transition-all duration-200 hover:bg-white/5">
+                            <Button
+                                variant="outline"
+                                onClick={handleTest}
+                                disabled={status === "testing" || status === "loading"}
+                                className="flex-1 transition-all duration-200 hover:bg-white/10 hover:border-primary/50 active:scale-[0.98]"
+                            >
                                 {status === "testing" ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                                Test
+                                {status === "tested" ? "✓ Tested" : "Test"}
                             </Button>
-                            <Button onClick={handleConnect} disabled={status === "testing" || status === "loading"} className="flex-1 transition-all duration-200">
+                            <Button
+                                onClick={handleConnect}
+                                disabled={status === "testing" || status === "loading"}
+                                className="flex-1 transition-all duration-200 hover:brightness-110 active:scale-[0.98]"
+                            >
                                 {status === "loading" ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                                 Connect
                             </Button>
                         </>
                     ) : (
-                        <Button
-                            onClick={handleLoadTable}
-                            disabled={!selectedTable || loadingTable}
-                            className="flex-1 transition-all duration-200"
-                        >
-                            {loadingTable ? (
-                                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                            ) : (
-                                <CheckCircle className="h-4 w-4 mr-2" />
-                            )}
-                            Load {selectedTable || "Table"}
-                        </Button>
+                        <>
+                            <Button
+                                variant="outline"
+                                onClick={handleClose}
+                                className="transition-all duration-200 hover:bg-white/10 active:scale-[0.98]"
+                            >
+                                {loadedTables.size > 0 ? "Done" : "Cancel"}
+                            </Button>
+                            <Button
+                                onClick={handleLoadTable}
+                                disabled={!selectedTable || loadingTable || loadedTables.has(selectedTable || "")}
+                                className="flex-1 transition-all duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+                            >
+                                {loadingTable ? (
+                                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                ) : (
+                                    <CheckCircle className="h-4 w-4 mr-2" />
+                                )}
+                                {loadedTables.has(selectedTable || "") ? "Already Loaded" : `Load ${selectedTable || "Table"}`}
+                            </Button>
+                        </>
                     )}
                 </div>
             </div>

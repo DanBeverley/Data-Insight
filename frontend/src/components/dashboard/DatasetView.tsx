@@ -248,17 +248,22 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
                   <TableCell className="text-center">
                     <button
                       onClick={() => handleToggleInject(item.id, item.inject_to_context)}
-                      className="transition-colors"
+                      className="relative w-12 h-6 rounded-full transition-all duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary/50"
+                      style={{
+                        backgroundColor: item.inject_to_context ? 'rgb(34 197 94 / 0.3)' : 'rgb(255 255 255 / 0.1)',
+                      }}
                       title={item.inject_to_context ? "In agent memory" : "Not in memory"}
                     >
-                      {item.inject_to_context ? (
-                        <ToggleRight className="h-6 w-6 text-green-400" />
-                      ) : (
-                        <ToggleLeft className="h-6 w-6 text-muted-foreground" />
-                      )}
+                      <span
+                        className={`absolute top-1 w-4 h-4 rounded-full transition-all duration-300 ease-in-out ${
+                          item.inject_to_context 
+                            ? 'left-7 bg-green-400 shadow-[0_0_8px_rgba(34,197,94,0.6)]' 
+                            : 'left-1 bg-gray-400'
+                        }`}
+                      />
                     </button>
                   </TableCell>
-                  <TableCell className="text-sm text-muted-foreground truncate max-w-[300px] cursor-pointer hover:text-foreground" onClick={() => handleViewDocument(item.id, item.source_name)}>
+                  <TableCell className="text-sm text-muted-foreground truncate max-w-[300px] cursor-pointer hover:text-foreground transition-colors" onClick={() => handleViewDocument(item.id, item.source_name)}>
                     {item.content_preview}
                   </TableCell>
                   <TableCell className="text-right space-x-1">
@@ -288,8 +293,14 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
       </div>
 
       {viewer.isOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setViewer(prev => ({ ...prev, isOpen: false }))}>
-          <div className="bg-background border border-white/10 rounded-2xl max-w-3xl w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" 
+          onClick={() => setViewer(prev => ({ ...prev, isOpen: false }))}
+        >
+          <div 
+            className="bg-background border border-white/10 rounded-2xl max-w-3xl w-full max-h-[80vh] flex flex-col animate-in zoom-in-95 slide-in-from-bottom-4 duration-300" 
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between p-4 border-b border-white/10">
               <h3 className="font-semibold text-lg truncate">{viewer.title}</h3>
               <Button variant="ghost" size="icon" onClick={() => setViewer(prev => ({ ...prev, isOpen: false }))}>
@@ -298,9 +309,12 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
             </div>
             <div className="p-4 overflow-auto flex-1">
               {viewer.loading ? (
-                <div className="text-center text-muted-foreground py-8">Loading...</div>
+                <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                  <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                  <span className="text-muted-foreground animate-pulse">Loading document...</span>
+                </div>
               ) : (
-                <pre className="whitespace-pre-wrap text-sm font-mono text-foreground/90">{viewer.content}</pre>
+                <pre className="whitespace-pre-wrap text-sm font-mono text-foreground/90 animate-in fade-in duration-300">{viewer.content}</pre>
               )}
             </div>
           </div>

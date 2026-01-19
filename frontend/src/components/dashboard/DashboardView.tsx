@@ -114,18 +114,10 @@ export function DashboardView({ sessionId }: DashboardViewProps) {
 
   return (
     <div className="p-8 space-y-8 animate-in fade-in duration-500">
-      <div className="flex items-center justify-between">
+      <div>
         <div>
           <h2 className="text-3xl font-display font-bold text-foreground tracking-tight">Mission Control</h2>
           <p className="text-muted-foreground mt-1">Artifacts generated from recent analysis sessions.</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" className="bg-white/5 border-white/10 hover:bg-white/10">
-            <Share2 className="mr-2 h-4 w-4" /> Share
-          </Button>
-          <Button className="bg-primary text-primary-foreground shadow-[0_0_15px_rgba(0,242,234,0.3)] hover:bg-primary/90">
-            <Download className="mr-2 h-4 w-4" /> Export Report
-          </Button>
         </div>
       </div>
 
@@ -137,66 +129,73 @@ export function DashboardView({ sessionId }: DashboardViewProps) {
           </div>
         )}
 
-        {artifacts.map((artifact) => (
-          <HoverCard key={artifact.id} openDelay={100} closeDelay={100}>
-            <HoverCardTrigger asChild>
-              <div
-                className="group relative bg-white/5 backdrop-blur-md border border-white/10 rounded-xl p-4 cursor-pointer transition-all hover:bg-white/10 hover:border-white/20 hover:-translate-y-1 hover:shadow-lg"
-                onClick={() => setSelectedArtifact(artifact)}
-              >
-                <div className="flex items-start justify-between mb-4">
-                  <div className={cn("p-2 rounded-lg bg-white/5 ring-1 ring-white/10", artifact.color)}>
-                    <artifact.icon className="h-5 w-5" />
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 -mr-2 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => { e.stopPropagation(); handleDownload(artifact.id); }}
-                  >
-                    <Download className="h-4 w-4" />
-                  </Button>
-                </div>
-                <div className="space-y-1">
-                  <h4 className="text-sm font-medium truncate pr-2" title={artifact.name}>{artifact.name}</h4>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>{artifact.size}</span>
-                    <span>•</span>
-                    <span>{artifact.date}</span>
-                  </div>
-                </div>
-              </div>
-            </HoverCardTrigger>
+        {artifacts.map((artifact) => {
+          const previewSrc = artifact.previewUrl?.startsWith('/static') || artifact.previewUrl?.startsWith('http')
+            ? artifact.previewUrl
+            : artifact.previewUrl ? `/static/plots/${artifact.previewUrl.split('/').pop()}` : undefined;
 
-            <HoverCardContent side="top" className="w-[400px] p-0 border-white/10 bg-black/90 backdrop-blur-xl shadow-2xl overflow-hidden z-50">
-              <div className="p-3 border-b border-white/10 bg-white/5 flex items-center justify-between">
-                <span className="text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider">Preview: {artifact.name}</span>
-                <Maximize2 className="h-3 w-3 text-muted-foreground" />
-              </div>
-              <div className="p-4 bg-background/50 flex justify-center items-center min-h-[200px]">
-                {artifact.previewUrl ? (
-                  artifact.name.endsWith('.html') ? (
-                    <iframe
-                      src={artifact.previewUrl}
-                      className="w-full h-[200px] bg-white rounded border-0"
-                      title="Preview"
-                      sandbox="allow-scripts allow-same-origin"
-                    />
+          return (
+            <HoverCard key={artifact.id} openDelay={100} closeDelay={100}>
+              <HoverCardTrigger asChild>
+                <div
+                  className="group relative bg-white/5 backdrop-blur-md border border-white/10 rounded-xl p-4 cursor-pointer transition-all hover:bg-white/10 hover:border-white/20 hover:-translate-y-1 hover:shadow-lg"
+                  onClick={() => setSelectedArtifact(artifact)}
+                >
+                  <div className="flex items-start justify-between mb-4">
+                    <div className={cn("p-2 rounded-lg bg-white/5 ring-1 ring-white/10", artifact.color)}>
+                      <artifact.icon className="h-5 w-5" />
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 -mr-2 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => { e.stopPropagation(); handleDownload(artifact.id); }}
+                    >
+                      <Download className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-medium truncate pr-2" title={artifact.name}>{artifact.name}</h4>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span>{artifact.size}</span>
+                      <span>•</span>
+                      <span>{artifact.date}</span>
+                    </div>
+                  </div>
+                </div>
+              </HoverCardTrigger>
+
+              <HoverCardContent side="top" className="w-[400px] p-0 border-white/10 bg-black/90 backdrop-blur-xl shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
+                <div className="p-3 border-b border-white/10 bg-white/5 flex items-center justify-between">
+                  <span className="text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider">Preview: {artifact.name}</span>
+                  <Maximize2 className="h-3 w-3 text-muted-foreground" />
+                </div>
+                <div className="p-4 bg-background/50 flex justify-center items-center min-h-[200px]">
+                  {previewSrc ? (
+                    artifact.name.endsWith('.html') ? (
+                      <iframe
+                        src={previewSrc}
+                        className="w-full h-[200px] bg-transparent rounded border-0"
+                        title="Preview"
+                        sandbox="allow-scripts allow-same-origin"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <img src={previewSrc} alt="Preview" className="max-w-full max-h-[200px] object-contain rounded" loading="lazy" />
+                    )
                   ) : (
-                    <img src={artifact.previewUrl || ""} alt="Preview" className="max-w-full max-h-[200px] object-contain rounded" />
-                  )
-                ) : (
-                  <ChartBlock
-                    title={artifact.chartTitle || artifact.name}
-                    type={artifact.chartType as any}
-                    data={artifact.chartData || []}
-                    color={artifact.color.replace('text-', 'var(--') + ')'}
-                  />
-                )}
-              </div>
-            </HoverCardContent>
-          </HoverCard>
-        ))}
+                    <ChartBlock
+                      title={artifact.chartTitle || artifact.name}
+                      type={artifact.chartType as any}
+                      data={artifact.chartData || []}
+                      color={artifact.color.replace('text-', 'var(--') + ')'}
+                    />
+                  )}
+                </div>
+              </HoverCardContent>
+            </HoverCard>
+          )
+        })}
       </div>
 
       {/* Dynamic Insights from ML Profiling */}
