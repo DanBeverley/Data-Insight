@@ -11,6 +11,12 @@ def mock_ollama():
         mock_instance = MagicMock()
         mock_instance.invoke.return_value = AIMessage(content="Brain agent response")
         mock_instance.bind_tools.return_value = mock_instance
+
+        mock_chain = MagicMock()
+        mock_chain.invoke.return_value = AIMessage(content="Brain agent response")
+        mock_instance.__or__ = MagicMock(return_value=mock_chain)
+        mock_instance._mock_chain = mock_chain
+
         mock.return_value = mock_instance
         yield mock_instance
 
@@ -41,7 +47,7 @@ class TestBrainAgentRouting:
         from data_scientist_chatbot.app.core.graph_builder import route_from_brain
 
         mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
+        mock_ollama._mock_chain.invoke.return_value = AIMessage(
             content="",
             tool_calls=[
                 {
@@ -78,7 +84,9 @@ class TestBrainAgentRouting:
         from langgraph.graph import END
 
         mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(content="Hello! I'm here to help with your data analysis needs.")
+        mock_ollama._mock_chain.invoke.return_value = AIMessage(
+            content="Hello! I'm here to help with your data analysis needs."
+        )
 
         state = {
             "messages": [HumanMessage(content="Hello")],
@@ -106,7 +114,7 @@ class TestBrainAgentRouting:
         state = {
             "messages": [
                 HumanMessage(content="Analyze data"),
-                AIMessage(content="", tool_calls=[{"name": "delegate_coding_task", "args": {}, "id": "call_loop"}]),
+                AIMessage(content="Analysis complete."),
             ],
             "session_id": "test_123",
             "current_agent": "brain",
@@ -121,7 +129,7 @@ class TestBrainAgentRouting:
         from data_scientist_chatbot.app.agent import run_brain_agent
 
         mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
+        mock_ollama._mock_chain.invoke.return_value = AIMessage(
             content="",
             tool_calls=[
                 {
@@ -150,7 +158,7 @@ class TestBrainAgentRouting:
         from data_scientist_chatbot.app.agent import run_brain_agent
 
         mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
+        mock_ollama._mock_chain.invoke.return_value = AIMessage(
             content="",
             tool_calls=[
                 {"name": "web_search", "args": {"query": "current housing market trends 2024"}, "id": "call_789"}
@@ -175,7 +183,7 @@ class TestBrainAgentRouting:
         from data_scientist_chatbot.app.agent import run_brain_agent
 
         mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
+        mock_ollama._mock_chain.invoke.return_value = AIMessage(
             content="",
             tool_calls=[
                 {
@@ -209,7 +217,7 @@ class TestBrainAgentRouting:
         from data_scientist_chatbot.app.agent import run_brain_agent
 
         mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(content="Analysis complete")
+        mock_ollama._mock_chain.invoke.return_value = AIMessage(content="Analysis complete")
 
         state = {
             "messages": [HumanMessage(content="Analyze sales data")],
@@ -290,7 +298,11 @@ class TestBrainAgentRouting:
         with patch("data_scientist_chatbot.app.agent.create_brain_agent") as mock_agent_factory:
             mock_agent = MagicMock()
             mock_agent.bind_tools.return_value = mock_agent
-            mock_agent.invoke.return_value = AIMessage(content="Analysis complete")
+
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = AIMessage(content="Analysis complete")
+            mock_agent.__or__ = MagicMock(return_value=mock_chain)
+
             mock_agent_factory.return_value = mock_agent
 
             state = {
