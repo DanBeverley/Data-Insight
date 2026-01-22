@@ -8,7 +8,7 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
     try:
         from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
         from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
-        from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+        from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
         from src.api_utils.session_management import clear_transient_agent_state
 
         clear_transient_agent_state(session_id, f"file upload {filename}")
@@ -77,7 +77,7 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
         store_in_knowledge_graph(session_id, filename, df, data_profile)
 
         # Save profile to RAG for context persistence
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         profile_content = f"# Dataset Profile: {filename}\n"
         profile_content += f"Shape: {rows} rows × {cols} columns\n"
         profile_content += f"Columns: {', '.join(df.columns.tolist())}\n"

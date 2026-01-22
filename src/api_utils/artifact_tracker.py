@@ -5,6 +5,7 @@ from enum import Enum
 import hashlib
 import json
 import os
+import threading
 
 
 class ArtifactCategory(Enum):
@@ -65,39 +66,77 @@ class ArtifactTracker:
     }
 
     def __init__(self):
+        self._lock = threading.RLock()  # RLock allows reentrant locking from same thread
         self.session_artifacts: Dict[str, Dict[str, Any]] = {}
         self._load_from_file()
 
     def _load_from_file(self):
-        if self.STORAGE_FILE.exists():
-            try:
-                with open(self.STORAGE_FILE, "r") as f:
-                    self.session_artifacts = json.load(f)
-            except json.JSONDecodeError as e:
-                print(f"[ArtifactTracker] Corrupted JSON, backing up and starting fresh: {e}")
-                backup_path = self.STORAGE_FILE.with_suffix(".json.bak")
+        with self._lock:
+            if self.STORAGE_FILE.exists():
                 try:
-                    import shutil
+                    with open(self.STORAGE_FILE, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        if content.strip():
+                            self.session_artifacts = json.loads(content)
+                        else:
+                            self.session_artifacts = {}
+                except json.JSONDecodeError as e:
+                    print(f"[ArtifactTracker] Corrupted JSON, backing up and starting fresh: {e}")
+                    backup_path = self.STORAGE_FILE.with_suffix(".json.bak")
+                    try:
+                        import shutil
 
-                    shutil.copy(self.STORAGE_FILE, backup_path)
-                    print(f"[ArtifactTracker] Backup saved to {backup_path}")
-                except Exception:
-                    pass
+                        shutil.copy(self.STORAGE_FILE, backup_path)
+                        print(f"[ArtifactTracker] Backup saved to {backup_path}")
+                    except Exception:
+                        pass
+                    self.session_artifacts = {}
+                    self._save_to_file_unsafe()
+                except Exception as e:
+                    print(f"[ArtifactTracker] ERROR loading: {e}")
+                    self.session_artifacts = {}
+            else:
                 self.session_artifacts = {}
-                self._save_to_file()
-            except Exception as e:
-                print(f"[ArtifactTracker] ERROR loading: {e}")
-                self.session_artifacts = {}
-        else:
-            self.session_artifacts = {}
 
-    def _save_to_file(self):
+    def _save_to_file_unsafe(self):
+        """Save without acquiring lock - for internal use when lock is already held."""
+        import shutil
+        import time
+
         try:
             self.STORAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.STORAGE_FILE, "w") as f:
+            temp_path = self.STORAGE_FILE.with_suffix(".json.tmp")
+
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self.session_artifacts, f, indent=2)
+
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    if self.STORAGE_FILE.exists():
+                        self.STORAGE_FILE.unlink()
+                    shutil.move(str(temp_path), str(self.STORAGE_FILE))
+                    return
+                except (PermissionError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        with open(self.STORAGE_FILE, "w", encoding="utf-8") as f:
+                            json.dump(self.session_artifacts, f, indent=2)
+                        if temp_path.exists():
+                            temp_path.unlink()
+                        return
         except Exception as e:
             print(f"[ArtifactTracker] ERROR saving: {e}")
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+
+    def _save_to_file(self):
+        with self._lock:
+            self._save_to_file_unsafe()
 
     def categorize_file(self, filename: str, description: Optional[str] = None) -> ArtifactCategory:
         filename_lower = filename.lower()
@@ -385,6 +424,31 @@ class ArtifactTracker:
             ArtifactCategory.OTHER: "Generated file",
         }
         return descriptions.get(category, "File")
+
+    def save_insights(self, session_id: str, insights: list) -> None:
+        """Save agent insights to persistent storage."""
+        if not session_id or not insights:
+            return
+
+        with self._lock:
+            self._load_from_file()
+            if session_id not in self.session_artifacts:
+                self.session_artifacts[session_id] = {
+                    "artifacts": [],
+                    "insights": [],
+                    "created_at": datetime.now().isoformat(),
+                }
+
+            self.session_artifacts[session_id]["insights"] = insights
+            self._save_to_file_unsafe()
+            print(f"[ArtifactTracker] Saved {len(insights)} insights for session {session_id[:8]}")
+
+    def get_insights(self, session_id: str) -> list:
+        """Get persisted agent insights for a session."""
+        self._load_from_file()
+        if session_id not in self.session_artifacts:
+            return []
+        return self.session_artifacts[session_id].get("insights", [])
 
 
 _instance = None

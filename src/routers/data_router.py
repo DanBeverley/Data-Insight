@@ -761,6 +761,17 @@ async def get_session_insights(session_id: str):
                     f"DEBUG: get_session_insights found {len(agent_insights)} agent insights from session_data_manager"
                 )
 
+        # Fallback to persistent storage (survives restart)
+        if not agent_insights:
+            from src.api_utils.artifact_tracker import get_artifact_tracker
+
+            tracker = get_artifact_tracker()
+            agent_insights = tracker.get_insights(session_id)
+            if agent_insights:
+                print(
+                    f"DEBUG: get_session_insights loaded {len(agent_insights)} insights from artifact_tracker (persistent)"
+                )
+
         system_insights = []
         if data_profile:
             try:

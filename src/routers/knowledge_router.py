@@ -13,11 +13,16 @@ logger = logging.getLogger(__name__)
 @router.get("/{session_id}")
 async def list_knowledge_items(session_id: str):
     """List all items in a session's knowledge store."""
-    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
+    from data_scientist_chatbot.app.utils.knowledge_store import (
+        invalidate_knowledge_store_cache,
+        get_knowledge_store,
+    )
 
     try:
+        invalidate_knowledge_store_cache(session_id)
         store = get_knowledge_store(session_id)
         items = store.list_items()
+        logger.info(f"[KNOWLEDGE_API] Listed {len(items)} items for session {session_id}")
         return {"session_id": session_id, "count": len(items), "items": items}
     except Exception as e:
         logger.error(f"[KNOWLEDGE_API] List failed: {e}")

@@ -287,6 +287,16 @@ Return only the styled HTML. No markdown code blocks."""
         # Match markdown tables (lines starting with |)
         html_content = re.sub(r"(\|[^\n]+\|\n)+", parse_markdown_table, html_content)
 
+        # Convert markdown headers to HTML
+        html_content = re.sub(r"^#### (.+)$", r"<h4>\1</h4>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^# (.+)$", r"<h1>\1</h1>", html_content, flags=re.MULTILINE)
+
+        # Convert bold/italic markdown
+        html_content = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_content)
+        html_content = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_content)
+
         # Convert double newlines to paragraph breaks
         html_content = re.sub(r"\n\n", "</p><p>", html_content)
         html_content = f"<p>{html_content}</p>"
@@ -305,6 +315,26 @@ Return only the styled HTML. No markdown code blocks."""
             --primary: hsl(0, 0%, 45%);
             --muted: hsl(240, 3.7%, 15.9%);
             --border: hsl(240, 3.7%, 25%);
+        }}
+        /* Custom dark scrollbar */
+        ::-webkit-scrollbar {{
+            width: 8px;
+            height: 8px;
+        }}
+        ::-webkit-scrollbar-track {{
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+        }}
+        ::-webkit-scrollbar-thumb {{
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+        }}
+        ::-webkit-scrollbar-thumb:hover {{
+            background: rgba(255, 255, 255, 0.25);
+        }}
+        * {{
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.15) rgba(255, 255, 255, 0.05);
         }}
         body {{
             font-family: 'Inter', sans-serif;
@@ -461,6 +491,27 @@ Return only the styled HTML. No markdown code blocks."""
             --border: hsl(240, 3.7%, 15.9%);
         }}
         
+        /* Custom dark scrollbar */
+        ::-webkit-scrollbar {{
+            width: 8px;
+            height: 8px;
+        }}
+        ::-webkit-scrollbar-track {{
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+        }}
+        ::-webkit-scrollbar-thumb {{
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+        }}
+        ::-webkit-scrollbar-thumb:hover {{
+            background: rgba(255, 255, 255, 0.25);
+        }}
+        * {{
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.15) rgba(255, 255, 255, 0.05);
+        }}
+        
         body {{
             font-family: 'Inter', sans-serif;
             background: var(--background);
@@ -476,6 +527,41 @@ Return only the styled HTML. No markdown code blocks."""
             border-radius: 12px;
             padding: 2rem;
             margin-bottom: 2rem;
+        }}
+        
+        /* Table styling for visibility on dark background */
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: 0.875rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        
+        th, td {{
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            color: var(--foreground);
+        }}
+        
+        th {{
+            background: rgba(255, 255, 255, 0.05);
+            font-weight: 600;
+            color: var(--primary);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }}
+        
+        tr:nth-child(even) {{
+            background: rgba(255, 255, 255, 0.02);
+        }}
+        
+        tr:hover {{
+            background: rgba(255, 255, 255, 0.05);
         }}
         
         .section-title {{
