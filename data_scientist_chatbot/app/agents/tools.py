@@ -168,9 +168,9 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
                     )
 
                 elif tool_name == "save_to_knowledge":
-                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
-                    store = KnowledgeStore(session_id)
+                    store = get_knowledge_store(session_id)
                     doc_id = store.add_document(
                         content=tool_args.get("content", ""),
                         source="agent",
@@ -180,9 +180,9 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
                     logger.info(f"[KNOWLEDGE] Saved document: {doc_id}")
 
                 elif tool_name == "query_knowledge":
-                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
-                    store = KnowledgeStore(session_id)
+                    store = get_knowledge_store(session_id)
                     results = store.query(tool_args.get("query", ""), k=tool_args.get("k", 5))
                     if results:
                         content = "KNOWLEDGE STORE RESULTS:\n"
@@ -195,10 +195,10 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
                     logger.info(f"[KNOWLEDGE] Query returned {len(results)} results")
 
                 elif tool_name == "save_file_to_knowledge":
-                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
                     import builtins
 
-                    store = KnowledgeStore(session_id)
+                    store = get_knowledge_store(session_id)
                     file_path = tool_args.get("file_path", "")
                     if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
                         uploads_dir = builtins._session_store[session_id].get("uploads_dir", "")
@@ -227,7 +227,7 @@ def execute_tools_node(state: GlobalState) -> Dict[str, Any]:
 
                 elif tool_name == "load_dataset":
                     from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
-                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
                     from data_scientist_chatbot.app.tools import execute_python_in_sandbox
 
                     filename = tool_args.get("filename", "")
@@ -261,7 +261,7 @@ print(f"Loaded {filename}: {{df.shape[0]}} rows × {{df.shape[1]}} columns")
                                     profile = generate_dataset_profile_for_agent(df, {"filename": filename})
 
                                     # Save to RAG
-                                    store = KnowledgeStore(session_id)
+                                    store = get_knowledge_store(session_id)
                                     profile_content = f"# Dataset Profile: {filename}\n"
                                     profile_content += f"Shape: {df.shape[0]} rows × {df.shape[1]} columns\n"
                                     profile_content += f"Columns: {', '.join(df.columns.tolist())}\n"
@@ -281,10 +281,10 @@ print(f"Loaded {filename}: {{df.shape[0]}} rows × {{df.shape[1]}} columns")
                     logger.info(f"[DATASET] Load: {filename}")
 
                 elif tool_name == "get_dataset_info":
-                    from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+                    from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
                     filename = tool_args.get("filename", "")
-                    store = KnowledgeStore(session_id)
+                    store = get_knowledge_store(session_id)
                     results = store.query(f"Dataset Profile: {filename}", k=1)
                     if results:
                         content = f"DATASET INFO FOR {filename}:\n{results[0]['content']}"

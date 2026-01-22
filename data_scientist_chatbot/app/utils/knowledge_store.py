@@ -39,6 +39,18 @@ def get_knowledge_store(session_id: str) -> "KnowledgeStore":
     return _knowledge_store_cache[session_id]
 
 
+def invalidate_knowledge_store_cache(session_id: str = None):
+    """Invalidate cached KnowledgeStore instance(s) to force fresh reads."""
+    global _knowledge_store_cache
+    if session_id:
+        if session_id in _knowledge_store_cache:
+            del _knowledge_store_cache[session_id]
+            logger.info(f"[KNOWLEDGE] Invalidated cache for session {session_id}")
+    else:
+        _knowledge_store_cache = {}
+        logger.info("[KNOWLEDGE] Invalidated all cached stores")
+
+
 class KnowledgeStore:
     """Per-session persistent vector store for documents and research."""
 
@@ -344,12 +356,26 @@ class KnowledgeStore:
             logger.error(f"[KNOWLEDGE] Query failed: {e}")
             return []
 
+    def _refresh_collection(self):
+        """Refresh collection reference to get latest data from SQLite."""
+        try:
+            self.collection = self.client.get_or_create_collection(name="knowledge", embedding_function=self.ef)
+        except Exception as e:
+            logger.warning(f"[KNOWLEDGE] Failed to refresh collection: {e}")
+
     def list_items(self) -> List[Dict[str, Any]]:
         """List all items in knowledge store."""
         if not self.collection:
             return []
 
         try:
+            self._refresh_collection()
+            count = self.collection.count()
+            logger.info(f"[KNOWLEDGE] list_items: collection has {count} documents")
+
+            if count == 0:
+                return []
+
             results = self.collection.get(include=["metadatas"])
             items = []
             for i, doc_id in enumerate(results["ids"]):
@@ -364,6 +390,7 @@ class KnowledgeStore:
                         "inject_to_context": meta.get("inject_to_context", False),
                     }
                 )
+            logger.info(f"[KNOWLEDGE] list_items: returning {len(items)} items")
             return items
         except Exception as e:
             logger.error(f"[KNOWLEDGE] List failed: {e}")

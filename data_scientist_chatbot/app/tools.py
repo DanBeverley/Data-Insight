@@ -604,9 +604,31 @@ for model_file in new_models:
         print("MODEL_SAVED:" + os.path.basename(model_file))
 """
 
-        timeout = 600 if df_rows > 200000 else 300 if df_rows > 100000 else 180 if df_rows > 10000 else 90
+        is_training = any(
+            kw in code.lower()
+            for kw in [
+                ".fit(",
+                "train_test_split",
+                "randomforest",
+                "xgb",
+                "lgbm",
+                "catboost",
+                "gridsearch",
+                "cross_val",
+            ]
+        )
+        if is_training:
+            timeout = 900
+        elif df_rows > 200000:
+            timeout = 600
+        elif df_rows > 100000:
+            timeout = 480
+        elif df_rows > 10000:
+            timeout = 360
+        else:
+            timeout = 300
 
-        print(f"DEBUG: Executing code with timeout={timeout}s")
+        print(f"DEBUG: Executing code with timeout={timeout}s (training={is_training})")
         log_code = (
             enhanced_code[:500] + "\n... [Code Truncated] ...\n" + enhanced_code[-500:]
             if len(enhanced_code) > 1000
