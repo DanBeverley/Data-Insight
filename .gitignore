@@ -133,6 +133,6 @@ static/*.js
 static/*.css
 !static/plots/
 
-# Documentation files (keep source controlled if needed)
-# CLAUDE.md
-# IMPLEMENTATION_PLAN.md
+# Generated artifacts
+static/plots/
+static/chart_cache/
