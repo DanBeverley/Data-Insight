@@ -12,7 +12,11 @@ def mock_verifier_state() -> Dict[str, Any]:
         "execution_result": {
             "stdout": '=== DATASET INFO ===\nShape: (545, 13)\nPROFILING_INSIGHTS_START\n[{"label": "Test", "value": "123"}]\nPROFILING_INSIGHTS_END'
         },
-        "artifacts": [{"filename": "chart.html", "category": "report", "local_path": "/static/plots/chart.html"}],
+        "artifacts": [
+            {"filename": "chart1.html", "category": "visualization", "local_path": "/static/plots/chart1.html"},
+            {"filename": "chart2.png", "category": "visualization", "local_path": "/static/plots/chart2.png"},
+            {"filename": "report.html", "category": "report", "local_path": "/static/plots/report.html"},
+        ],
         "agent_insights": [{"label": "Test Insight", "value": "Test value", "type": "pattern"}],
         "current_task_description": "Generate distribution plot",
         "plan": [],
