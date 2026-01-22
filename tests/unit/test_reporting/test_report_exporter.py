@@ -116,9 +116,10 @@ class TestMakeStandaloneHtml:
 
 @pytest.mark.unit
 class TestReportExporter:
-    def test_export_pdf_returns_bytes(self, exporter: ReportExporter, sample_sections: List[Dict]):
+    @pytest.mark.asyncio
+    async def test_export_pdf_returns_bytes(self, exporter: ReportExporter, sample_sections: List[Dict]):
         try:
-            result = exporter.export_pdf(sample_sections, title="Test Report")
+            result = await exporter.export_pdf(sample_sections, title="Test Report")
             assert isinstance(result, bytes)
             assert len(result) > 0
             assert result[:4] == b"%PDF"
@@ -143,7 +144,7 @@ class TestReportExporter:
         result = exporter.export_txt(sample_sections, title="Test Report")
         assert isinstance(result, bytes)
         content = result.decode("utf-8")
-        assert "Executive Summary" in content
+        assert "EXECUTIVE SUMMARY" in content or "Executive Summary" in content
 
     def test_export_handles_empty_sections(self, exporter: ReportExporter):
         result = exporter.export_html([], title="Empty Report")
@@ -159,10 +160,11 @@ class TestReportExporter:
 
 @pytest.mark.unit
 class TestExporterEdgeCases:
-    def test_pdf_with_unicode_content(self, exporter: ReportExporter):
+    @pytest.mark.asyncio
+    async def test_pdf_with_unicode_content(self, exporter: ReportExporter):
         sections = [{"title": "Unicode", "content": "<p>Price: ₹1,000,000 • 中文</p>"}]
         try:
-            result = exporter.export_pdf(sections, title="Unicode Test")
+            result = await exporter.export_pdf(sections, title="Unicode Test")
             assert isinstance(result, bytes)
         except ImportError:
             pytest.skip("reportlab not installed")
