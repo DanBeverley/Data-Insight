@@ -54,6 +54,9 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
   useEffect(() => {
     if (sessionId) {
       fetchItems();
+      // Poll for knowledge store updates
+      const interval = setInterval(fetchItems, 10000);
+      return () => clearInterval(interval);
     }
   }, [sessionId]);
 
@@ -255,11 +258,10 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
                       title={item.inject_to_context ? "In agent memory" : "Not in memory"}
                     >
                       <span
-                        className={`absolute top-1 w-4 h-4 rounded-full transition-all duration-300 ease-in-out ${
-                          item.inject_to_context 
-                            ? 'left-7 bg-green-400 shadow-[0_0_8px_rgba(34,197,94,0.6)]' 
+                        className={`absolute top-1 w-4 h-4 rounded-full transition-all duration-300 ease-in-out ${item.inject_to_context
+                            ? 'left-7 bg-green-400 shadow-[0_0_8px_rgba(34,197,94,0.6)]'
                             : 'left-1 bg-gray-400'
-                        }`}
+                          }`}
                       />
                     </button>
                   </TableCell>
@@ -293,12 +295,12 @@ export function KnowledgeStoreView({ sessionId }: KnowledgeStoreViewProps) {
       </div>
 
       {viewer.isOpen && (
-        <div 
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" 
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200"
           onClick={() => setViewer(prev => ({ ...prev, isOpen: false }))}
         >
-          <div 
-            className="bg-background border border-white/10 rounded-2xl max-w-3xl w-full max-h-[80vh] flex flex-col animate-in zoom-in-95 slide-in-from-bottom-4 duration-300" 
+          <div
+            className="bg-background border border-white/10 rounded-2xl max-w-3xl w-full max-h-[80vh] flex flex-col animate-in zoom-in-95 slide-in-from-bottom-4 duration-300"
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between p-4 border-b border-white/10">

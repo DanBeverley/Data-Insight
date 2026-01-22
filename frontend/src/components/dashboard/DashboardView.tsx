@@ -63,7 +63,9 @@ export function DashboardView({ sessionId }: DashboardViewProps) {
               icon: icon,
               color: color,
               chartTitle: a.description || a.filename,
-              previewUrl: (['png', 'jpg', 'jpeg', 'html'].includes(ext)) ? a.file_path : undefined,
+              previewUrl: (['png', 'jpg', 'jpeg', 'html'].includes(ext))
+                ? (a.url || `/static/plots/${a.filename}`)
+                : undefined,
               // Use empty array if no chart data provided
               chartData: a.chartData || [],
               chartType: 'bar'
@@ -105,6 +107,9 @@ export function DashboardView({ sessionId }: DashboardViewProps) {
 
     if (sessionId) {
       fetchInsights();
+      // Poll for insights updates like artifacts
+      const interval = setInterval(fetchInsights, 5000);
+      return () => clearInterval(interval);
     }
   }, [sessionId]);
 

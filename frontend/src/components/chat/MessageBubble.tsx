@@ -349,8 +349,8 @@ function MessageBubbleBase({ id, role, content, timestamp, onRegenerate, onEdit,
                     },
                     img({ src, alt, ...props }: any) {
                       const isHtml = src?.endsWith('.html');
-                      const normalizedSrc = src?.startsWith('/static/') || src?.startsWith('http')
-                        ? src
+                      const normalizedSrc = src?.startsWith('/static/') || src?.startsWith('http') || src?.startsWith('static/')
+                        ? (src?.startsWith('static/') ? `/${src}` : src)
                         : `/static/plots/${src}`;
                       if (isHtml) {
                         return (
@@ -397,8 +397,8 @@ function MessageBubbleBase({ id, role, content, timestamp, onRegenerate, onEdit,
                       }
                       const isHtmlArtifact = href?.endsWith('.html');
                       if (isHtmlArtifact) {
-                        const normalizedHref = href?.startsWith('/static/') || href?.startsWith('http')
-                          ? href
+                        const normalizedHref = href?.startsWith('/static/') || href?.startsWith('http') || href?.startsWith('static/')
+                          ? (href?.startsWith('static/') ? `/${href}` : href)
                           : `/static/plots/${href}`;
                         return <InteractiveChart href={normalizedHref} title={String(children)} />;
                       }

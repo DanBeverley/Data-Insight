@@ -36,7 +36,7 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
     const [errorMsg, setErrorMsg] = useState("");
     const [connectionId, setConnectionId] = useState<string | null>(null);
     const [tables, setTables] = useState<TableInfo[]>([]);
-    const [selectedTable, setSelectedTable] = useState<string | null>(null);
+    const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
     const [loadedTables, setLoadedTables] = useState<Set<string>>(new Set());
     const [isClosing, setIsClosing] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
@@ -105,7 +105,7 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
         setLoadedTables(new Set());
         setConnectionId(null);
         setTables([]);
-        setSelectedTable(null);
+        setSelectedTables(new Set());
         setStatus("idle");
     }, [sessionId]);
 
@@ -203,53 +203,58 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
         }
     };
 
+    const toggleTableSelection = (tableName: string) => {
+        setSelectedTables(prev => {
+            const next = new Set(prev);
+            if (next.has(tableName)) {
+                next.delete(tableName);
+            } else {
+                next.add(tableName);
+            }
+            return next;
+        });
+    };
+
     const handleLoadTable = async () => {
-        if (!connectionId || !selectedTable) return;
+        if (!connectionId || selectedTables.size === 0) return;
 
         setLoadingTable(true);
         setErrorMsg("");
+        const tablesToLoad = Array.from(selectedTables).filter(t => !loadedTables.has(t));
+        let successCount = 0;
 
-        try {
-            const response = await fetch(`/api/connections/${connectionId}/load`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    table_name: selectedTable,
-                    limit: 50000,
-                    session_id: sessionId,
-                }),
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-                onDataLoaded?.(selectedTable, data.rows);
-                setLoadedTables(prev => new Set(prev).add(selectedTable));
-                setSelectedTable(null);
-                toast({
-                    title: "Table Loaded",
-                    description: `Loaded ${data.rows.toLocaleString()} rows from ${selectedTable}`,
+        for (const tableName of tablesToLoad) {
+            try {
+                const response = await fetch(`/api/connections/${connectionId}/load`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        table_name: tableName,
+                        limit: 50000,
+                        session_id: sessionId,
+                    }),
                 });
-            } else {
-                setStatus("error");
-                setErrorMsg(data.detail || "Failed to load table");
-                toast({
-                    title: "Load Failed",
-                    description: data.detail || "Failed to load table",
-                    variant: "destructive",
-                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    onDataLoaded?.(tableName, data.rows);
+                    setLoadedTables(prev => new Set(prev).add(tableName));
+                    successCount++;
+                }
+            } catch (e) {
+                console.error(`Failed to load ${tableName}:`, e);
             }
-        } catch (e) {
-            setStatus("error");
-            setErrorMsg("Failed to load table");
-            toast({
-                title: "Load Failed",
-                description: "Failed to load table",
-                variant: "destructive",
-            });
-        } finally {
-            setLoadingTable(false);
         }
+
+        if (successCount > 0) {
+            toast({
+                title: "Tables Loaded",
+                description: `Successfully loaded ${successCount} table${successCount > 1 ? 's' : ''}`,
+            });
+        }
+        setSelectedTables(new Set());
+        setLoadingTable(false);
     };
 
     if (!isOpen && !isClosing) return null;
@@ -364,12 +369,12 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                                 {tables.map((table) => (
                                     <button
                                         key={table.name}
-                                        onClick={() => setSelectedTable(table.name)}
+                                        onClick={() => !loadedTables.has(table.name) && toggleTableSelection(table.name)}
                                         className={cn(
                                             "w-full flex items-center justify-between px-3 py-2 rounded text-sm transition-all duration-150",
                                             loadedTables.has(table.name)
-                                                ? "bg-primary/10 text-primary/70"
-                                                : selectedTable === table.name
+                                                ? "bg-primary/10 text-primary/70 cursor-default"
+                                                : selectedTables.has(table.name)
                                                     ? "bg-primary/20 text-primary"
                                                     : "hover:bg-white/5 text-muted-foreground"
                                         )}
@@ -378,7 +383,16 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                                             {loadedTables.has(table.name) ? (
                                                 <CheckCircle className="h-3.5 w-3.5 text-primary" />
                                             ) : (
-                                                <Table className="h-3.5 w-3.5" />
+                                                <div className={cn(
+                                                    "h-3.5 w-3.5 rounded-full border-2 flex items-center justify-center transition-colors",
+                                                    selectedTables.has(table.name)
+                                                        ? "border-primary bg-primary"
+                                                        : "border-muted-foreground/50"
+                                                )}>
+                                                    {selectedTables.has(table.name) && (
+                                                        <div className="h-1.5 w-1.5 rounded-full bg-background" />
+                                                    )}
+                                                </div>
                                             )}
                                             {table.name}
                                         </span>
@@ -424,7 +438,7 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                             </Button>
                             <Button
                                 onClick={handleLoadTable}
-                                disabled={!selectedTable || loadingTable || loadedTables.has(selectedTable || "")}
+                                disabled={selectedTables.size === 0 || loadingTable}
                                 className="flex-1 transition-all duration-200 hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
                             >
                                 {loadingTable ? (
@@ -432,7 +446,7 @@ export function DatabaseModal({ isOpen, onClose, sessionId, onDataLoaded }: Data
                                 ) : (
                                     <CheckCircle className="h-4 w-4 mr-2" />
                                 )}
-                                {loadedTables.has(selectedTable || "") ? "Already Loaded" : `Load ${selectedTable || "Table"}`}
+                                {selectedTables.size === 0 ? "Select Tables" : `Load ${selectedTables.size} Table${selectedTables.size > 1 ? 's' : ''}`}
                             </Button>
                         </>
                     )}
