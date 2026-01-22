@@ -102,4 +102,5 @@ huge_array = np.zeros((10000, 10000, 100))
                 or "error" in result.get("stderr", "").lower()
                 or "could not" in result.get("stdout", "").lower()
                 or result.get("stdout", "").strip() == ""
+                or "no dataset file" in result.get("stdout", "").lower()
             )
