@@ -211,9 +211,9 @@ def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
 
     uploaded_documents_str = "No documents uploaded."
     try:
-        from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+        from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
         injectable = store.list_injectable_items()
         if injectable:
             doc_lines = []
@@ -259,9 +259,45 @@ def run_brain_agent(state: GlobalState) -> Dict[str, Any]:
         if execution_result and not execution_result.success:
             response.content = f"I encountered an issue while executing the code:\n\n{execution_result.error_details}\n\nWould you like me to try a different approach?"
         elif not response.content:
-            response.content = (
-                "I've received your request but couldn't generate a detailed response. Please try rephrasing."
-            )
+            # Generate meaningful response from available artifacts/insights
+            if artifacts or agent_insights:
+                parts = ["## Analysis Results\n"]
+
+                if agent_insights:
+                    parts.append("\n### Key Insights\n")
+                    for insight in agent_insights[:5]:
+                        label = insight.get("label", "Finding")
+                        value = insight.get("value", "")
+                        parts.append(f"- **{label}:** {value}\n")
+
+                if artifacts:
+
+                    def get_cat(a):
+                        return a.get("category") if isinstance(a, dict) else getattr(a, "category", None)
+
+                    def get_fn(a):
+                        return a.get("filename") if isinstance(a, dict) else getattr(a, "filename", "")
+
+                    viz_artifacts = [a for a in artifacts if get_cat(a) == "visualization"]
+                    if viz_artifacts:
+                        parts.append(f"\n### Generated Visualizations ({len(viz_artifacts)} charts)\n\n")
+                        for a in viz_artifacts[:8]:
+                            filename = get_fn(a)
+                            if filename:
+                                display = filename.replace("_", " ").replace(".png", "").replace(".html", "").title()
+                                if filename.endswith(".html"):
+                                    parts.append(f"[📊 {display}](/{filename})\n\n")
+                                else:
+                                    parts.append(f"![{display}](/static/plots/{filename})\n\n")
+
+                response.content = "".join(parts)
+                logger.info(
+                    f"[BRAIN] Generated fallback response from {len(artifacts)} artifacts, {len(agent_insights)} insights"
+                )
+            else:
+                response.content = (
+                    "I've received your request but couldn't generate a detailed response. Please try rephrasing."
+                )
 
     has_tools = hasattr(response, "tool_calls") and response.tool_calls
     workflow_stage = WorkflowStage.BRAIN_INTERPRETATION.value if has_tools else WorkflowStage.COMPLETED.value

@@ -273,9 +273,9 @@ Output ONLY a JSON array of sub-questions, nothing else:
             return
 
         try:
-            from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+            from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
-            store = KnowledgeStore(self.session_id)
+            store = get_knowledge_store(self.session_id)
 
             content_parts = [f"# Research: {findings.original_query}\n"]
             content_parts.append(f"Status: {'Complete' if is_final else 'In Progress'}")

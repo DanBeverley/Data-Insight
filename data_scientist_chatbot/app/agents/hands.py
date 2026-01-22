@@ -138,10 +138,19 @@ def _parse_artifacts_from_output(stdout: str) -> List[Dict[str, Any]]:
     artifacts = []
     for line in stdout.split("\n"):
         if "PLOT_SAVED:" in line:
-            fname = line.split(":")[1].strip()
+            fname = line.split(":", 1)[1].strip()
+            # Clean path prefixes to extract just the filename
+            if "/static/plots/" in fname:
+                fname = fname.split("/static/plots/")[-1]
+            if "static/plots/" in fname:
+                fname = fname.split("static/plots/")[-1]
+            if "/" in fname:
+                fname = fname.split("/")[-1]
             artifacts.append({"filename": fname, "category": "visualization", "local_path": f"/static/plots/{fname}"})
         elif "MODEL_SAVED:" in line:
-            fname = line.split(":")[1].strip()
+            fname = line.split(":", 1)[1].strip()
+            if "/" in fname:
+                fname = fname.split("/")[-1]
             artifacts.append({"filename": fname, "category": "model", "local_path": f"/static/models/{fname}"})
     return artifacts
 
@@ -154,6 +163,8 @@ def _sync_artifacts_from_tracker(session_id: str, existing_artifacts: List[Dict]
         tracked = tracker_result.get("artifacts", []) if isinstance(tracker_result, dict) else []
         for artifact in tracked:
             filename = artifact.get("filename", "")
+            if "/" in filename:
+                filename = filename.split("/")[-1]
             if filename and not any(a.get("filename") == filename for a in existing_artifacts):
                 existing_artifacts.append(
                     {
@@ -315,7 +326,16 @@ def run_hands_agent(state: GlobalState) -> Dict[str, Any]:
             "data_schema": data_schema,
         }
 
-        max_turns = 3
+        task_lower = task_description.lower()
+        if any(kw in task_lower for kw in ["train", "model", "fit", "predict", "regression", "classify"]):
+            max_turns = 8
+        elif any(kw in task_lower for kw in ["comprehensive", "full analysis", "eda", "exploratory"]):
+            max_turns = 6
+        else:
+            max_turns = 5
+
+        logger.info(f"[HANDS] Max turns set to {max_turns} based on task complexity")
+
         turn_count = 0
         final_response = None
         loop_messages = hands_state["messages"]
@@ -413,6 +433,57 @@ def run_hands_agent(state: GlobalState) -> Dict[str, Any]:
                     logger.info(f"[HANDS] Extracted {len(agent_insights)} insights from final analysis")
                 except Exception:
                     pass
+
+        if not agent_insights and artifacts:
+
+            def get_cat(a):
+                return a.get("category") if isinstance(a, dict) else getattr(a, "category", None)
+
+            viz_count = len([a for a in artifacts if get_cat(a) == "visualization"])
+            model_count = len([a for a in artifacts if get_cat(a) == "model"])
+            report_count = len([a for a in artifacts if get_cat(a) == "report"])
+
+            if viz_count > 0:
+                agent_insights.append(
+                    {
+                        "label": "Visualizations Generated",
+                        "value": f"{viz_count} charts and plots created for data exploration",
+                        "type": "success",
+                    }
+                )
+            if model_count > 0:
+                agent_insights.append(
+                    {
+                        "label": "Models Trained",
+                        "value": f"{model_count} predictive models built and saved",
+                        "type": "success",
+                    }
+                )
+            if report_count > 0:
+                agent_insights.append(
+                    {
+                        "label": "Interactive Reports",
+                        "value": f"{report_count} interactive HTML reports generated",
+                        "type": "info",
+                    }
+                )
+            if "correlation" in execution_summary.lower():
+                agent_insights.append(
+                    {
+                        "label": "Correlation Analysis",
+                        "value": "Feature correlations analyzed and visualized",
+                        "type": "pattern",
+                    }
+                )
+            if "r2" in execution_summary.lower() or "r-squared" in execution_summary.lower():
+                agent_insights.append(
+                    {
+                        "label": "Model Evaluation",
+                        "value": "Models evaluated with performance metrics",
+                        "type": "metric",
+                    }
+                )
+            logger.info(f"[HANDS] Auto-generated {len(agent_insights)} insights from artifacts")
 
         final_content = (
             final_response.content if final_response and hasattr(final_response, "content") else "Analysis completed."

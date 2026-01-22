@@ -21,9 +21,9 @@ def _save_analysis_to_rag(state: GlobalState, task: Dict, insights: List, artifa
     if not session_id:
         return
     try:
-        from data_scientist_chatbot.app.utils.knowledge_store import KnowledgeStore
+        from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
 
-        store = KnowledgeStore(session_id)
+        store = get_knowledge_store(session_id)
 
         summary_parts = [f"## Analysis: {task.get('description', 'Unknown')[:100]}"]
         if insights:
@@ -139,31 +139,45 @@ REQUIREMENTS:
                     existing_items = decision.existing_items
                 except Exception:
                     raw_data = json.loads(json_str)
-                    approved = raw_data.get("approved", True)
-                    feedback = raw_data.get("feedback", "Approved")
-                    missing_items = raw_data.get("missing_items", [])
+                    approved = raw_data.get("approved", False)
+                    feedback = raw_data.get("feedback", "Parse error - defaulting to reject")
+                    missing_items = raw_data.get("missing_items", ["unknown"])
                     existing_items = raw_data.get("existing_items", stage1_result["passes"])
             else:
-                approved = True
-                feedback = "Stage 1 passed"
-                missing_items = []
+                logger.warning("[VERIFIER] No valid JSON in LLM response - rejecting")
+                approved = False
+                feedback = "LLM response invalid - cannot verify completion"
+                missing_items = ["valid_verification"]
                 existing_items = stage1_result["passes"]
 
-            if (
-                approved
-                and structured_input["artifacts"]["count"] == 0
-                and structured_input["task_requirements"]["requires_visualization"]
-            ):
-                logger.warning("[VERIFIER] Post-check override: No artifacts but viz required")
-                approved = False
-                feedback = "No visualization artifacts generated"
-                missing_items = ["artifacts"]
+            if approved:
+                requires_viz = structured_input["task_requirements"]["requires_visualization"]
+                requires_model = structured_input["task_requirements"]["requires_model"]
+                has_viz = structured_input["artifacts"]["has_visualizations"]
+                has_model = structured_input["artifacts"]["has_models"]
+                artifact_count = structured_input["artifacts"]["count"]
+
+                if requires_viz and not has_viz:
+                    logger.warning("[VERIFIER] Post-check override: Viz required but none found")
+                    approved = False
+                    feedback = "Task requires visualizations but none were generated"
+                    missing_items = ["visualizations"]
+                elif requires_model and not has_model:
+                    logger.warning("[VERIFIER] Post-check override: Model required but none saved")
+                    approved = False
+                    feedback = "Task requires model but none was saved"
+                    missing_items = ["model"]
+                elif requires_viz and artifact_count < 3:
+                    logger.warning(f"[VERIFIER] Post-check override: Only {artifact_count} artifacts for viz task")
+                    approved = False
+                    feedback = f"Task needs multiple visualizations but only {artifact_count} artifacts generated"
+                    missing_items = ["more_visualizations"]
 
         except Exception as e:
             logger.error(f"[VERIFIER] Stage 2 error: {e}")
-            approved = True
-            feedback = "Stage 1 passed, Stage 2 error"
-            missing_items = []
+            approved = False
+            feedback = f"Verification error: {str(e)[:50]}"
+            missing_items = ["verification_error"]
             existing_items = stage1_result["passes"]
 
     logger.info(f"[VERIFIER] Decision: {'APPROVED' if approved else 'REJECTED'}. {feedback}")
@@ -189,8 +203,43 @@ REQUIREMENTS:
             builtins._session_store[session_id]["agent_insights"] = agent_insights
             logger.info(f"[VERIFIER] Synced {len(agent_insights)} insights to session store")
 
+            # Persist insights to disk for survival across restarts
+            from src.api_utils.artifact_tracker import get_artifact_tracker
+
+            tracker = get_artifact_tracker()
+            tracker.save_insights(session_id, agent_insights)
+            logger.info(f"[VERIFIER] Persisted {len(agent_insights)} insights to disk")
+
+        # Create synthesis ToolMessage - gives Brain a proper turn to respond
+        from langchain_core.messages import HumanMessage
+
+        def get_cat(a):
+            return a.get("category") if isinstance(a, dict) else getattr(a, "category", None)
+
+        def get_fn(a):
+            return a.get("filename") if isinstance(a, dict) else getattr(a, "filename", "")
+
+        viz_artifacts = [a for a in artifacts if get_cat(a) == "visualization"]
+        model_artifacts = [a for a in artifacts if get_cat(a) == "model"]
+
+        artifact_list = []
+        for a in viz_artifacts[:10]:
+            fn = get_fn(a)
+            if fn:
+                artifact_list.append(f"- {fn}")
+
+        synthesis_content = f"""Present the analysis results now. 
+
+Available visualizations ({len(viz_artifacts)}):
+{chr(10).join(artifact_list) if artifact_list else 'None'}
+
+Embed each visualization using: ![Chart Title](/static/plots/filename.png)
+Provide insights and interpretation for each chart."""
+
+        synthesis_msg = HumanMessage(content=synthesis_content, additional_kwargs={"synthesis_request": True})
+
         return {
-            "messages": [AIMessage(content=decision_json, additional_kwargs={"internal": True})],
+            "messages": [synthesis_msg],
             "current_agent": "verifier",
             "agent_insights": agent_insights,
             "artifacts": artifacts,

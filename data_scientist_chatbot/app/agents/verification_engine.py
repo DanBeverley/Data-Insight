@@ -172,6 +172,8 @@ def build_structured_verification_input(
 
 def stage1_programmatic_check(structured_input: Dict[str, Any]) -> Dict[str, Any]:
     execution = structured_input["execution"]
+    task_requirements = structured_input["task_requirements"]
+    artifacts = structured_input["artifacts"]
 
     failures = []
     passes = ["context_available"]
@@ -186,6 +188,26 @@ def stage1_programmatic_check(structured_input: Dict[str, Any]) -> Dict[str, Any
         )
     else:
         passes.append("execution_clean")
+
+    if task_requirements["requires_visualization"] and not artifacts["has_visualizations"]:
+        failures.append(
+            {"check": "visualization_required", "reason": "Task requires visualizations but none were generated"}
+        )
+    elif artifacts["has_visualizations"]:
+        passes.append("visualizations_generated")
+
+    if task_requirements["requires_model"] and not artifacts["has_models"]:
+        failures.append({"check": "model_required", "reason": "Task requires model training but no model was saved"})
+    elif artifacts["has_models"]:
+        passes.append("models_generated")
+
+    if task_requirements["requires_visualization"] and artifacts["count"] < 3:
+        failures.append(
+            {
+                "check": "insufficient_artifacts",
+                "reason": f"Task appears to need multiple visualizations but only {artifacts['count']} artifacts generated",
+            }
+        )
 
     stage1_passed = len(failures) == 0
 
