@@ -1,11 +1,6 @@
 # Quorvix
 
-> An AI data science platform with multi-agent architecture, self-learning capabilities, deep research, and intelligent cloud GPU training.
-
-<p align="center">
-<video src="https://github.com/user-attachments/assets/209b6418-e65f-4893-b568-5bba87fedf6a" controls width="720"></video>
-</p>
-
+> An AI data science platform with multi-agent architecture, self-learning capabilities, deep research, database connect, cloud GPU training.
 ---
 
 ## ✨ Features
@@ -125,7 +120,7 @@ The system uses LangGraph for orchestration with persistent checkpoints, enablin
 |-----------|-------------|
 | **SHA256 Profile Caching** | Instant re-profiling for unchanged datasets |
 | **Dynamic Max Turns** | Agent iterations scale with task complexity (5-8 turns) |
-| **Hybrid Profiling** | Statistical + AI-powered semantic analysis in parallel |
+| **Hybrid Profiling** | Statistical + Semantic analysis in parallel |
 | **Lazy Loading** | Datasets loaded on-demand, not preloaded |
 | **Artifact Streaming** | Real-time visualization delivery during analysis |
 | **Connection Pooling** | Database connections reused across requests |
@@ -135,7 +130,7 @@ The system uses LangGraph for orchestration with persistent checkpoints, enablin
 - **Automatic Relationship Detection**: FK/PK discovery across tables
 - **Join Cardinality Analysis**: 1:1, 1:N, N:M relationship mapping
 - **Cross-Table Correlations**: Significant correlations across joined datasets
-- **Semantic Layer**: Domain detection (finance, e-commerce, healthcare) with business term mapping
+- **Semantic Layer**: Domain detection (finance, e-commerce, healthcare, etc...) with business term mapping
 
 
 
@@ -148,7 +143,7 @@ The system uses LangGraph for orchestration with persistent checkpoints, enablin
 | **LLMs** | Google Gemini, Ollama |
 | **Databases** | PostgreSQL, SQLite, Neo4j |
 | **Storage** | Cloudflare R2, Azure Blob, Local filesystem |
-| **Execution** | E2B Sandbox, GCP Vertex AI, Azure ML, AWS SageMaker |
+| **Execution** | E2B Sandbox, GCP Vertex AI |
 | **Search** | DuckDuckGo, Google Custom Search, Brave Search |
 | **Monitoring** | LangSmith |
 
