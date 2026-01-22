@@ -1,340 +1,295 @@
-# Data-Insight
+# Quorvix
 
-Multi-agent AI system for conversational data analysis with self-learning capabilities and intelligent execution orchestration.
+> An AI data science platform with multi-agent architecture, self-learning capabilities, deep research, and intelligent cloud GPU training.
 
-## Demo
-<p align = "center">
+<p align="center">
 <video src="https://github.com/user-attachments/assets/209b6418-e65f-4893-b568-5bba87fedf6a" controls width="720"></video>
 </p>
 
-## Core Capabilities
+---
 
-### 1. Mixture of Experts Architecture
-LangGraph-based multi-agent system with specialized roles:
+## ✨ Features
 
-**Router Agent** (`phi3:3.8b`) - Fast query classification with complexity analysis
-- Analyzes task complexity (1-10 scale) using LLM reasoning
-- Routes to optimal execution strategy: `direct`, `standard`, or `collaborative`
-- Sub-second response for simple queries
+### 🤖 Multi-Agent Architecture (LangGraph)
 
-**Brain Agent** (`gpt-oss:120b`) - Business reasoning and interpretation
-- Generates insights from execution results
-- Delegates coding tasks to Hands agent
-- Synthesizes multi-step workflows
+| Agent | Role | Model |
+|-------|------|-------|
+| **Brain** | Strategic reasoning, task delegation, insight synthesis 
+| **Hands** | Code generation, sandbox execution, artifact creation 
+| **Verifier** | Quality control, approval-based retry logic, deliverable validation 
+| **Research Brain** | Deep web research with multi-iteration exploration 
+| **Reporter** | Automated report generation with visualizations and statistics
 
-**Hands Agent** (`qwen3-coder:480b`) - Code generation and execution
-- Generates Python code in E2B sandbox
-- Self-corrects failures (max 3 attempts with LLM diagnosis)
-- Automatic plot/model detection and artifact storage
+The system uses LangGraph for orchestration with persistent checkpoints, enabling conversation recovery and session continuity.
 
-### 2. Self-Learning System
-Progressive session memory that improves over time:
-- **Turn tracking**: Records every user request → code → outcome
-- **Pattern learning**: Categorizes successful and failed approaches
-- **Context injection**: Provides relevant history to agents for better code generation
-- **Persistent checkpoints**: SQLite-based conversation state (LangGraph)
+---
 
-### 3. Self-Correction Execution
-LLM-driven error recovery without manual intervention:
-```python
-Attempt 1: Code fails → Extract error
-         ↓
-LLM diagnoses issue and generates fix
-         ↓
-Attempt 2: Fixed code executes
-         ↓
-Success or repeat (max 3 attempts)
-```
+### 📊 Intelligent Data Profiling
 
-### 4. Intelligent Training Decisions
-Hybrid CPU/GPU routing based on dataset characteristics:
-- **Fast path**: Obvious cases (<1M or >100M data points)
-- **Profiling**: Borderline cases sampled and profiled 
-- **Multi-cloud**: Azure GPU, AWS GPU, or E2B CPU execution
+- **Hybrid Profiler** - Statistical + semantic analysis with AI-generated insights
+- **Domain Detection** - Automatic dataset categorization (finance, healthcare, e-commerce, etc.)
+- **Feature Intelligence** - Correlation discovery, importance scoring, transformation suggestions
+- **Relationship Discovery** - Cross-column and cross-dataset relationship mapping
+- **Profile Caching** - SHA256-based caching for instant re-profiling
 
-### 5. Privacy-Aware Data Profiling
-Multi-factor PII detection with intelligent sensitivity scoring:
-- **Entropy-based analysis**: Shannon entropy for uniqueness detection
-- **Statistical profiling**: Cardinality, uniqueness, distribution analysis
-- **Risk assessment**: Privacy score, re-identification risk, compliance recommendations
-- **User consent flow**: Detected PII triggers protection dialog
+---
 
-### 6. Knowledge Graph Integration
-Session-aware relationship mapping:
-- **Execution lineage**: Dataset → Code → Models → Artifacts
-- **Feature importance**: Tracks which features drive predictions
-- **Cross-session patterns**: Discovers recurring analysis workflows
-- **Neo4j/PostgreSQL**: Dual backend support
+### 🛡️ Data Quality Engine
 
-### 7. Artifact Management
-Automatic tracking and categorization:
-- **Auto-detection**: Plots (`PLOT_SAVED:`), Models (`MODEL_SAVED:`)
-- **Categorization**: Smart detection (extension + description-based)
-- **Blob storage**: Azure Blob for models, local filesystem for plots
-- **Metadata registry**: SQLite tracking with SHA256 checksums
-- **Hover previews**: 250x250px thumbnails for images, metadata for models
+| Module | Capabilities |
+|--------|--------------|
+| **Quality Assessor** | 6-dimension scoring (completeness, accuracy, consistency, timeliness, validity, uniqueness) |
+| **Anomaly Detector** | Multi-layer outlier detection (IQR, Z-score, Isolation Forest) |
+| **Drift Monitor** | Distribution shift detection across time windows |
+| **Missing Value Intelligence** | Pattern analysis and imputation recommendations |
+| **Validator** | Schema validation and constraint checking |
 
-## Architecture
+---
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Request                            │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                    ┌────▼────┐
-                    │ Router  │ (Complexity Analysis)
-                    │ Agent   │ phi3:3.8b
-                    └────┬────┘
-                         │
-           ┌─────────────┼─────────────┐
-           │                           │
-      ┌────▼────┐               ┌─────▼─────┐
-      │  Brain  │◄──────────────┤   Hands   │
-      │  Agent  │   Delegates   │   Agent   │
-      │ 120b    │   ─────────►  │  480b     │
-      └────┬────┘               └─────┬─────┘
-           │                           │
-           │                      ┌────▼────────┐
-           │                      │ E2B Sandbox │
-           │                      │ Code Exec   │
-           │                      └────┬────────┘
-           │                           │
-           │                      ┌────▼────────┐
-           │                      │ Self-Correct│
-           │                      │ (3 retries) │
-           │                      └────┬────────┘
-           │                           │
-           └───────────────────────────┤
-                                       │
-                              ┌────────▼─────────┐
-                              │ Session Memory   │
-                              │ Knowledge Graph  │
-                              │ Artifact Tracker │
-                              └──────────────────┘
-```
+### 🔒 Privacy & Security
 
-## Tech Stack
+- **PII Detection** - Multi-factor sensitivity scoring with entropy analysis
+- **Compliance Engine** - GDPR/CCPA/HIPAA compliance recommendations
+- **User Consent Flow** - Interactive dialog when sensitive data detected
+- **K-Anonymity Assessment** - Re-identification risk scoring
+- **Google OAuth** - Secure authentication with session management
 
-**Backend**
-- FastAPI (async web framework)
-- LangGraph (agent orchestration with checkpointing)
-- LangChain (LLM abstraction)
-- Ollama (local + cloud LLM inference)
-- E2B Code Interpreter (sandboxed execution)
-- SQLAlchemy (ORM)
+---
 
-**Databases**
-- PostgreSQL (primary storage)
-- Neo4j (knowledge graph)
-- SQLite (sessions, checkpoints, artifacts)
-- Azure Blob Storage (model registry)
+### 🔍 Deep Research Mode
 
-**Frontend**
-- Vanilla JavaScript (no framework)
-- Server-Sent Events (streaming responses)
-- Three.js (background visualization)
+- Multi-iteration web research (configurable 5-60 minute time budgets)
+- Automatic subtopic generation and source synthesis
+- **Pausable/Resumable** - State persistence for interrupted research
+- Real-time progress streaming with source tracking
+- Integration with Tavily, Google CSE, Brave Search APIs
 
-**LLMs**
-- Router: `phi3:3.8b-mini-128k-instruct-q4_K_M` (local)
-- Brain: `gpt-oss:120b-cloud` (cloud)
-- Hands: `qwen3-coder:480b-cloud` (cloud)
+---
 
-## Project Structure
+### 🧠 RAG Knowledge System
 
-```
-Data-Insight/
-├── data_scientist_chatbot/          # Multi-agent orchestration
-│   └── app/
-│       ├── agent.py                 # Agent state and execution
-│       ├── core/
-│       │   ├── graph_builder.py     # LangGraph workflow
-│       │   ├── router.py            # Routing logic
-│       │   ├── complexity_analyzer.py  # Task complexity LLM
-│       │   ├── self_correction.py   # Auto-retry with LLM fixes
-│       │   ├── session_memory.py    # Progressive learning
-│       │   ├── training_decision.py # CPU/GPU routing
-│       │   ├── model_manager.py     # Model switching
-│       │   └── agent_factory.py     # Agent initialization
-│       ├── tools/
-│       │   ├── executor.py          # Sandbox execution
-│       │   └── tool_definitions.py  # Tool schemas
-│       └── utils/
-│           └── format_parser.py     # Response formatting
-│
-├── src/                             # Core application
-│   ├── api.py                       # FastAPI app (20+ endpoints)
-│   ├── routers/
-│   │   ├── data_router.py           # Data upload, profiling, artifacts
-│   │   └── session_router.py        # Session CRUD, persistence
-│   ├── api_utils/
-│   │   ├── artifact_tracker.py      # Artifact categorization
-│   │   ├── streaming_service.py     # SSE streaming
-│   │   └── upload_handler.py        # File ingestion + privacy
-│   ├── intelligence/
-│   │   ├── hybrid_data_profiler.py  # Comprehensive profiling
-│   │   ├── data_profiler.py         # Semantic type detection
-│   │   ├── semantic_profiler.py     # Pattern recognition
-│   │   └── relationship_discovery.py # Correlation analysis
-│   ├── data_quality/
-│   │   ├── anomaly_detector.py      # Multi-layer outlier detection
-│   │   ├── quality_assessor.py      # 6-dimension scoring
-│   │   └── drift_monitor.py         # Distribution changes
-│   ├── security/
-│   │   ├── privacy_engine.py        # PII detection + k-anonymity
-│   │   └── compliance_manager.py    # GDPR/HIPAA checks
-│   ├── knowledge_graph/
-│   │   └── service.py               # Neo4j/PostgreSQL abstraction
-│   ├── storage/
-│   │   ├── blob_service.py          # Azure Blob integration
-│   │   └── model_registry.py        # Model versioning
-│   └── database/
-│       ├── models.py                # SQLAlchemy ORM
-│       └── migrations.py            # Schema management
-│
-├── static/                          # Frontend SPA
-│   ├── index.html                   # Main UI
-│   ├── styles.css                   # Dark theme
-│   ├── js/
-│   │   ├── app.js                   # Application controller
-│   │   ├── session-manager.js       # Session persistence
-│   │   ├── artifact-storage.js      # Artifact dropdown
-│   │   ├── chat-interface.js        # Chat UI
-│   │   └── blackhole.js             # Three.js visualization
-│   ├── plots/                       # Generated visualizations
-│   └── models/                      # Downloaded model files
-│
-├── tests/
-│   ├── unit/                        # Component tests
-│   ├── integration/                 # Multi-component tests
-│   │   ├── test_agent_flows/        # Brain-Hands collaboration
-│   │   ├── test_sandbox_execution/  # GPU training tests
-│   │   └── test_knowledge_graph/    # Graph operations
-│   ├── e2e/                         # End-to-end scenarios
-│   └── chaos/                       # Failure injection
-│
-├── docker/                          # Containerization
-├── .github/workflows/               # CI/CD pipelines
-├── config.yaml                      # Agent configuration
-├── requirements.txt                 # Python dependencies
-└── run_app.py                       # Application entrypoint
-```
+- Session-specific vector stores with semantic embeddings
+- **15+ file format support**: CSV, Excel, JSON, Parquet, PDF, DOCX, HTML, EML, etc.
+- Save analysis results, research findings, and insights for future queries
+- Cross-session knowledge persistence
+- Automatic chunking and embedding optimization
 
-## Installation
+---
+
+### ☁️ Cloud GPU Training
+
+| Provider | GPU | Status |
+|----------|-----|--------|
+| **Google Cloud Vertex AI** | T4, V100, A100 | Primary |
+| **Azure Machine Learning** | GPU clusters | Fallback |
+| **AWS SageMaker** | GPU instances | Fallback |
+| **E2B Sandbox** | CPU | Default |
+
+**Intelligent Routing**:
+- Complexity analysis based on data size and model type
+- Automatic deep learning detection (PyTorch, TensorFlow, Keras)
+- Profiling-based decision for borderline cases (1M-100M data points)
+
+---
+
+### 🔔 Notifications & Alerts
+
+- **Natural language alerts**: *"Notify me if sales drops below $50k"*
+- Scheduled condition checks via APScheduler with SQLite persistence
+- Email notifications (SMTP) with configurable schedules
+- In-app notification center with read/unread states
+
+---
+
+### 📈 Knowledge Graph
+
+- **Execution Lineage**: Dataset → Code → Models → Artifacts
+- **Feature Tracking**: Which features drive predictions
+- **Cross-Session Patterns**: Recurring analysis workflow discovery
+- Neo4j and PostgreSQL backend support
+
+---
+
+### 📝 Automated Reporting
+
+- AI-generated executive summaries
+- Interactive visualizations with Plotly
+- PDF/HTML export with branded templates
+- Artifact embedding (plots, tables, models)
+
+---
+
+## ⚡ Optimization & Performance
+
+| Technique | Description |
+|-----------|-------------|
+| **SHA256 Profile Caching** | Instant re-profiling for unchanged datasets |
+| **Dynamic Max Turns** | Agent iterations scale with task complexity (5-8 turns) |
+| **Hybrid Profiling** | Statistical + AI-powered semantic analysis in parallel |
+| **Lazy Loading** | Datasets loaded on-demand, not preloaded |
+| **Artifact Streaming** | Real-time visualization delivery during analysis |
+| **Connection Pooling** | Database connections reused across requests |
+
+### Multi-Dataset Intelligence
+
+- **Automatic Relationship Detection**: FK/PK discovery across tables
+- **Join Cardinality Analysis**: 1:1, 1:N, N:M relationship mapping
+- **Cross-Table Correlations**: Significant correlations across joined datasets
+- **Semantic Layer**: Domain detection (finance, e-commerce, healthcare) with business term mapping
+
+
+
+## 🛠️ Tech Stack
+
+| Category | Technologies |
+|----------|--------------|
+| **Backend** | FastAPI, LangGraph, LangChain, APScheduler, SQLAlchemy, ChromaDB |
+| **Frontend** | React 18, TypeScript, Tailwind CSS, Shadcn/UI |
+| **LLMs** | Google Gemini, Ollama |
+| **Databases** | PostgreSQL, SQLite, Neo4j |
+| **Storage** | Cloudflare R2, Azure Blob, Local filesystem |
+| **Execution** | E2B Sandbox, GCP Vertex AI, Azure ML, AWS SageMaker |
+| **Search** | DuckDuckGo, Google Custom Search, Brave Search |
+| **Monitoring** | LangSmith |
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-# Clone repository
-git clone <repository-url> && cd Data-Insight
-
-# Install dependencies
+# Clone and install
+git clone https://github.com/DanBeverley/Data-Insight.git
+cd Data-Insight
 pip install -r requirements.txt
 
-# Pull LLM models (requires Ollama)
-ollama pull phi3:3.8b-mini-128k-instruct-q4_K_M
-ollama pull gpt-oss:120b-cloud
-ollama pull qwen3-coder:480b-cloud
+# Install frontend dependencies
+cd frontend && npm install && cd ..
 
 # Configure environment
 cp .env.example .env
-# Edit .env with:
-#   - DATABASE_URL (PostgreSQL)
-#   - NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-#   - E2B_API_KEY
-#   - AZURE_STORAGE_CONNECTION_STRING
+# Edit .env with your API keys
 
-# Run database migrations
-alembic upgrade head
-
-# Start application
+# Run
 python run_app.py
 ```
 
 Access at `http://localhost:8000`
 
-## Usage
+---
 
-**Basic Workflow**
-1. Upload dataset (CSV, Excel, Parquet, JSON)
-2. Privacy consent dialog (if PII detected)
-3. Ask questions in natural language
-4. Agent executes code in sandbox
-5. View results, plots, and trained models
+## 📁 Project Structure
 
-**Example Queries**
-- "Analyze correlation between price and area"
-- "Build a random forest to predict housing prices"
-- "Create a scatter plot with regression line"
-- "Compare accuracy of 3 different classifiers"
-
-**Key Endpoints**
-- `POST /api/sessions/new` - Create session
-- `POST /api/upload` - Upload dataset with profiling
-- `GET /api/agent/chat-stream` - SSE streaming chat
-- `GET /api/sessions/{id}/messages` - Load history
-- `GET /api/data/{id}/artifacts` - List generated files
-
-## Development
-
-**Testing**
-```bash
-# Unit tests with coverage
-pytest tests/unit/ -v --cov=src --cov-report=html
-
-# Integration tests (requires E2B API key)
-pytest tests/integration/ -v
-
-# End-to-end tests
-pytest tests/e2e/ -v
+```
+Quorvix/
+├── data_scientist_chatbot/          # Multi-agent orchestration
+│   └── app/
+│       ├── agents/                  # Brain, Hands, Verifier, Research, Reporter
+│       ├── core/                    # Graph builder, training executor, model manager
+│       ├── tools/                   # Tool definitions and execution
+│       └── utils/                   # Helpers, knowledge store, text processing
+│
+├── src/                             # Core backend
+│   ├── api.py                       # FastAPI app (50+ endpoints)
+│   ├── routers/                     # REST API endpoints
+│   ├── intelligence/                # Profiling, clustering, feature intelligence
+│   ├── data_quality/                # Quality assessment, anomaly detection, drift
+│   ├── knowledge_graph/             # Neo4j/PostgreSQL graph service
+│   ├── scheduler/                   # APScheduler + alert system
+│   ├── notifications/               # Email + in-app notifications
+│   ├── auth/                        # Google OAuth + session management
+│   ├── connectors/                  # Database connectors (PostgreSQL, MySQL, etc.)
+│   ├── storage/                     # R2, Azure Blob, local storage
+│   ├── reporting/                   # Report generation engine
+│   └── mlops/                       # Performance monitoring
+│
+├── frontend/                        # React + TypeScript
+│   └── src/
+│       ├── components/              # Chat, Reports, Artifacts UI
+│       └── lib/                     # API clients, utilities
+│
+└── data/                            # Local storage
+    ├── sessions/                    # Session data
+    ├── uploads/                     # Uploaded datasets
+    └── scheduler/                   # Alert and job databases
 ```
 
-**Code Quality**
-```bash
-black --line-length 120 .
-pylint src/ --fail-under=7.0
-mypy src/ --ignore-missing-imports
+---
+
+## 🔑 Environment Variables
+
+```env
+# LLM Providers
+OPENAI_API_KEY=
+GOOGLE_API_KEY=
+
+# Execution
+E2B_API_KEY=
+
+# Search
+TAVILY_API_KEY=
+
+# Database
+DATABASE_URL=postgresql://...
+
+# Storage
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+
+# Auth
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# Notifications
+SMTP_HOST=smtp.gmail.com
+SMTP_USER=
+SMTP_PASSWORD=
+
+# Cloud GPU (optional)
+GCP_PROJECT_ID=
+AZURE_STORAGE_CONN_STR=
+SAGEMAKER_ROLE=
 ```
 
-**Docker**
-```bash
-docker compose -f docker/docker-compose.ci.yml up --build
+---
+
+## 📖 Usage Examples
+
+```
+# Data Analysis
+"Show me the correlation matrix and identify the top 5 predictive features"
+
+# Model Training
+"Train a gradient boosting model to predict churn with hyperparameter tuning"
+
+# Deep Research
+"Research the latest trends in federated learning for healthcare (20 min)"
+
+# Alerts
+"Send me an email at john@example.com when daily revenue drops below $10k"
+
+# Report Generation
+"Generate an executive summary report of this quarter's sales performance"
 ```
 
-### Session Persistence
-- **Sessions**: Stored in `sessions_metadata.db` with titles
-- **Messages**: LangGraph checkpoints in `context.db` (SQLite)
-- **Artifacts**: Tracked in `artifact_storage.json` with metadata
-- **Models**: Versioned in Azure Blob + local registry
+---
 
-### Artifact Hover Previews
+## 🎥 Demo Videos
 
+### Web Search & Analysis
+[![Web Search Demo](https://img.youtube.com/vi/KWoL7fQmvKw/maxresdefault.jpg)](https://www.youtube.com/watch?v=KWoL7fQmvKw)
 
-## Configuration
+### Database Connector
+[![Database Connector Demo](https://img.youtube.com/vi/fRPgBizcclY/maxresdefault.jpg)](https://www.youtube.com/watch?v=fRPgBizcclY)
 
-`config.yaml` - Agent model assignments:
-```yaml
-router_model: "phi3:3.8b-mini-128k-instruct-q4_K_M"
-brain_model: "gpt-oss:120b-cloud"
-hands_model: "qwen3-coder:480b-cloud"
-```
+---
 
-`data_scientist_chatbot/app/core/model_manager.py` - Temperature settings:
-- Router: 0.0 (deterministic)
-- Brain: 0.6 (creative)
-- Hands: 0.0 (for code generation)
+## 📄 License
 
-## Contributing
+MIT License - See [LICENSE](LICENSE) for details.
 
-1. Fork repository
-2. Create feature branch (`git checkout -b feature/enhancement`)
-3. Write tests for new functionality
-4. Ensure all tests pass (`pytest tests/`)
-5. Run code quality checks
-6. Submit pull request
+---
 
-Branch protection on `main` requires:
-- Passing CI/CD checks
-- Code review approval
-- Test coverage >80%
-
-## License
-
-See LICENSE file for details.
+<p align="center">
+  <b>Built with ❤️ by <a href="https://github.com/DanBeverley">Dan Beverley</a></b>
+</p>
