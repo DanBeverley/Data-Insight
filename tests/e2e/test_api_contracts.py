@@ -3,6 +3,12 @@ from fastapi.testclient import TestClient
 from typing import Dict, Any
 import pandas as pd
 import io
+import os
+
+# Skip all e2e tests in CI environment (requires Ollama LLM)
+pytestmark = pytest.mark.skipif(
+    os.environ.get("CI") == "true", reason="E2E tests require Ollama LLM which is not available in CI"
+)
 
 
 @pytest.fixture(scope="module")

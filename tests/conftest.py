@@ -5,6 +5,30 @@ from pathlib import Path
 from typing import Dict, Any
 
 
+def _is_ollama_available() -> bool:
+    """Check if Ollama is available and responding."""
+    import os
+
+    # Skip in CI environment
+    if os.environ.get("CI") == "true":
+        return False
+
+    try:
+        import httpx
+
+        response = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+@pytest.fixture
+def requires_ollama():
+    """Skip test if Ollama is not available."""
+    if not _is_ollama_available():
+        pytest.skip("Ollama LLM not available (CI environment or not running)")
+
+
 @pytest.fixture
 def sample_session_id() -> str:
     session_id = "test_session_123"
