@@ -10,7 +10,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -49,6 +49,8 @@ Thumbs.db
 *.csv
 *.xlsx
 *.json
+!package.json
+!tsconfig.json
 *.db
 *.sqlite
 *.sqlite3
@@ -108,3 +110,29 @@ test-results/
 .dockerignore
 docker-compose.override.yml
 artifact_storage.json
+
+# Frontend build artifacts
+temp_frontend_analysis/
+frontend_backup*/
+*_backup_*/
+node_modules/
+package-lock.json
+*.tsbuildinfo
+
+# Session and runtime data
+session_data/
+sessions_metadata.db*
+context.db*
+*.db-shm
+*.db-wal
+
+# Static build artifacts (exclude plots which are user data)
+static/assets/
+static/*.html
+static/*.js
+static/*.css
+!static/plots/
+
+# Generated artifacts
+static/plots/
+static/chart_cache/

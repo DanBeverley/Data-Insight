@@ -7,6 +7,16 @@ from .helpers import convert_pandas_output_to_html
 def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str, response_data: Dict[str, Any]) -> None:
     try:
         from src.intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+        from data_scientist_chatbot.app.utils.dataset_registry import DatasetRegistry
+        from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
+        from src.api_utils.session_management import clear_transient_agent_state
+
+        clear_transient_agent_state(session_id, f"file upload {filename}")
+
+        # Register in DatasetRegistry
+        registry = DatasetRegistry(session_id)
+        rows, cols = df.shape
+        registry.register(filename, f"data/uploads/{session_id}/{filename}", rows, cols)
 
         data_profile = generate_dataset_profile_for_agent(
             df, context={"filename": filename, "upload_session": session_id}
@@ -53,17 +63,46 @@ def enhance_with_agent_profile(df: pd.DataFrame, session_id: str, filename: str,
             "profiling_time": round(data_profile.profile_metadata.get("profiling_duration", 0), 2),
         }
 
-        import builtins
+        from src.api_utils.session_management import session_data_manager
+        from .session_persistence import session_data_store
 
-        builtins._session_store[session_id] = {"dataframe": df, "data_profile": data_profile, "filename": filename}
+        session_data = session_data_manager.get_session(session_id)
+        if not session_data:
+            session_data = session_data_manager.create_session(session_id)
+
+        session_data.update({"dataframe": df, "data_profile": data_profile, "filename": filename})
+
+        session_data_store.save_session_data(session_id, session_data)
 
         store_in_knowledge_graph(session_id, filename, df, data_profile)
 
+        # Save profile to RAG for context persistence
+        store = get_knowledge_store(session_id)
+        profile_content = f"# Dataset Profile: {filename}\n"
+        profile_content += f"Shape: {rows} rows × {cols} columns\n"
+        profile_content += f"Columns: {', '.join(df.columns.tolist())}\n"
+        if hasattr(data_profile, "dataset_insights"):
+            profile_content += f"Domain: {data_profile.dataset_insights.detected_domains}\n"
+        if hasattr(data_profile, "quality_assessment"):
+            score = data_profile.quality_assessment.get("overall_score", "N/A")
+            profile_content += f"Quality Score: {score}\n"
+        store.add_document(profile_content, "dataset_profile", f"Profile: {filename}")
+
+        registry.mark_profiled(filename)
+        registry.mark_rag_indexed(filename)
+        logging.info(f"[UPLOAD] Registered {filename} in registry and RAG")
+
     except Exception as e:
         logging.warning(f"Failed to generate dataset profile: {e}")
-        import builtins
+        from src.api_utils.session_management import session_data_manager
+        from .session_persistence import session_data_store
 
-        builtins._session_store[session_id] = {"dataframe": df}
+        session_data = session_data_manager.get_session(session_id)
+        if not session_data:
+            session_data = session_data_manager.create_session(session_id)
+
+        session_data.update({"dataframe": df})
+        session_data_store.save_session_data(session_id, session_data)
 
 
 def store_in_knowledge_graph(session_id: str, filename: str, df: pd.DataFrame, data_profile) -> None:
@@ -130,12 +169,11 @@ print("Dataset saved as dataset.csv, data.csv, and ds.csv")
             execute_python_in_sandbox(save_code, session_id)
         else:
             error_msg = load_result.get("stderr", "Unknown error")
-            response_data["agent_analysis"] = f"⚠️ Data loaded but with issues: {error_msg}"
-            response_data["agent_session_id"] = session_id
+            raise Exception(f"Failed to load dataset into sandbox: {error_msg}")
 
     except Exception as agent_e:
-        logging.warning(f"Agent data loading failed: {agent_e}")
-        response_data["agent_analysis"] = None
+        logging.error(f"Agent data loading failed: {agent_e}")
+        raise
 
 
 def validate_file_upload(file_content: BinaryIO, filename: str) -> bool:
@@ -167,10 +205,11 @@ def validate_file_upload(file_content: BinaryIO, filename: str) -> bool:
 
 
 def handle_upload(df: pd.DataFrame, session_id: str, filename: str = "dataset.csv") -> Dict[str, Any]:
-    import builtins
+    from src.api_utils.session_management import session_data_manager
 
-    if not hasattr(builtins, "_session_store"):
-        builtins._session_store = {}
+    # Ensure session exists
+    if not session_data_manager.get_session(session_id):
+        session_data_manager.create_session(session_id)
 
     response_data = {
         "status": "success",
@@ -180,7 +219,6 @@ def handle_upload(df: pd.DataFrame, session_id: str, filename: str = "dataset.cs
         "column_names": df.columns.tolist(),
     }
 
-    enhance_with_agent_profile(df, session_id, filename, response_data)
     load_data_to_agent_sandbox(df, session_id, {}, lambda sid: None, response_data)
 
     return response_data

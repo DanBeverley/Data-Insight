@@ -1,4 +1,4 @@
-"""Comprehensive Drift Detection System for DataInsight AI"""
+"""Comprehensive Drift Detection System for Quorvix AI"""
 
 import logging
 import numpy as np

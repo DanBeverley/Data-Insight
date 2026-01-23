@@ -1,8 +1,9 @@
 """Tool definitions for agent system"""
 
 from pydantic import BaseModel, Field
-from langchain.tools import tool
+from langchain_core.tools import tool
 from typing import List, Optional
+from .report_generation_tool import generate_comprehensive_report, ReportGenerationInput
 
 
 class CodeInput(BaseModel):
@@ -31,7 +32,7 @@ class WebSearchInput(BaseModel):
 
 class ZipArtifactsInput(BaseModel):
     artifact_ids: List[str] = Field(description="List of artifact IDs to include in the zip file")
-    description: Optional[str] = Field(default=None, description="Optional description for the zip archive")
+    description: str = Field(default="", description="Description for the zip archive")
 
 
 class CodingTask(BaseModel):
@@ -54,9 +55,14 @@ def python_code_interpreter(code: str) -> str:
     Executes Python code in a stateful sandbox to perform data analysis,
     manipulation, and visualization. The sandbox maintains state, so you can
     define a variable or load data in one call and use it in the next.
-    Always use this tool to inspect, transform, and visualize data.
-    When creating plots, they will be saved automatically. Make sure to
-    inform the user that you have generated a plot.
+
+    CRITICAL RULES:
+    1. NEVER use `plt.show()` or `fig.show()`. They do not work.
+    2. YOU MUST SAVE PLOTS EXPLICITLY:
+       - Matplotlib: `plt.savefig('filename.png')`
+       - Plotly: `fig.write_html('filename.html')`
+    3. DO NOT wrap your code in a `def main():` function. Execute logic at the top level
+       so variables remain available in the global scope for the next step.
     """
     return "This is a placeholder. Execution happens in the graph node."
 
@@ -78,13 +84,17 @@ def retrieve_historical_patterns(task_description: str) -> str:
 @tool(args_schema=CodingTask)
 def delegate_coding_task(task_description: str) -> str:
     """
-    Delegate computational work to specialized coding agent. Use ONLY when the user has:
-    - Uploaded a dataset and needs analysis, visualization, or modeling
-    - Specific technical requests requiring data processing or machine learning
-    - Questions that require code execution to answer properly
+    Delegate computational work to specialized coding agent. Use when the user needs:
+    - Data analysis, visualization, or statistical exploration
+    - Data preprocessing (cleaning, encoding, imputation, scaling)
+    - Model training and evaluation
+    - Complete workflows (preprocess + train + evaluate)
+
+    The coding agent can generate multiple artifacts (processed datasets, models, visualizations).
+    For modeling tasks, consider data quality - delegate preprocessing if needed.
 
     DO NOT use for:
-    - Conversational exchanges, greetings, or general questions
+    - Conversational exchanges or general questions
     - Requests when no dataset is available
     - Explanations that don't require computation
     """
@@ -148,42 +158,336 @@ def web_search(query: str) -> str:
     return "This is a placeholder. Web search happens in the graph node."
 
 
-@tool(args_schema=ZipArtifactsInput)
-def zip_artifacts(artifact_ids: List[str], description: Optional[str] = None) -> str:
-    """
-    Package multiple artifacts into a single downloadable zip file.
-    Artifact IDs are provided in your context under "AVAILABLE ARTIFACTS".
+class ResearchTaskInput(BaseModel):
+    query: str = Field(description="The research question or topic to investigate deeply")
+    time_budget_minutes: int = Field(
+        default=10, description="Time budget in minutes for the research (5-60 minutes recommended)"
+    )
 
-    Examples:
-    - "Zip those 3 correlation plots" → Check context for visualization artifact IDs → Call with matching IDs
-    - "Package all visualizations" → Extract all visualization IDs from context → Call with those IDs
-    - "Download the EDA outputs" → Identify EDA-related artifact IDs from context → Call with IDs
+
+@tool(args_schema=ResearchTaskInput)
+def delegate_research_task(query: str, time_budget_minutes: int = 10) -> str:
+    """
+    Delegate a deep research task to the specialized Research Brain.
+
+    Use when the user explicitly requests thorough research, or when the query
+    requires exploring multiple subtopics, gathering diverse sources, and
+    synthesizing comprehensive findings.
+
+    The Research Brain will:
+    - Decompose the query into sub-questions
+    - Search and explore each subtopic iteratively
+    - Accumulate findings with source citations
+    - Return structured results for synthesis
 
     Args:
-        artifact_ids: List of artifact IDs from context (format: session_id_number)
-        description: Optional description for the zip archive
+        query: The research question to investigate
+        time_budget_minutes: How long to spend researching (default 10 minutes)
+    """
+    return "This is a placeholder. Research delegation happens in the graph node."
+
+
+class SaveToKnowledgeInput(BaseModel):
+    content: str = Field(description="Text content to save to the knowledge store")
+    source_name: str = Field(description="Name/label for this knowledge item (e.g., 'Climate Research 2026')")
+
+
+class QueryKnowledgeInput(BaseModel):
+    query: str = Field(description="Search query to find relevant knowledge")
+    k: int = Field(default=5, description="Number of results to retrieve")
+
+
+class IngestFileInput(BaseModel):
+    file_path: str = Field(description="Path to the file to ingest (from uploads directory)")
+
+
+@tool(args_schema=SaveToKnowledgeInput)
+def save_to_knowledge(content: str, source_name: str) -> str:
+    """
+    Save content to the session's knowledge store for future retrieval.
+
+    Use when you have gathered valuable information (research findings,
+    extracted insights, user-provided context) that should be remembered
+    for this conversation session.
+
+    Args:
+        content: The text content to store
+        source_name: A descriptive name for this knowledge item
+    """
+    return "This is a placeholder. Knowledge saving happens in the graph node."
+
+
+@tool(args_schema=QueryKnowledgeInput)
+def query_knowledge(query: str, k: int = 5) -> str:
+    """
+    Search the knowledge store for relevant information.
+
+    Use BEFORE starting research to check if you already have relevant
+    information stored. Also use when the user asks about previously
+    discussed topics.
+
+    Args:
+        query: What to search for
+        k: How many results to return (default 5)
+    """
+    return "This is a placeholder. Knowledge query happens in the graph node."
+
+
+@tool(args_schema=IngestFileInput)
+def save_file_to_knowledge(file_path: str) -> str:
+    """
+    Save a generated file to the knowledge store for future reference.
+
+    Use this to persist agent-generated reports, exports, or analysis outputs
+    so they can be recalled in future conversations.
+
+    Args:
+        file_path: Path to the file to save
+    """
+    return "This is a placeholder. File save happens in the graph node."
+
+
+class LoadDatasetInput(BaseModel):
+    filename: str = Field(description="Name of the dataset file to load (e.g., 'housing.csv')")
+
+
+class GetDatasetInfoInput(BaseModel):
+    filename: str = Field(description="Name of the dataset to get info about")
+
+
+@tool
+def list_datasets() -> str:
+    """
+    List all datasets available in the current session.
+
+    Returns filenames, row/column counts, and profiling status for all
+    datasets uploaded (via chat or Knowledge Store).
+    """
+    return "This is a placeholder. Dataset listing happens in the graph node."
+
+
+@tool(args_schema=LoadDatasetInput)
+def load_dataset(filename: str) -> str:
+    """
+    Load a dataset into the analysis sandbox for processing.
+
+    If this is the first time loading the dataset, profiling will run
+    automatically and results will be saved for future reference.
+
+    Args:
+        filename: The dataset filename (e.g., 'sales.xlsx', 'customers.csv')
+    """
+    return "This is a placeholder. Dataset loading happens in the graph node."
+
+
+@tool(args_schema=GetDatasetInfoInput)
+def get_dataset_info(filename: str) -> str:
+    """
+    Retrieve stored profiling information about a dataset.
+
+    Use this to recall column types, statistics, and insights from
+    previous profiling without re-loading the dataset.
+
+    Args:
+        filename: The dataset filename
+    """
+    return "This is a placeholder. Dataset info retrieval happens in the graph node."
+
+
+@tool
+def zip_artifacts(artifact_ids: str, description: str = "") -> str:
+    """
+    Package multiple artifacts into a single downloadable zip file.
+
+    Args:
+        artifact_ids: Comma-separated artifact IDs (e.g., 'id1,id2,id3')
+        description: Description for the zip archive
     """
     return "This is a placeholder. Zip creation happens in the graph node."
 
 
-@tool(args_schema=LoadModelInput)
-def load_trained_model(model_type: Optional[str] = None, model_id: Optional[str] = None) -> str:
+@tool
+def load_trained_model(model_type: str = "", model_id: str = "") -> str:
     """
     Load a previously trained model from object storage into the sandbox for reuse.
-    Use this when you need to:
-    - Make predictions with a model trained earlier in the session
-    - Create visualizations using a trained model (e.g., decision boundaries, regression planes)
-    - Compare new data against a trained model
-    - Continue training from a saved checkpoint
-
-    The model will be downloaded from cloud storage and uploaded to the sandbox,
-    making it available for joblib.load(), pickle.load(), or framework-specific loading.
 
     Args:
-        model_type: Type identifier of the model (e.g., 'linear_regression_model'). Loads most recent if not specified.
-        model_id: Specific model ID for exact model selection. Overrides model_type if provided.
+        model_type: Type identifier (e.g., 'linear_regression_model'). Loads most recent if empty.
+        model_id: Specific model ID. Overrides model_type if provided.
 
     Returns:
         Path to the loaded model file in the sandbox
     """
     return "This is a placeholder. Model loading happens in the graph node."
+
+
+class DatasetExplorerInput(BaseModel):
+    folder: Optional[str] = Field(default=None, description="Filter by folder name (e.g., 'stocks', 'etfs')")
+    extension: Optional[str] = Field(default=None, description="Filter by file extension (e.g., '.csv', '.json')")
+
+
+class FilePathInput(BaseModel):
+    file_path: str = Field(description="Relative path to the file within the uploaded dataset")
+
+
+class FileCombineInput(BaseModel):
+    file_pattern: str = Field(description="Glob pattern to match files (e.g., 'stocks/*.csv', '*.json')")
+
+
+@tool
+def inspect_dataset() -> str:
+    """
+    See what files and structure exist in the uploaded dataset.
+    Use this to understand what data is available before analyzing.
+
+    Returns JSON with:
+    - Total files and size
+    - File types present
+    - Folder structure
+    - Sample file listing
+
+    Perfect for multi-file uploads, ZIP archives, or complex folder structures.
+    """
+    return "This is a placeholder. Dataset inspection happens in the graph node."
+
+
+@tool
+def list_files(folder: str = "", extension: str = "") -> str:
+    """
+    List files in the uploaded dataset. Optionally filter by folder or extension.
+
+    Args:
+        folder: Only show files in this folder (e.g., 'stocks', 'root')
+        extension: Only show files with this extension (e.g., '.csv', '.json')
+
+    Returns JSON with file paths, names, and sizes.
+    """
+    return "This is a placeholder. File listing happens in the graph node."
+
+
+@tool(args_schema=FilePathInput)
+def load_file(file_path: str) -> str:
+    """
+    Load a specific file from the uploaded dataset intelligently.
+
+    Tries to load as CSV first, falls back to text if needed.
+    Automatically loads into session dataframe if successful.
+
+    Args:
+        file_path: Relative path to file (e.g., 'stocks/AAPL.csv', 'metadata.csv')
+
+    Returns preview of loaded data and confirmation it's ready for analysis.
+    """
+    return "This is a placeholder. File loading happens in the graph node."
+
+
+@tool(args_schema=FileCombineInput)
+def combine_files(file_pattern: str) -> str:
+    """
+    Combine multiple files matching a pattern into single dataframe.
+
+    Useful for analyzing groups of related files together.
+    Adds 'source_file' column to track origin.
+
+    Args:
+        file_pattern: Glob pattern (e.g., 'stocks/*.csv' to combine all stock data)
+
+    Returns combined dataframe info and loads it into session.
+    """
+    return "This is a placeholder. File combination happens in the graph node."
+
+
+class AlertInput(BaseModel):
+    name: str = Field(description="Alert name (e.g., 'Low Sales Alert')")
+    metric_query: str = Field(description="Python expression to evaluate on dataframe (e.g., 'df[\"sales\"].sum()')")
+    metric_name: str = Field(description="Human-readable metric name (e.g., 'Total Sales')")
+    condition: str = Field(description="Comparison operator - lt, gt, eq, ne, lte, gte")
+    threshold: float = Field(description="Threshold value to compare against")
+    notification_email: str = Field(description="Email address to send notification")
+
+
+@tool(args_schema=AlertInput)
+def create_alert(
+    name: str, metric_query: str, metric_name: str, condition: str, threshold: float, notification_email: str
+) -> str:
+    """
+    Create an alert to notify user when a metric condition is met.
+    The scheduler will check this alert periodically and send email when triggered.
+    """
+    import builtins
+
+    try:
+        from src.scheduler.service import get_alert_scheduler
+        from src.scheduler.models import Alert
+
+        session_id = getattr(builtins, "_current_session_id", "unknown")
+        scheduler = get_alert_scheduler()
+        alert = Alert(
+            name=name,
+            session_id=session_id,
+            metric_query=metric_query,
+            metric_name=metric_name,
+            condition=condition,
+            threshold=threshold,
+            notification_type="email",
+            notification_target=notification_email,
+        )
+        scheduler.create_alert(alert)
+        return f"Alert '{name}' created. You will be notified at {notification_email} when {metric_name} {condition} {threshold}."
+    except Exception as e:
+        return f"Failed to create alert: {e}"
+
+
+class ListAlertsInput(BaseModel):
+    pass
+
+
+@tool(args_schema=ListAlertsInput)
+def list_my_alerts() -> str:
+    """List all alerts for the current session."""
+    import builtins
+
+    try:
+        from src.scheduler.service import get_alert_scheduler
+
+        session_id = getattr(builtins, "_current_session_id", "unknown")
+        scheduler = get_alert_scheduler()
+        alerts = scheduler.get_alerts_by_session(session_id)
+
+        if not alerts:
+            return "No alerts configured for this session."
+
+        lines = [f"Found {len(alerts)} alert(s):"]
+        for a in alerts:
+            status_icon = "✅" if a.status == "active" else "⏸️"
+            lines.append(f"{status_icon} {a.name}: {a.metric_name} {a.condition} {a.threshold}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list alerts: {e}"
+
+
+class DeleteAlertInput(BaseModel):
+    alert_id: str = Field(description="The alert ID to delete")
+
+
+@tool(args_schema=DeleteAlertInput)
+def delete_alert(alert_id: str) -> str:
+    """Delete an alert by ID."""
+    import builtins
+
+    try:
+        from src.scheduler.service import get_alert_scheduler
+
+        session_id = getattr(builtins, "_current_session_id", "unknown")
+        scheduler = get_alert_scheduler()
+        alert = scheduler.get_alert(alert_id)
+
+        if not alert:
+            return f"Alert {alert_id} not found."
+        if alert.session_id != session_id:
+            return "Cannot delete alert from another session."
+
+        scheduler.delete_alert(alert_id)
+        return f"Alert '{alert.name}' deleted."
+    except Exception as e:
+        return f"Failed to delete alert: {e}"

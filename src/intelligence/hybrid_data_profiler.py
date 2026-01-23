@@ -1,4 +1,4 @@
-"""Hybrid Data Profiling System for Dataset Awareness - DataInsight AI
+"""Hybrid Data Profiling System for Dataset Awareness - Quorvix AI
 
 Integrates all existing intelligence modules to create comprehensive dataset profiles
 for AI agent awareness including anomalies, quality assessment, semantic understanding, etc.
@@ -6,12 +6,14 @@ for AI agent awareness including anomalies, quality assessment, semantic underst
 
 import logging
 import json
+import hashlib
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import sys
 import os
@@ -21,6 +23,10 @@ src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+from src.utils.dataframe_factory import DataFrameFactory
+
+pd_lib = DataFrameFactory.get_library()
+
 from intelligence.data_profiler import IntelligentDataProfiler
 from intelligence.domain_detector import DomainDetector
 from intelligence.relationship_discovery import RelationshipDiscovery
@@ -28,13 +34,6 @@ from data_quality.anomaly_detector import MultiLayerAnomalyDetector
 from data_quality.quality_assessor import ContextAwareQualityAssessor
 from data_quality.drift_monitor import ComprehensiveDriftMonitor
 from data_quality.missing_value_intelligence import AdvancedMissingValueIntelligence
-
-try:
-    from security.privacy_engine import PrivacyEngine
-    from security.compliance_manager import ComplianceManager
-except ImportError:
-    PrivacyEngine = None
-    ComplianceManager = None
 
 
 class ProfilerStatus(Enum):
@@ -80,8 +79,12 @@ class DataProfileSummary:
 class HybridDataProfiler:
     """Comprehensive data profiling system that integrates all intelligence modules"""
 
+    _model_cache = None  # Class-level cache for embedding model
+
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = config or self._get_default_config()
+        self.config = self._get_default_config()
+        if config:
+            self.config.update(config)
 
         # Initialize all intelligence modules
         self.intelligent_profiler = IntelligentDataProfiler()
@@ -92,8 +95,10 @@ class HybridDataProfiler:
         self.drift_monitor = ComprehensiveDriftMonitor()
         self.missing_value_intelligence = AdvancedMissingValueIntelligence()
 
-        # Profile history for comparison
+        # Profile history and caching
         self.profile_history: List[DataProfileSummary] = []
+        self._profile_cache: Dict[str, DataProfileSummary] = {}
+        self._cache_max_size = 50
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration for hybrid profiler"""
@@ -110,8 +115,61 @@ class HybridDataProfiler:
             "save_profile_history": True,
         }
 
+    def _get_dataset_cache_key(self, df: pd.DataFrame) -> str:
+        """Generate cache key based on dataset characteristics"""
+        key_parts = [
+            str(df.shape),
+            str(sorted(df.columns.tolist())),
+            str(df.dtypes.to_dict()),
+            str(hash(tuple(str(v) for v in df.iloc[0].values))) if len(df) > 0 else "empty",
+        ]
+        return hashlib.md5("|".join(key_parts).encode()).hexdigest()
+
+    def _get_cached_profile(self, cache_key: str) -> Optional[DataProfileSummary]:
+        """Retrieve cached profile if available"""
+        return self._profile_cache.get(cache_key)
+
+    def _cache_profile(self, cache_key: str, profile: DataProfileSummary) -> None:
+        """Cache profile with LRU eviction"""
+        if len(self._profile_cache) >= self._cache_max_size:
+            oldest_key = next(iter(self._profile_cache))
+            del self._profile_cache[oldest_key]
+        self._profile_cache[cache_key] = profile
+
+    def _get_adaptive_sample(self, df: pd.DataFrame, target_size: Optional[int] = None) -> tuple[pd.DataFrame, int]:
+        """
+        Intelligently sample dataset based on size for optimal performance.
+        Optimized for speed: Uses random sampling for large datasets to avoid O(N log N) stratification.
+        """
+        n_rows = len(df)
+
+        if n_rows <= 100000:
+            return df, n_rows
+
+        if target_size is None:
+            if n_rows <= 500000:
+                sample_size = 50000
+            elif n_rows <= 1000000:
+                sample_size = 30000
+            else:
+                sample_size = 20000
+        else:
+            sample_size = min(target_size, n_rows)
+
+        # Optimization: Use simple random sampling for large datasets
+        # Stratification is expensive and unnecessary for initial profiling of >100k rows
+        try:
+            return df.sample(n=sample_size, random_state=42), sample_size
+        except Exception:
+            # Fallback for libraries that might not support random_state or other args identically
+            return df.sample(n=sample_size), sample_size
+
     def generate_comprehensive_profile(
-        self, df: pd.DataFrame, reference_df: Optional[pd.DataFrame] = None, context: Optional[Dict[str, Any]] = None
+        self,
+        df: pd.DataFrame,
+        reference_df: Optional[pd.DataFrame] = None,
+        context: Optional[Dict[str, Any]] = None,
+        progress_callback=None,
     ) -> DataProfileSummary:
         """
         Generate comprehensive dataset profile integrating all intelligence modules
@@ -127,71 +185,115 @@ class HybridDataProfiler:
         start_time = datetime.now()
         context = context or {}
 
+        from src.intelligence.profile_cache import get_profile_cache
+
+        profile_cache = get_profile_cache()
+        dataset_hash = profile_cache.compute_dataset_hash(df)
+        cached_profile_dict = profile_cache.get_cached_profile(dataset_hash, max_age_hours=24)
+
+        if cached_profile_dict is not None:
+            logging.info(f"Using cached profile for dataset ({len(df)} rows, hash: {dataset_hash[:8]})")
+
+            cached_profile_dict["dataset_insights"] = DatasetInsights(**cached_profile_dict["dataset_insights"])
+            cached_profile = DataProfileSummary(**cached_profile_dict)
+            return cached_profile
+
         logging.info(
             f"Starting comprehensive profiling of dataset with {len(df)} samples and {len(df.columns)} features"
         )
+
+        # Hardware Acceleration: Convert to optimized dataframe if available
+        lib_name = DataFrameFactory.get_library_name()
+        if lib_name == "cudf" and not isinstance(df, pd_lib.DataFrame):
+            try:
+                logging.info("Converting DataFrame to cuDF for GPU acceleration")
+                df = pd_lib.from_pandas(df)
+            except Exception as e:
+                logging.warning(f"Failed to convert to cuDF: {e}")
+        elif lib_name == "modin" and not isinstance(df, pd_lib.DataFrame):
+            try:
+                logging.info("Converting DataFrame to Modin for multi-core acceleration")
+                df = pd_lib.DataFrame(df)
+            except Exception as e:
+                logging.warning(f"Failed to convert to Modin: {e}")
 
         if len(df) < self.config["min_samples_for_full_profile"]:
             logging.warning(
                 f"Dataset has fewer than {self.config['min_samples_for_full_profile']} samples. Profile may be limited."
             )
 
+        df_phase1, sample_size_phase1 = self._get_adaptive_sample(df)
+        if sample_size_phase1 < len(df):
+            logging.info(f"Phase 1 sampling: {sample_size_phase1:,} rows from {len(df):,} total rows")
+
         try:
-            # 1. Basic Intelligent Profiling
+            # Phase 1: Semantic Profiling
             logging.info("Phase 1: Intelligent data profiling...")
-            semantic_profile = self.intelligent_profiler.profile_dataset(df)
+            if progress_callback:
+                progress_callback(20, "Analyzing column semantics...")
+            semantic_profile = self.intelligent_profiler.profile_dataset(df_phase1)
 
-            # 2. Data Quality Assessment
-            quality_report = None
-            if self.config["enable_quality_assessment"]:
-                logging.info("Phase 2: Data quality assessment...")
-                quality_report = self.quality_assessor.assess_quality(df, reference_df, context)
-
-            # 3. Anomaly Detection
-            anomaly_results = None
-            anomaly_summary = {}
-            if self.config["enable_anomaly_detection"]:
-                logging.info("Phase 3: Multi-layer anomaly detection...")
-                anomaly_results = self.anomaly_detector.detect_anomalies(df, reference_df)
-                anomaly_summary = self.anomaly_detector.get_anomaly_summary()
-
-            # 4. Missing Value Intelligence
+            # Phase 4: Missing Value Intelligence (Optimized)
             missing_analysis = None
             if self.config["enable_missing_value_analysis"]:
                 logging.info("Phase 4: Missing value intelligence analysis...")
-                missing_analysis = self.missing_value_intelligence.analyze_missing_patterns(df)
+                if progress_callback:
+                    progress_callback(40, "Analyzing missing values...")
+                missing_analysis = self.missing_value_intelligence.analyze_missing_patterns(df_phase1)
 
-            # 5. PII Detection & Privacy Assessment
-            pii_detection = None
-            if self.config.get("enable_privacy_analysis", True):
-                logging.info("Phase 5: PII detection and privacy assessment...")
-                try:
-                    privacy_engine = PrivacyEngine()
-                    pii_detection = privacy_engine.assess_privacy_risk(df)
-                except Exception as e:
-                    logging.warning(f"PII detection failed: {e}")
+            # Phase 2: Anomaly Detection
+            anomaly_results = None
+            anomaly_summary = {}
+            if self.config["enable_anomaly_detection"]:
+                df_phase2, sample_size_phase2 = self._get_adaptive_sample(df, target_size=5000)
+                if sample_size_phase2 < len(df):
+                    logging.info(f"Phase 2 sampling: {sample_size_phase2:,} rows for anomaly detection")
 
-            # 6. Drift Analysis (if reference provided)
+                logging.info("Phase 2: Multi-layer anomaly detection...")
+                if progress_callback:
+                    progress_callback(60, "Detecting anomalies...")
+                anomaly_results = self.anomaly_detector.detect_anomalies(df_phase2, reference_df)
+                anomaly_summary = self.anomaly_detector.get_anomaly_summary()
+
+            # Phase 3: Quality Assessment
+            quality_report = None
+            if self.config["enable_quality_assessment"]:
+                df_phase3, sample_size_phase3 = self._get_adaptive_sample(df, target_size=5000)
+                if sample_size_phase3 < len(df):
+                    logging.info(f"Phase 3 sampling: {sample_size_phase3:,} rows for quality assessment")
+
+                logging.info("Phase 3: Data quality assessment...")
+                if progress_callback:
+                    progress_callback(80, "Assessing data quality...")
+                quality_report = self.quality_assessor.assess_quality(df_phase3, reference_df, context, anomaly_results)
+
+            # Phase 6: Drift Monitoring
             drift_results = []
             if self.config["enable_drift_monitoring"] and reference_df is not None:
                 logging.info("Phase 6: Data drift monitoring...")
                 try:
                     self.drift_monitor.fit_reference(reference_df)
-                    drift_results = self.drift_monitor.detect_drift(df)
+                    drift_results = self.drift_monitor.detect_drift(
+                        df_phase3 if self.config["enable_quality_assessment"] else df_phase1
+                    )
                 except Exception as e:
                     logging.warning(f"Drift analysis failed: {e}")
 
-            # 6. Generate Dataset Insights
+            pii_detection = None
+            logging.info("All profiling phases completed sequentially")
+
+            if progress_callback:
+                progress_callback(85, "Generating insights...")
             dataset_insights = self._generate_dataset_insights(
                 df, semantic_profile, quality_report, anomaly_summary, context
             )
 
-            # 7. Create AI Agent Context
             ai_agent_context = self._create_agent_context(
                 df, semantic_profile, quality_report, anomaly_results, missing_analysis, context
             )
 
-            # 8. Generate Comprehensive Recommendations
+            if progress_callback:
+                progress_callback(90, "Creating recommendations...")
             recommendations = self._generate_comprehensive_recommendations(
                 semantic_profile, quality_report, anomaly_results, missing_analysis, context
             )
@@ -233,7 +335,7 @@ class HybridDataProfiler:
                         "anomaly_detection": self.config["enable_anomaly_detection"],
                         "missing_analysis": self.config["enable_missing_value_analysis"],
                         "drift_monitoring": self.config["enable_drift_monitoring"] and reference_df is not None,
-                        "privacy_analysis": self.config.get("enable_privacy_analysis", True),
+                        # "privacy_analysis": self.config.get("enable_privacy_analysis", True),
                     },
                     "pii_detection": pii_detection,
                 },
@@ -242,6 +344,14 @@ class HybridDataProfiler:
             # Store in history
             if self.config["save_profile_history"]:
                 self.profile_history.append(profile_summary)
+
+            # Save to persistent profile cache
+            profile_cache.save_profile(
+                dataset_hash=dataset_hash,
+                profile=asdict(profile_summary),
+                row_count=len(df),
+                column_count=len(df.columns),
+            )
 
             duration = (datetime.now() - start_time).total_seconds()
             logging.info(f"Comprehensive profiling completed in {duration:.2f} seconds")
@@ -385,6 +495,102 @@ class HybridDataProfiler:
 
             column_info[col_name] = basic_info
 
+        # Enhanced: Statistical summary from df.describe()
+        statistical_summary = {}
+        try:
+            desc = df.describe(include="all").round(2)
+            for col in desc.columns:
+                col_stats = desc[col].dropna().to_dict()
+                statistical_summary[col] = {k: v for k, v in col_stats.items() if pd.notna(v)}
+        except Exception:
+            pass
+
+        # Enhanced: Top correlations
+        top_correlations = []
+        try:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) >= 2:
+                corr_matrix = df[numeric_cols].corr()
+                corr_pairs = []
+                for i, col1 in enumerate(numeric_cols):
+                    for col2 in numeric_cols[i + 1 :]:
+                        corr_val = corr_matrix.loc[col1, col2]
+                        if pd.notna(corr_val):
+                            corr_pairs.append(
+                                {
+                                    "columns": [col1, col2],
+                                    "correlation": round(corr_val, 3),
+                                    "strength": "strong"
+                                    if abs(corr_val) > 0.7
+                                    else "moderate"
+                                    if abs(corr_val) > 0.4
+                                    else "weak",
+                                }
+                            )
+                top_correlations = sorted(corr_pairs, key=lambda x: abs(x["correlation"]), reverse=True)[:5]
+        except Exception:
+            pass
+
+        # Enhanced: Skewness detection for numeric columns
+        skewness_info = {}
+        try:
+            for col in df.select_dtypes(include=[np.number]).columns:
+                skew_val = df[col].skew()
+                if pd.notna(skew_val):
+                    skew_type = (
+                        "highly right-skewed"
+                        if skew_val > 1
+                        else "right-skewed"
+                        if skew_val > 0.5
+                        else "highly left-skewed"
+                        if skew_val < -1
+                        else "left-skewed"
+                        if skew_val < -0.5
+                        else "symmetric"
+                    )
+                    if abs(skew_val) > 0.5:
+                        skewness_info[col] = {"skewness": round(skew_val, 2), "type": skew_type}
+        except Exception:
+            pass
+
+        # Enhanced: Top value frequencies for categorical columns
+        categorical_value_frequencies = {}
+        try:
+            for col in df.select_dtypes(include=["object", "category"]).columns:
+                value_counts = df[col].value_counts().head(5)
+                total = len(df[col].dropna())
+                categorical_value_frequencies[col] = {
+                    "top_values": [
+                        {"value": str(val), "count": int(cnt), "percentage": round(cnt / total * 100, 1)}
+                        for val, cnt in value_counts.items()
+                    ],
+                    "unique_count": int(df[col].nunique()),
+                    "mode": str(df[col].mode().iloc[0]) if len(df[col].mode()) > 0 else None,
+                }
+        except Exception:
+            pass
+
+        # Enhanced: Outlier detection using IQR
+        outlier_summary = {}
+        try:
+            for col in df.select_dtypes(include=[np.number]).columns:
+                Q1 = df[col].quantile(0.25)
+                Q3 = df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                lower = Q1 - 1.5 * IQR
+                upper = Q3 + 1.5 * IQR
+                outlier_count = int(((df[col] < lower) | (df[col] > upper)).sum())
+                outlier_pct = round(outlier_count / len(df) * 100, 2)
+                if outlier_pct > 1:
+                    outlier_summary[col] = {
+                        "outlier_count": outlier_count,
+                        "outlier_percentage": outlier_pct,
+                        "lower_bound": round(lower, 2),
+                        "upper_bound": round(upper, 2),
+                    }
+        except Exception:
+            pass
+
         # Key insights for agent
         agent_context = {
             "dataset_overview": {
@@ -393,7 +599,12 @@ class HybridDataProfiler:
                 "dtypes_summary": df.dtypes.value_counts().to_dict(),
                 "memory_usage_mb": round(df.memory_usage(deep=True).sum() / 1024 / 1024, 2),
             },
+            "statistical_summary": statistical_summary,
             "column_details": column_info,
+            "top_correlations": top_correlations,
+            "skewed_columns": skewness_info,
+            "categorical_distributions": categorical_value_frequencies,
+            "outlier_analysis": outlier_summary,
             "data_quality": {
                 "overall_score": quality_report.overall_score if quality_report else None,
                 "missing_data_summary": {
@@ -425,6 +636,11 @@ class HybridDataProfiler:
                 "suggested_target_columns": [
                     col for col in df.columns if pd.api.types.is_numeric_dtype(df[col]) and df[col].nunique() > 2
                 ][:3],
+                "highly_correlated_pairs": [
+                    (c["columns"][0], c["columns"][1]) for c in top_correlations if c["strength"] == "strong"
+                ],
+                "columns_needing_transformation": list(skewness_info.keys()),
+                "columns_with_outliers": list(outlier_summary.keys()),
             },
         }
 
@@ -695,5 +911,7 @@ def generate_dataset_profile_for_agent(
     Returns:
         Complete dataset profile with AI agent context
     """
-    profiler = HybridDataProfiler(config)
-    return profiler.generate_comprehensive_profile(df, reference_df, context)
+    progress_callback = config.get("progress_callback") if config else None
+    profiler_config = {k: v for k, v in (config or {}).items() if k != "progress_callback"}
+    profiler = HybridDataProfiler(profiler_config if profiler_config else None)
+    return profiler.generate_comprehensive_profile(df, reference_df, context, progress_callback)

@@ -5,6 +5,7 @@ from enum import Enum
 import hashlib
 import json
 import os
+import threading
 
 
 class ArtifactCategory(Enum):
@@ -18,7 +19,7 @@ class ArtifactCategory(Enum):
 
 
 class ArtifactTracker:
-    STORAGE_FILE = Path(__file__).parent.parent.parent / "artifact_storage.json"
+    STORAGE_FILE = Path(__file__).parent.parent.parent / "data" / "metadata" / "artifact_storage.json"
 
     CATEGORY_MAPPING = {
         ".png": ArtifactCategory.VISUALIZATION,
@@ -65,27 +66,77 @@ class ArtifactTracker:
     }
 
     def __init__(self):
+        self._lock = threading.RLock()  # RLock allows reentrant locking from same thread
         self.session_artifacts: Dict[str, Dict[str, Any]] = {}
         self._load_from_file()
 
     def _load_from_file(self):
-        if self.STORAGE_FILE.exists():
-            try:
-                with open(self.STORAGE_FILE, "r") as f:
-                    self.session_artifacts = json.load(f)
-            except Exception as e:
-                print(f"[ArtifactTracker] ERROR loading: {e}")
-                self.session_artifacts = {}
-        else:
-            self.session_artifacts = {}
+        with self._lock:
+            if self.STORAGE_FILE.exists():
+                try:
+                    with open(self.STORAGE_FILE, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        if content.strip():
+                            self.session_artifacts = json.loads(content)
+                        else:
+                            self.session_artifacts = {}
+                except json.JSONDecodeError as e:
+                    print(f"[ArtifactTracker] Corrupted JSON, backing up and starting fresh: {e}")
+                    backup_path = self.STORAGE_FILE.with_suffix(".json.bak")
+                    try:
+                        import shutil
 
-    def _save_to_file(self):
+                        shutil.copy(self.STORAGE_FILE, backup_path)
+                        print(f"[ArtifactTracker] Backup saved to {backup_path}")
+                    except Exception:
+                        pass
+                    self.session_artifacts = {}
+                    self._save_to_file_unsafe()
+                except Exception as e:
+                    print(f"[ArtifactTracker] ERROR loading: {e}")
+                    self.session_artifacts = {}
+            else:
+                self.session_artifacts = {}
+
+    def _save_to_file_unsafe(self):
+        """Save without acquiring lock - for internal use when lock is already held."""
+        import shutil
+        import time
+
         try:
             self.STORAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.STORAGE_FILE, "w") as f:
+            temp_path = self.STORAGE_FILE.with_suffix(".json.tmp")
+
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self.session_artifacts, f, indent=2)
+
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    if self.STORAGE_FILE.exists():
+                        self.STORAGE_FILE.unlink()
+                    shutil.move(str(temp_path), str(self.STORAGE_FILE))
+                    return
+                except (PermissionError, OSError) as e:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        with open(self.STORAGE_FILE, "w", encoding="utf-8") as f:
+                            json.dump(self.session_artifacts, f, indent=2)
+                        if temp_path.exists():
+                            temp_path.unlink()
+                        return
         except Exception as e:
             print(f"[ArtifactTracker] ERROR saving: {e}")
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+
+    def _save_to_file(self):
+        with self._lock:
+            self._save_to_file_unsafe()
 
     def categorize_file(self, filename: str, description: Optional[str] = None) -> ArtifactCategory:
         filename_lower = filename.lower()
@@ -126,6 +177,10 @@ class ArtifactTracker:
         file_path: str,
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        blob_path: Optional[str] = None,
+        blob_url: Optional[str] = None,
+        presigned_url: Optional[str] = None,
+        source_dataset: Optional[str] = None,
     ) -> Dict[str, Any]:
         if session_id not in self.session_artifacts:
             self.session_artifacts[session_id] = {"artifacts": [], "created_at": datetime.now().isoformat()}
@@ -154,6 +209,10 @@ class ArtifactTracker:
             "last_updated": datetime.now().isoformat(),
             "metadata": metadata or {},
             "file_hash": file_hash,
+            "blob_path": blob_path,
+            "blob_url": blob_url,
+            "presigned_url": presigned_url,
+            "source_dataset": source_dataset,
         }
 
         self.session_artifacts[session_id]["artifacts"].append(artifact)
@@ -190,6 +249,15 @@ class ArtifactTracker:
             "total_count": len(artifacts),
             "session_created": self.session_artifacts[session_id]["created_at"],
         }
+
+    def get_artifact_by_filename(self, session_id: str, filename: str) -> Optional[Dict[str, Any]]:
+        self._load_from_file()
+        if session_id not in self.session_artifacts:
+            return None
+        for artifact in self.session_artifacts[session_id]["artifacts"]:
+            if artifact.get("filename") == filename:
+                return artifact
+        return None
 
     def get_new_artifacts(self, session_id: str, since: str) -> List[Dict[str, Any]]:
         self._load_from_file()
@@ -240,6 +308,79 @@ class ArtifactTracker:
             return True
         return False
 
+    def get_artifact_url(self, artifact, session_id: str = None) -> str:
+        def get_val(obj, key, default=""):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        blob_path = get_val(artifact, "blob_path")
+        if blob_path:
+            try:
+                from src.storage.cloud_storage import get_cloud_storage
+
+                storage = get_cloud_storage()
+                if storage:
+                    presigned = storage.get_blob_url(blob_path, expires_in=86400)
+                    if presigned:
+                        if isinstance(artifact, dict):
+                            artifact["presigned_url"] = presigned
+                        self._save_to_file()
+                        return presigned
+            except Exception as e:
+                print(f"[ArtifactTracker] R2 URL generation failed for {blob_path}: {e}")
+
+        if get_val(artifact, "blob_url"):
+            return get_val(artifact, "blob_url")
+
+        metadata = get_val(artifact, "metadata", {})
+        if isinstance(metadata, dict) and metadata.get("web_url"):
+            return metadata.get("web_url")
+
+        file_path = get_val(artifact, "file_path", "")
+        if file_path:
+            filename = os.path.basename(file_path)
+            if os.path.exists(file_path):
+                return f"/static/plots/{filename}"
+            static_path = f"static/plots/{filename}"
+            if os.path.exists(static_path):
+                return f"/static/plots/{filename}"
+
+        filename = get_val(artifact, "filename", "")
+        if filename:
+            return f"/static/plots/{filename}"
+
+        return ""
+
+    def get_artifact_with_url(self, artifact: Dict[str, Any], session_id: str = None) -> Dict[str, Any]:
+        result = artifact.copy()
+        result["url"] = self.get_artifact_url(artifact, session_id)
+        return result
+
+    def get_session_artifacts_with_urls(
+        self, session_id: str, category: Optional[ArtifactCategory] = None
+    ) -> Dict[str, Any]:
+        base_result = self.get_session_artifacts(session_id, category)
+
+        enhanced_artifacts = []
+        for artifact in base_result.get("artifacts", []):
+            enhanced_artifacts.append(self.get_artifact_with_url(artifact, session_id))
+
+        enhanced_categories = {}
+        for cat_key, cat_data in base_result.get("categories", {}).items():
+            enhanced_cat = cat_data.copy()
+            enhanced_cat["artifacts"] = [
+                self.get_artifact_with_url(a, session_id) for a in cat_data.get("artifacts", [])
+            ]
+            enhanced_categories[cat_key] = enhanced_cat
+
+        return {
+            "artifacts": enhanced_artifacts,
+            "categories": enhanced_categories,
+            "total_count": base_result.get("total_count", 0),
+            "session_created": base_result.get("session_created"),
+        }
+
     def _generate_file_hash(self, filename: str, file_path: str) -> str:
         content = f"{filename}:{file_path}"
         return hashlib.md5(content.encode()).hexdigest()[:12]
@@ -283,6 +424,31 @@ class ArtifactTracker:
             ArtifactCategory.OTHER: "Generated file",
         }
         return descriptions.get(category, "File")
+
+    def save_insights(self, session_id: str, insights: list) -> None:
+        """Save agent insights to persistent storage."""
+        if not session_id or not insights:
+            return
+
+        with self._lock:
+            self._load_from_file()
+            if session_id not in self.session_artifacts:
+                self.session_artifacts[session_id] = {
+                    "artifacts": [],
+                    "insights": [],
+                    "created_at": datetime.now().isoformat(),
+                }
+
+            self.session_artifacts[session_id]["insights"] = insights
+            self._save_to_file_unsafe()
+            print(f"[ArtifactTracker] Saved {len(insights)} insights for session {session_id[:8]}")
+
+    def get_insights(self, session_id: str) -> list:
+        """Get persisted agent insights for a session."""
+        self._load_from_file()
+        if session_id not in self.session_artifacts:
+            return []
+        return self.session_artifacts[session_id].get("insights", [])
 
 
 _instance = None

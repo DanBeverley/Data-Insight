@@ -1,5 +1,5 @@
 """
-Data Quality & Validation Framework for DataInsight AI
+Data Quality & Validation Framework for Quorvix AI
 
 This module provides a comprehensive DataQualityValidator class that performs
 a series of checks on an input DataFrame to ensure its integrity before it

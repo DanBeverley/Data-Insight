@@ -245,12 +245,10 @@ class RelationshipDiscovery:
                 try:
                     sample = df[col].dropna().iloc[:100]
                     if len(sample) > 0:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            parsed = pd.to_datetime(sample, errors="coerce")
-                            valid_ratio = parsed.notna().sum() / len(sample)
-                            if valid_ratio > 0.7:
-                                datetime_cols.append(col)
+                        parsed = pd.to_datetime(sample, errors="coerce", utc=True)
+                        valid_ratio = parsed.notna().sum() / len(sample)
+                        if valid_ratio > 0.7:
+                            datetime_cols.append(col)
                 except:
                     continue
 
@@ -259,16 +257,18 @@ class RelationshipDiscovery:
 
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
+        parsed_dt_cache = {}
+
         for dt_col in datetime_cols:
+            if dt_col not in parsed_dt_cache:
+                if not pd.api.types.is_datetime64_any_dtype(df[dt_col]):
+                    parsed_dt_cache[dt_col] = pd.to_datetime(df[dt_col], errors="coerce", utc=True)
+                else:
+                    parsed_dt_cache[dt_col] = df[dt_col]
+
             for num_col in numeric_cols:
                 try:
-                    # Convert to datetime if needed
-                    if not pd.api.types.is_datetime64_any_dtype(df[dt_col]):
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            dt_series = pd.to_datetime(df[dt_col], errors="coerce")
-                    else:
-                        dt_series = df[dt_col]
+                    dt_series = parsed_dt_cache[dt_col]
 
                     # Create time-ordered dataset
                     temp_df = pd.DataFrame({"time": dt_series, "value": df[num_col]}).dropna().sort_values("time")

@@ -1,11 +1,107 @@
 import json
 import asyncio
+import logging
 import re
+import time
 from datetime import datetime
 from typing import Dict, Any, AsyncGenerator
 from langchain_core.messages import HumanMessage
 from .helpers import create_agent_input, create_workflow_status_context
 from .agent_response import extract_agent_response
+from data_scientist_chatbot.app.core.constants import NodeName, WORKFLOW_NODES, SAFE_CHECKPOINT_NODES
+from data_scientist_chatbot.app.core.state_extractor import extract_report_url_from_messages
+from data_scientist_chatbot.app.core.agent_factory import get_model_name
+import logging.handlers
+import queue
+
+
+class LogQueueHandler(logging.Handler):
+    def __init__(self, log_queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if "[SEARCH_STATUS]" in msg:
+                self.log_queue.put(msg)
+        except Exception:
+            self.handleError(record)
+
+
+def _parse_search_status_log(log_msg: str) -> dict:
+    if "[SEARCH_STATUS]" not in log_msg:
+        return None
+    parts = log_msg.split("[SEARCH_STATUS]")[1].strip().split("|")
+    if len(parts) < 2:
+        return None
+    action = parts[0]
+    event_payload = {"type": "search_status", "action": action}
+    if action == "searching" and len(parts) >= 3:
+        event_payload["query"] = parts[1]
+        event_payload["provider"] = parts[2]
+    elif action == "results" and len(parts) >= 3:
+        event_payload["resultCount"] = int(parts[1])
+        event_payload["query"] = parts[2]
+    elif action == "browsing" and len(parts) >= 2:
+        event_payload["url"] = parts[1]
+    return event_payload
+
+
+async def _log_watcher_task(log_queue: queue.Queue, output_queue: asyncio.Queue, stop_event: asyncio.Event):
+    while not stop_event.is_set():
+        try:
+            log_msg = log_queue.get_nowait()
+            event_payload = _parse_search_status_log(log_msg)
+            if event_payload:
+                await output_queue.put(f"data: {json.dumps(event_payload)}\n\n")
+        except queue.Empty:
+            pass
+        await asyncio.sleep(0.05)
+    while not log_queue.empty():
+        try:
+            log_msg = log_queue.get_nowait()
+            event_payload = _parse_search_status_log(log_msg)
+            if event_payload:
+                await output_queue.put(f"data: {json.dumps(event_payload)}\n\n")
+        except queue.Empty:
+            break
+
+
+def strip_model_tokens(content: str) -> str:
+    """Strip special model formatting tokens from output"""
+    if not content or not isinstance(content, str):
+        return content
+
+    # Strip model special tokens: <|start|>, <|channel|>, <|message|>, etc.
+    content = re.sub(r"<\|[^|]+\|>", "", content)
+
+    # Strip any remaining angle bracket tokens
+    content = re.sub(r"<\|", "", content)
+    content = re.sub(r"\|>", "", content)
+
+    return content.strip()
+
+
+def sanitize_artifact_paths(content: str) -> str:
+    """
+    Sanitize malformed artifact paths that Brain may hallucinate.
+
+    Converts paths like:
+    - sandbox:/mnt/data/file.html -> /static/plots/file.html
+    - /mnt/data/file.png -> /static/plots/file.png
+    - sandbox%3A/mnt/data/file.html -> /static/plots/file.html
+    """
+    if not content or not isinstance(content, str):
+        return content
+
+    # Pattern 1: sandbox:/mnt/data/filename or sandbox%3A/mnt/data/filename
+    content = re.sub(r'sandbox(%3A|:)/mnt/data/([^)\s"\']+)', r"/static/plots/\2", content)
+
+    # Pattern 2: Just /mnt/data/filename (in URLs/links)
+    content = re.sub(r'(?<![a-zA-Z])(/mnt/data/)([^)\s"\']+)', r"/static/plots/\2", content)
+
+    return content
 
 
 def format_agent_output(content: str) -> str:
@@ -13,21 +109,15 @@ def format_agent_output(content: str) -> str:
     if not content or not isinstance(content, str):
         return content
 
-    print(f"DEBUG FORMAT: Input length={len(content)}, first 100 chars: {content[:100]}")
-
-    # Try markdown table first (LLM agents often use this)
-    md_table_result = _try_format_markdown_table(content)
-    if md_table_result:
-        print(f"DEBUG FORMAT: Markdown table detected")
-        return md_table_result[0]
+    # Always sanitize artifact paths first (fix sandbox:/mnt/data/... paths)
+    content = sanitize_artifact_paths(content)
 
     # Try pandas DataFrame
     df_result = _try_format_dataframe(content)
     if df_result:
-        print(f"DEBUG FORMAT: DataFrame detected, formatted length={len(df_result[0])}")
         return df_result[0]
 
-    # Try other formats
+    # Try other formats (skip markdown table - let frontend handle it)
     json_result = _try_format_json(content)
     if json_result:
         return json_result[0]
@@ -44,7 +134,6 @@ def format_agent_output(content: str) -> str:
     if stats_result:
         return stats_result[0]
 
-    print(f"DEBUG FORMAT: No formatter matched, returning original")
     return content
 
 
@@ -310,28 +399,157 @@ def _try_format_statistics(text: str):
     return None
 
 
-async def stream_agent_chat(
-    message: str, session_id: str, agent, session_store: Dict[str, Any], status_agent_runnable=None
-) -> AsyncGenerator[str, None]:
+async def _generate_report_summary(insights: list, artifact_count: int, report_path: str, user_message: str) -> str:
     try:
-        if hasattr(agent, "stream_events"):
-            async for event_data in _stream_with_events(message, session_id, agent, status_agent_runnable):
-                yield event_data
+        from data_scientist_chatbot.app.core.agent_factory import create_brain_agent
+
+        brain_agent = create_brain_agent()
+
+        formatted_insights = []
+        for i in insights[:10]:
+            if isinstance(i, dict):
+                label = i.get("label", "")
+                value = i.get("value", "")
+                if label and value:
+                    formatted_insights.append(f"- **{label}**: {value}")
+
+        insights_block = (
+            "\n".join(formatted_insights)
+            if formatted_insights
+            else "No specific insights were extracted from this analysis."
+        )
+
+        prompt = f"""You are summarizing a data analysis that was just completed. Based on the insights below, write a natural conversational response.
+
+**User's Request**: {user_message[:300]}
+
+**Analysis Results**:
+- Generated {artifact_count} visualizations
+- Key Insights Found:
+{insights_block}
+
+**Instructions**:
+1. Write 2-4 sentences summarizing the key findings in a friendly, conversational tone
+2. Be SPECIFIC - mention actual numbers, trends, or patterns from the insights above
+3. At the end, add this exact link on its own line: **[📄 View Full Report](report:{report_path})**
+
+Write your response now:"""
+
+        logging.info(f"[STREAM] Calling Brain for summary with {len(formatted_insights)} insights")
+        result = await brain_agent.ainvoke([HumanMessage(content=prompt)])
+        content = result.content if hasattr(result, "content") else str(result)
+
+        logging.info(
+            f"[STREAM] Brain summary generated ({len(content) if content else 0} chars): {content[:200] if content else 'None'}..."
+        )
+
+        if content and len(content) > 20:
+            if f"report:{report_path}" not in content:
+                content += f"\n\n**[📄 View Full Report](report:{report_path})**"
+            return content
         else:
-            async for event_data in _stream_fallback(message, session_id, agent, status_agent_runnable):
+            logging.warning(f"[STREAM] Brain summary too short or empty")
+    except Exception as e:
+        logging.warning(f"[STREAM] Brain summary generation failed: {e}")
+        import traceback
+
+        logging.warning(f"[STREAM] Traceback: {traceback.format_exc()}")
+
+    insight_labels = [i.get("label", "") for i in insights[:5] if isinstance(i, dict) and i.get("label")]
+    insight_text = f" Key findings include: {', '.join(insight_labels)}." if insight_labels else ""
+    return f"## 📊 Analysis Complete\n\nGenerated {artifact_count} visualizations from your analysis.{insight_text}\n\n**[📄 View Full Report](report:{report_path})**"
+
+
+async def stream_agent_chat(
+    message: str,
+    session_id: str,
+    agent,
+    session_store: Dict[str, Any],
+    session_agents=None,
+    regenerate: bool = False,
+    message_id: str = None,
+) -> AsyncGenerator[str, None]:
+    from .message_storage import save_message, save_message_version
+    import uuid
+
+    if regenerate and message_id:
+        pass
+    else:
+        save_message(session_id, "human", message)
+        message_id = str(uuid.uuid4())
+
+    thinking_mode = session_store.get(session_id, {}).get("thinking_mode", False)
+
+    try:
+        logging.info(f"[STREAMING] Using .astream() method (async streaming) for session {session_id}")
+        try:
+            async for event_data in _stream_fallback(message, session_id, agent):
                 yield event_data
+        except KeyError as ke:
+            if "__start__" in str(ke):
+                logging.warning(f"Checkpoint error for session {session_id}: {ke}")
+
+                from .session_management import clean_checkpointer_state
+
+                cleaned = clean_checkpointer_state(session_id, "checkpoint_error")
+
+                if cleaned:
+                    logging.info(f"Checkpoint cleaned, recreating agent with fresh state for session {session_id}")
+
+                    from data_scientist_chatbot.app.core.graph_builder import create_enhanced_agent_executor
+
+                    agent = create_enhanced_agent_executor(session_id)
+
+                    if session_agents is not None and session_id in session_agents:
+                        session_agents[session_id] = agent
+                        logging.info(f"Agent cache updated for session {session_id}")
+                else:
+                    logging.warning(f"Checkpoint cleanup failed, proceeding anyway for session {session_id}")
+
+                async for event_data in _stream_fallback(message, session_id, agent):
+                    yield event_data
+            else:
+                raise
+        except Exception as stream_error:
+            logging.error(f"[STREAMING] .astream() failed for session {session_id}: {stream_error}")
+
+            if hasattr(agent, "astream_events"):
+                logging.warning(f"[STREAMING] Falling back to astream_events() for session {session_id}")
+                try:
+                    async for event_data in _stream_with_events(message, session_id, agent, thinking_mode, message_id):
+                        yield event_data
+                except Exception as e:
+                    logging.error(f"[STREAMING] astream_events() also failed: {e}")
+                    raise
+            else:
+                raise
 
     except Exception as e:
-        print(f"DEBUG: Streaming error: {e}")
+        logging.error(f"Streaming error for session {session_id}: {e}")
+
+        # Save error message to prevent message corruption on reload
+        from .message_storage import save_message
+
+        error_content = f"An error occurred while processing your request: {str(e)}"
+        try:
+            save_message(session_id, "ai", error_content)
+        except Exception as save_error:
+            logging.error(f"Failed to save error message: {save_error}")
+
         yield f"data: {json.dumps({'type': 'error', 'message': f'Streaming error: {str(e)}'})}\n\n"
 
 
-async def _stream_with_events(message: str, session_id: str, agent, status_agent_runnable) -> AsyncGenerator[str, None]:
-    yield f"data: {json.dumps({'type': 'status', 'message': '🔄 Starting analysis...'})}\n\n"
+async def _stream_with_events(
+    message: str, session_id: str, agent, thinking_mode: bool = False, message_id: str = None
+) -> AsyncGenerator[str, None]:
     await asyncio.sleep(0.01)
 
     config = {"configurable": {"thread_id": session_id}}
-    input_data = create_agent_input(message, session_id)
+    input_data = create_agent_input(message, session_id, thinking_mode=thinking_mode)
+
+    logging.info(f"[STREAM_EVENTS] Starting for session {session_id}")
+    logging.info(f"[STREAM_EVENTS] Agent type: {type(agent)}")
+    logging.info(f"[STREAM_EVENTS] Config: {config}")
 
     plots = []
     final_response = None
@@ -347,202 +565,755 @@ async def _stream_with_events(message: str, session_id: str, agent, status_agent
         "session_id": session_id,
     }
 
-    for event in agent.stream_events(input_data, config=config, version="v2"):
-        event_name = event.get("event")
-        event_data = event.get("data", {})
+    log_queue = queue.Queue()
+    queue_handler = LogQueueHandler(log_queue)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(queue_handler)
 
-        if event_name == "on_chain_start":
-            current_node = event.get("name", "")
-            workflow_context["current_agent"] = current_node
-            workflow_context["current_action"] = "starting"
+    thinking_parser = None
+    if thinking_mode:
+        from .thinking_mode_parser import ThinkingModeParser, create_thinking_status_message
 
-            if status_agent_runnable:
-                status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                if status_msg:
-                    yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
+        thinking_parser = ThinkingModeParser()
+        logging.info(f"[STREAM_EVENTS] Thinking mode ENABLED for session {session_id}")
 
-        elif event_name == "on_chat_model_stream":
-            if event_data.get("chunk"):
-                chunk_content = str(event_data["chunk"].content)
-                workflow_context["execution_progress"][current_node] = chunk_content[:100]
+    output_queue = asyncio.Queue()
+    stop_log_watcher = asyncio.Event()
+    log_watcher = asyncio.create_task(_log_watcher_task(log_queue, output_queue, stop_log_watcher))
 
-        elif event_name == "on_tool_start":
-            tool_name = event.get("name", "")
-            workflow_context["tool_calls"].append({"tool": tool_name, "status": "starting"})
-            workflow_context["current_action"] = f"executing {tool_name}"
+    try:
+        logging.info(f"[STREAM_EVENTS] Calling agent.astream_events...")
+        async for event in agent.astream_events(input_data, config=config, version="v2"):
+            from .cancellation import is_task_cancelled
 
-            if status_agent_runnable:
-                status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                if status_msg:
-                    yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-                    await asyncio.sleep(0.1)
+            if is_task_cancelled(session_id):
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Task cancelled by user'})}\n\n"
+                break
 
-        elif event_name == "on_tool_end":
-            tool_name = event.get("name", "")
-            tool_output = event_data.get("output", "")
+            event_name = event.get("event")
+            event_data = event.get("data", {})
+            event_node_name = event.get("name", "unknown")
 
-            for tool_info in workflow_context["tool_calls"]:
-                if tool_info["tool"] == tool_name and tool_info["status"] == "starting":
-                    tool_info["status"] = "completed"
+            logging.debug(f"[EVENT] {event_name} | node={event_node_name} | tags={event.get('tags', [])}")
+
+            if event_name == "on_chain_start":
+                current_node = event.get("name", "")
+                workflow_context["current_agent"] = current_node
+                workflow_context["current_action"] = "starting"
+
+                if current_node == "hands":
+                    logging.info(f"[STREAM_EVENTS] Hands node started")
+                    # Try to get plan from state to mark as in-progress
+                    # Note: event_data might not have the full state, but let's check input
+                    # LangGraph v0.2+ passes input state in 'data' -> 'input'
+                    input_state = event_data.get("input", {})
+                    if input_state and isinstance(input_state, dict):
+                        plan = input_state.get("plan", [])
+                        current_idx = input_state.get("current_task_index", 0)
+
+                        if plan and current_idx < len(plan):
+                            # Create a local copy to modify status for UI
+                            import copy
+
+                            ui_plan = copy.deepcopy(plan)
+                            ui_plan[current_idx]["status"] = "in_progress"
+                            logging.info(f"[STREAM_EVENTS] Emitting in-progress plan for task {current_idx}")
+                            yield f"data: {json.dumps({'type': 'plan', 'plan': ui_plan})}\n\n"
+
+                # [REPORT UI TRIGGER] Detect Architect start
+                if current_node == "architect":
+                    logging.info(f"[STREAM] Architect node started, triggering UI loading state")
+                    yield f"data: {json.dumps({'type': 'report_generation_started'})}\n\n"
+
+            elif event_name == "on_chat_model_stream":
+                if event_data.get("chunk"):
+                    chunk_content = str(event_data["chunk"].content)
+                    workflow_context["execution_progress"][current_node] = chunk_content[:100]
+
+                    if thinking_parser and chunk_content:
+                        for thinking_update in thinking_parser.parse_streaming_chunk(chunk_content):
+                            status_msg = create_thinking_status_message(thinking_update)
+                            yield f"data: {json.dumps(status_msg)}\n\n"
+                            await asyncio.sleep(0.01)
+
+                while not output_queue.empty():
+                    try:
+                        log_event = output_queue.get_nowait()
+                        yield log_event
+                    except asyncio.QueueEmpty:
+                        break
+
+            elif event_name == "on_tool_start":
+                tool_name = event.get("name", "")
+                workflow_context["tool_calls"].append({"tool": tool_name, "status": "starting"})
+                workflow_context["current_action"] = f"executing {tool_name}"
+
+            elif event_name == "on_tool_end":
+                tool_name = event.get("name", "")
+                tool_output = event_data.get("output", "")
+
+                for tool_info in workflow_context["tool_calls"]:
+                    if tool_info["tool"] == tool_name and tool_info["status"] == "starting":
+                        tool_info["status"] = "completed"
+                        break
+
+                workflow_context["current_action"] = f"completed {tool_name}"
+
+                if tool_name == "python_code_interpreter" and "PLOT_SAVED:" in str(tool_output):
+                    import re
+
+                    plot_files = re.findall(r"PLOT_SAVED:([^\s]+\.png)", str(tool_output))
+                    for plot_file in plot_files:
+                        plots.append(f"/static/plots/{plot_file}")
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization created successfully!'})}\n\n"
+                    await asyncio.sleep(0.2)
+
+            elif event_name == "on_chain_end":
+                node_name = event.get("name", "unknown")
+                logging.info(f"[EVENT] on_chain_end for node: {node_name}")
+
+                if event_data.get("output"):
+                    output_keys = (
+                        list(event_data["output"].keys()) if isinstance(event_data["output"], dict) else "not_dict"
+                    )
+                    logging.debug(f"[STREAM_EVENTS] Node {node_name} output keys: {output_keys}")
+
+                if node_name == "__start__":
+                    logging.info(f"[STREAM_EVENTS] Graph execution completed (__start__ ended)")
+                    final_response = event_data.get("output")
                     break
 
-            workflow_context["current_action"] = f"completed {tool_name}"
+                if event_data.get("output") and isinstance(event_data["output"], dict):
+                    plan = event_data["output"].get("plan")
+                    if plan:
+                        logging.info(f"[STREAM_EVENTS] Found plan in node {node_name} output with {len(plan)} tasks")
+                        workflow_context["plan"] = plan
+                        yield f"data: {json.dumps({'type': 'plan', 'plan': plan})}\n\n"
 
-            if status_agent_runnable:
-                status_msg = await _generate_status(status_agent_runnable, workflow_context, event, current_node)
-                if status_msg:
-                    yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
-                    await asyncio.sleep(0.1)
+                if node_name == "architect":
+                    logging.info(f"[STREAM_EVENTS] Architect node completed")
+                    output = event_data.get("output") or {}
 
-            if tool_name == "python_code_interpreter" and "PLOT_SAVED:" in str(tool_output):
-                import re
+                    # Check for report_url in multiple locations:
+                    # 1. Directly in output (state root) - how architect returns it
+                    # 2. Nested in execution_result - legacy compatibility
+                    report_path = None
 
-                plot_files = re.findall(r"PLOT_SAVED:([^\s]+\.png)", str(tool_output))
-                for plot_file in plot_files:
-                    plots.append(f"/static/plots/{plot_file}")
-                yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization created successfully!'})}\n\n"
-                await asyncio.sleep(0.2)
+                    # First check direct state keys
+                    if output.get("report_url"):
+                        report_path = output.get("report_url")
+                        logging.info(f"[STREAM_EVENTS] Found report_url at state root: {report_path}")
+                    elif output.get("report_path"):
+                        raw_path = output.get("report_path")
+                        import os
 
-        elif event_name == "on_chain_end" and event.get("name") == "__start__":
-            final_response = event_data.get("output")
-            break
+                        filename = os.path.basename(raw_path)
+                        report_path = f"/reports/{filename}"
+                        logging.info(f"[STREAM_EVENTS] Found report_path at state root, converted: {report_path}")
+                    # Then check nested in execution_result
+                    elif output.get("execution_result"):
+                        exec_result = output.get("execution_result")
+                        report_path = exec_result.get("report_url")
+                        if not report_path and exec_result.get("report_path"):
+                            raw_path = exec_result.get("report_path")
+                            import os
+
+                            filename = os.path.basename(raw_path)
+                            report_path = f"/reports/{filename}"
+
+                    if report_path:
+                        logging.info(f"[STREAM_EVENTS] Sending report_generated event: {report_path}")
+                        yield f"data: {json.dumps({'type': 'report_generated', 'report_path': report_path})}\n\n"
+                    else:
+                        logging.warning(
+                            f"[STREAM_EVENTS] Architect completed but no report_url found in output: {list(output.keys())}"
+                        )
+                else:
+                    logging.debug(f"[EVENT] Ignoring on_chain_end for node: {node_name}")
+
+            else:
+                logging.debug(f"[EVENT] Unhandled event type: {event_name} | node={event_node_name}")
+
+    except KeyError as ke:
+        logging.error(f"[STREAM_EVENTS] KeyError occurred: {ke}")
+        logging.error(f"[STREAM_EVENTS] Error type: {type(ke)}")
+        import traceback
+
+        logging.error(f"[STREAM_EVENTS] Traceback:\n{traceback.format_exc()}")
+        raise
+    except Exception as e:
+        logging.error(f"[STREAM_EVENTS] Unexpected error: {e}")
+        import traceback
+
+        logging.error(f"[STREAM_EVENTS] Traceback:\n{traceback.format_exc()}")
+        raise
+    finally:
+        stop_log_watcher.set()
+        await log_watcher
+        root_logger.removeHandler(queue_handler)
+
+    logging.info("[STREAM_EVENTS] Event loop completed, processing final response...")
+
+    from .cancellation import is_task_cancelled, clear_cancellation
+
+    if is_task_cancelled(session_id):
+        clear_cancellation(session_id)
+        yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Task cancelled by user'})}\n\n"
+        return
 
     if final_response and final_response.get("messages"):
         final_message = final_response["messages"][-1]
         content = final_message.content if hasattr(final_message, "content") else str(final_message)
+        logging.info(f"[STREAM_EVENTS] Final response content length: {len(content)}")
     else:
         content = "Task completed successfully."
+        logging.warning("[STREAM_EVENTS] No final response messages, using default content")
 
     content = format_agent_output(content)
 
-    yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots})}\n\n"
+    from src.api import session_store as api_session_store
+
+    token_streaming = api_session_store.get(session_id, {}).get("token_streaming", True)
+
+    if token_streaming:
+        yield f"data: {json.dumps({'type': 'start_tokens'})}\n\n"
+
+        async for token_event in _stream_brain_tokens(content, session_id):
+            yield token_event
+
+        yield f"data: {json.dumps({'type': 'end_tokens'})}\n\n"
+
+    from .message_storage import save_message, save_message_version
+
+    metadata = {"plots": plots} if plots else None
+
+    if message_id:
+        version = save_message_version(session_id, message_id, content, metadata=metadata)
+    else:
+        save_message(session_id, "ai", content, metadata=metadata)
+        version = 1
+
+    clear_cancellation(session_id)
+
+    yield f"data: {json.dumps({'type': 'final_response', 'response': content, 'plots': plots, 'message_id': message_id, 'version': version})}\n\n"
 
 
-async def _stream_fallback(message: str, session_id: str, agent, status_agent_runnable) -> AsyncGenerator[str, None]:
+async def cancellable_stream(stream, session_id):
+    iterator = stream.__aiter__()
+    while True:
+        from .cancellation import is_task_cancelled
+
+        if is_task_cancelled(session_id):
+            yield {"__cancelled__": True}
+            return
+        try:
+            next_item_task = asyncio.create_task(anext(iterator))
+            while not next_item_task.done():
+                if is_task_cancelled(session_id):
+                    next_item_task.cancel()
+                    try:
+                        await next_item_task
+                    except asyncio.CancelledError:
+                        pass
+                    yield {"__cancelled__": True}
+                    return
+                await asyncio.sleep(0.5)
+            yield next_item_task.result()
+        except StopAsyncIteration:
+            break
+        except Exception:
+            raise
+
+
+async def _stream_brain_tokens(content: str, session_id: str) -> AsyncGenerator[str, None]:
+    """
+    Stream content token-by-token for ChatGPT-like experience.
+    Speed: 100 tokens/sec (10ms delay) - faster than ChatGPT's 50 tokens/sec
+    """
+    import os
+
+    token_delay = float(os.getenv("TOKEN_STREAM_DELAY", "0.01"))
+
+    words = content.split()
+    for word in words:
+        from .cancellation import is_task_cancelled
+
+        if is_task_cancelled(session_id):
+            break
+
+        yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
+        await asyncio.sleep(token_delay)
+
+
+async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerator[str, None]:
     from langchain_core.messages import HumanMessage
+    import builtins
 
-    yield f"data: {json.dumps({'type': 'status', 'message': '🔄 Initializing agent...'})}\n\n"
-    await asyncio.sleep(0.01)
-
-    config = {"configurable": {"thread_id": session_id}}
+    config = {"configurable": {"thread_id": session_id}, "recursion_limit": 50}
     final_response = None
     all_messages = []
     final_brain_response = None
     action_outputs = []
 
+    logging.info(f"[STREAM] Starting async streaming for session {session_id}")
+    logging.info(f"[STREAM] Agent type: {type(agent)}")
+    logging.info(f"[STREAM] Config: {config}")
+
+    from src.api import session_store as api_session_store
+
+    if not hasattr(builtins, "_session_store"):
+        builtins._session_store = {}
+    if session_id not in builtins._session_store:
+        builtins._session_store[session_id] = {}
+    if session_id in api_session_store and "search_config" in api_session_store[session_id]:
+        builtins._session_store[session_id]["search_config"] = api_session_store[session_id]["search_config"]
+
     original_user_message = HumanMessage(content=message)
     current_state = {"messages": [original_user_message], "session_id": session_id}
 
     try:
-        for event in agent.stream(create_agent_input(message, session_id), config=config):
+        logging.info(f"[STREAM] Calling agent.astream (async streaming)...")
+
+        import time
+
+        start_time = time.time()
+        max_stream_time = 1800  # 30 minutes maximum (increased for complex reports)
+        grace_period = 300  # 5 minutes grace after soft timeout (increased for complex reports)
+        soft_timeout_hit = False
+        soft_timeout_time = None
+        current_pipeline_phase = "init"  # init → hands → verifier → brain
+        safe_checkpoint_nodes = {"brain", "__end__", "presenter", "architect"}
+
+        async for event in cancellable_stream(
+            agent.astream(create_agent_input(message, session_id), config=config), session_id
+        ):
+            if "__cancelled__" in event:
+                logging.info(f"[STREAM] User cancelled task for session {session_id}")
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Generation stopped by user'})}\n\n"
+                break
+
+            elapsed = time.time() - start_time
+
+            for node_name in event.keys():
+                if node_name in WORKFLOW_NODES:
+                    current_pipeline_phase = node_name
+
+            import builtins
+
+            if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                research_progress = builtins._session_store[session_id].pop("research_progress", None)
+                if research_progress:
+                    yield f"data: {json.dumps({'type': 'research_progress', **research_progress})}\n\n"
+
+            # Smart timeout logic
+            if elapsed > max_stream_time:
+                if not soft_timeout_hit:
+                    soft_timeout_hit = True
+                    soft_timeout_time = time.time()
+                    logging.warning(
+                        f"[STREAM] Soft timeout hit at {elapsed:.0f}s. Phase: {current_pipeline_phase}. Grace period started."
+                    )
+
+                grace_elapsed = time.time() - soft_timeout_time
+                at_safe_checkpoint = any(node in event for node in SAFE_CHECKPOINT_NODES)
+
+                if at_safe_checkpoint:
+                    logging.info(
+                        f"[STREAM] Safe checkpoint reached ({list(event.keys())}). Completing stream gracefully."
+                    )
+                    break
+                elif grace_elapsed > grace_period:
+                    logging.error(
+                        f"[STREAM] Grace period ({grace_period}s) exceeded. Forcing termination at phase: {current_pipeline_phase}"
+                    )
+                    break
+
+            # Log ALL events to debug
+            logging.debug(f"[STREAM] Received event: {list(event.keys())}")
+
+            # Check if this is a special END event (LangGraph marks completed graphs)
+            if "__end__" in event:
+                logging.info(f"[STREAM] Graph reached END, completing stream")
+                final_response = {"messages": all_messages}
+                break
+
             for node_name, node_data in event.items():
-                if node_name in ["brain", "hands", "parser", "action"]:
+                if node_name in WORKFLOW_NODES:
+                    logging.info(f"[STREAM] Node completed: {node_name}")
+
+                    if node_name in {NodeName.BRAIN.value, NodeName.HANDS.value}:
+                        model_name = get_model_name(node_name)
+                        yield f"data: {json.dumps({'type': 'thinking_start', 'agent': node_name, 'model_name': model_name})}\n\n"
+
                     messages = node_data.get("messages", []) if node_data else []
                     if messages and isinstance(messages, list):
                         all_messages.extend(messages)
                         current_state["messages"] = all_messages
 
-                        if node_name == "brain":
-                            last_brain_msg = messages[-1]
-                            brain_content = (
-                                str(last_brain_msg.content)
-                                if hasattr(last_brain_msg, "content")
-                                else str(last_brain_msg)
-                            )
-                            if not (hasattr(last_brain_msg, "tool_calls") and last_brain_msg.tool_calls):
-                                final_brain_response = brain_content
+                        if node_name == NodeName.HANDS.value:
+                            logging.info(f"[STREAM] Hands node completed, messages count: {len(messages)}")
+                            if node_data.get("artifacts"):
+                                logging.info(f"[STREAM] Hands generated {len(node_data.get('artifacts'))} artifacts")
+                            yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': NodeName.HANDS.value})}\n\n"
+                            yield f"data: {json.dumps({'type': 'task_update', 'status': 'complete'})}\n\n"
+                            logging.info(f"[STREAM] Waiting for next node (should route to brain)...")
 
-                        elif node_name == "action":
+                        elif node_name == NodeName.BRAIN.value:
+                            logging.info(f"[STREAM] Brain node executing")
+                            if messages:
+                                last_brain_msg = messages[-1]
+                                brain_content = (
+                                    str(last_brain_msg.content)
+                                    if hasattr(last_brain_msg, "content")
+                                    else str(last_brain_msg)
+                                )
+                                brain_content = strip_model_tokens(brain_content)
+
+                                has_tool_calls = hasattr(last_brain_msg, "tool_calls") and last_brain_msg.tool_calls
+                                if has_tool_calls:
+                                    for tc in last_brain_msg.tool_calls:
+                                        tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                                        tc_args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
+                                        if tc_name == "delegate_coding_task":
+                                            task_desc = tc_args.get("task_description", "Executing task...")
+                                            yield f"data: {json.dumps({'type': 'task', 'description': task_desc, 'status': 'pending'})}\n\n"
+                                            yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': 'brain'})}\n\n"
+                                        elif tc_name == "web_search":
+                                            query = tc_args.get("query", "")
+                                            yield f"data: {json.dumps({'type': 'search_status', 'action': 'searching', 'query': query})}\n\n"
+                                else:
+                                    final_brain_response = brain_content
+                                    yield f"data: {json.dumps({'type': 'thinking_complete', 'agent': 'brain'})}\n\n"
+                                    logging.info(
+                                        f"[STREAM] Brain generated final response, length: {len(brain_content)}"
+                                    )
+                            else:
+                                logging.warning(f"[STREAM] Brain node completed but no messages found")
+
+                        elif node_name == NodeName.ACTION.value:
                             last_action_msg = messages[-1]
                             if hasattr(last_action_msg, "type") and last_action_msg.type == "tool":
                                 action_content = str(last_action_msg.content)
-                                if action_content and action_content.strip():
-                                    action_outputs.append(action_content)
 
-                    if status_agent_runnable:
-                        status_msg = await _generate_fallback_status(
-                            status_agent_runnable, message, node_name, session_id
-                        )
-                        if status_msg:
-                            yield f"data: {json.dumps({'type': 'status', 'message': status_msg})}\n\n"
+                                # Check for search_status in session store
+                                import builtins
+
+                                if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+                                    search_status = builtins._session_store[session_id].get("search_status")
+                                    if search_status:
+                                        yield f"data: {json.dumps({'type': 'search_status', **search_status})}\n\n"
+                                        builtins._session_store[session_id]["search_status"] = None
+
+                                # Parse SEARCH_DATA from web search results (Try B64 first, then JSON)
+                                if "SEARCH_DATA_B64" in action_content:
+                                    try:
+                                        import base64
+
+                                        b64_match = re.search(
+                                            r"<!-- SEARCH_DATA_B64\s*\n(.*?)\nSEARCH_DATA_END\s*-->",
+                                            action_content,
+                                            re.DOTALL,
+                                        )
+                                        if b64_match:
+                                            b64_str = b64_match.group(1).strip()
+                                            json_str = base64.b64decode(b64_str).decode("utf-8")
+                                            search_data = json.loads(json_str)
+                                            result_count = search_data.get("result_count", 0)
+                                            sources = search_data.get("sources", [])
+                                            results_list = search_data.get("results", [])
+
+                                            # Emit browsing events for each result URL
+                                            for result in results_list[:5]:
+                                                url = result.get("url", "")
+                                                if url:
+                                                    yield f"data: {json.dumps({'type': 'search_status', 'action': 'browsing', 'url': url})}\n\n"
+
+                                            # Emit final complete event
+                                            yield f"data: {json.dumps({'type': 'search_status', 'action': 'complete', 'resultCount': result_count, 'sources': sources[:5]})}\n\n"
+                                    except Exception as e:
+                                        logging.error(f"[STREAM] Failed to parse B64 search data: {e}")
+
+                                elif "SEARCH_DATA_JSON" in action_content:
+                                    try:
+                                        json_match = re.search(
+                                            r"<!-- SEARCH_DATA_JSON\s*\n(.*?)\nSEARCH_DATA_END\s*-->",
+                                            action_content,
+                                            re.DOTALL,
+                                        )
+                                        if json_match:
+                                            json_str = json_match.group(1).strip()
+                                            search_data = json.loads(json_str)
+                                            result_count = search_data.get("result_count", 0)
+                                            sources = search_data.get("sources", [])
+                                            yield f"data: {json.dumps({'type': 'search_status', 'action': 'complete', 'resultCount': result_count, 'sources': sources[:5]})}\n\n"
+                                    except json.JSONDecodeError as e:
+                                        logging.warning(f"[STREAM] Invalid search JSON: {e}")
+                                    except Exception as e:
+                                        logging.error(f"[STREAM] Failed to parse search data: {e}")
+
+                                if action_content and action_content.strip():
+                                    if '"event": "report_generated"' in action_content:
+                                        try:
+                                            json_match = re.search(
+                                                r'\{.*"event":\s*"report_generated".*\}', action_content, re.DOTALL
+                                            )
+                                            if json_match:
+                                                report_data = json.loads(json_match.group(0))
+                                                report_id = report_data.get("report_id")
+                                                if report_id:
+                                                    logging.info(
+                                                        f"[STREAM] Detected report {report_id}, triggering UI event"
+                                                    )
+                                                    yield f"data: {json.dumps({'type': 'report_generated', 'report_id': report_id})}\n\n"
+                                        except Exception as e:
+                                            logging.error(f"[STREAM] Failed to parse report event: {e}")
+
+                                    # Skip web search and knowledge store results - they're internal context
+                                    is_internal_result = (
+                                        "## Web Search Results" in action_content
+                                        or "SEARCH_DATA_JSON" in action_content
+                                        or "KNOWLEDGE STORE RESULTS:" in action_content
+                                        or "AVAILABLE DATASETS:" in action_content
+                                        or "Dataset '" in action_content
+                                        and "loaded" in action_content
+                                        or "No relevant knowledge found" in action_content
+                                        or "Failed to ingest file" in action_content
+                                    )
+                                    if not is_internal_result:
+                                        action_outputs.append(action_content)
+
+                        elif node_name == NodeName.ANALYST.value:
+                            logging.info(f"[STREAM] Analyst node completed")
+
+                        elif node_name == NodeName.ARCHITECT.value:
+                            logging.info(f"[STREAM] Architect node completed")
+
+                            report_path = node_data.get("report_url") if node_data else None
+
+                            if not report_path and messages:
+                                for msg in reversed(messages):
+                                    if hasattr(msg, "additional_kwargs"):
+                                        report_path = msg.additional_kwargs.get("report_url")
+                                        if report_path:
+                                            logging.info(f"[STREAM] Extracted report_url from message kwargs")
+                                            break
+
+                            if not report_path and node_data:
+                                if node_data.get("report_path"):
+                                    import os
+
+                                    raw_path = node_data.get("report_path")
+                                    filename = os.path.basename(raw_path)
+                                    report_path = f"/reports/{filename}"
+
+                            if report_path:
+                                logging.info(f"[STREAM] Captured report URL: {report_path}")
+                                yield f"data: {json.dumps({'type': 'report_generated', 'report_path': report_path})}\n\n"
+
+                                insights = node_data.get("agent_insights", []) if node_data else []
+                                from .artifact_tracker import get_artifact_tracker
+
+                                tracker = get_artifact_tracker()
+                                tracker_result = tracker.get_session_artifacts(session_id)
+                                tracked_artifacts = (
+                                    tracker_result.get("artifacts", []) if isinstance(tracker_result, dict) else []
+                                )
+                                artifact_count = len(tracked_artifacts) if tracked_artifacts else 0
+
+                                brain_context = await _generate_report_summary(
+                                    insights, artifact_count, report_path, message
+                                )
+                                if brain_context:
+                                    final_brain_response = brain_context
+                            else:
+                                logging.warning(f"[STREAM] Architect completed but no report_url found")
+
+                            logging.info(f"[STREAM] Presenter node completed")
 
                     await asyncio.sleep(0.1)
 
+        # Set final_response after loop completes
+        if "final_response" not in locals():
             final_response = {"messages": all_messages}
 
+        logging.info(f"[STREAM] Stream loop exited, processing final response...")
+
+        # Set final_response after loop completes if not already set
+        if not final_response:
+            logging.info(f"[STREAM] Loop finished without __end__ event, using accumulated messages")
+            final_response = {"messages": all_messages}
+
+    except KeyError as ke:
+        logging.error(f"[STREAM] KeyError occurred: {ke}")
+        import traceback
+
+        logging.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
+
+        if "__start__" in str(ke):
+            logging.error(f"[STREAM] Checkpoint still broken after cleanup for {session_id}: {ke}")
+            raise
+        else:
+            raise
     except Exception as stream_error:
-        print(f"Streaming execution failed: {stream_error}")
-        final_response = agent.invoke(create_agent_input(message, session_id), config=config)
+        logging.error(f"[STREAM] astream() failed for {session_id}: {stream_error}")
+        import traceback
 
-    response = final_response if final_response else {}
-    messages = response.get("messages", []) if response else []
-    _, plots = extract_agent_response(messages, recent_count=3)
+        logging.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
 
-    if plots:
-        yield f"data: {json.dumps({'type': 'status', 'message': '📊 Visualization generated!'})}\n\n"
-        await asyncio.sleep(0.3)
+        try:
+            logging.info(f"[STREAM] Attempting agent.ainvoke() as last resort...")
+            final_response = await agent.ainvoke(create_agent_input(message, session_id), config=config)
+        except Exception as invoke_error:
+            logging.error(f"[STREAM] ainvoke() also failed for {session_id}: {invoke_error}")
+            import traceback
 
-    content_parts = []
-    if action_outputs:
-        formatted_outputs = [format_agent_output(output) for output in action_outputs]
-        content_parts.extend(formatted_outputs)
-    if final_brain_response:
-        content_parts.append(format_agent_output(final_brain_response))
+            logging.error(f"[STREAM] ainvoke() traceback:\n{traceback.format_exc()}")
+            raise
 
-    if not content_parts:
-        final_message = messages[-1] if messages else None
-        fallback_content = (
-            final_message.content
-            if final_message and hasattr(final_message, "content")
-            else "Task completed successfully."
-        )
-        content_parts.append(format_agent_output(fallback_content))
+    logging.info(f"[STREAM] Processing final response...")
 
-    content = "\n\n".join(content_parts) if content_parts else "Task completed successfully."
-    final_json = {"type": "final_response", "response": content, "plots": plots}
-
-    yield f"data: {json.dumps(final_json)}\n\n"
-
-
-async def _generate_status(status_agent_runnable, workflow_context, event, current_node):
     try:
-        status_context = create_workflow_status_context(workflow_context, event)
-        from data_scientist_chatbot.app.agent import get_status_agent_prompt
+        response = final_response if final_response else {}
+        messages = response.get("messages", []) if response else []
+        logging.info(f"[STREAM] Extracting from {len(messages)} messages...")
 
-        status_prompt_template = get_status_agent_prompt()
-        status_formatted = status_prompt_template.format(
-            current_agent=status_context.get("current_agent", "unknown"),
-            user_goal=status_context.get("user_goal", "processing"),
+        _, plots = extract_agent_response(messages, recent_count=3)
+        logging.info(f"[STREAM] Extracted {len(plots)} plots")
+
+        if plots:
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Visualization generated!'})}\n\n"
+            await asyncio.sleep(0.3)
+
+        logging.info(f"[STREAM] Building response content...")
+        logging.info(
+            f"[STREAM] Available: action_outputs={len(action_outputs)}, final_brain_response={bool(final_brain_response)}, messages={len(messages)}"
         )
-        status_response = await asyncio.wait_for(status_agent_runnable.ainvoke(status_formatted), timeout=10.0)
-        return status_response.content.strip()
-    except Exception as e:
-        print(f"DEBUG: Status generation failed: {type(e).__name__}: {str(e)}")
-        return None
 
+        # Post-loop extraction: If final_brain_response wasn't captured during loop,
+        # scan accumulated messages for the final AI response (industry standard defensive pattern)
+        if not final_brain_response and all_messages:
+            for msg in reversed(all_messages):
+                if hasattr(msg, "type") and msg.type == "ai":
+                    content = getattr(msg, "content", "")
+                    has_tool_calls = hasattr(msg, "tool_calls") and msg.tool_calls
+                    if content and len(str(content)) > 100 and not has_tool_calls:
+                        final_brain_response = strip_model_tokens(str(content))
+                        logging.info(f"[STREAM] Post-loop extracted brain response ({len(final_brain_response)} chars)")
+                        break
 
-async def _generate_fallback_status(status_agent_runnable, message, node_name, session_id):
-    try:
-        workflow_context = {
-            "current_agent": node_name,
-            "current_action": "processing",
-            "user_goal": message,
-            "session_id": session_id,
-            "execution_progress": {},
-            "tool_calls": [],
-        }
-        fake_event = {"event": "on_chain_start", "name": node_name}
-        status_context = create_workflow_status_context(workflow_context, fake_event)
+        # Check for user cancellation again to prevent building final response
+        from .cancellation import is_task_cancelled
 
-        from data_scientist_chatbot.app.agent import get_status_agent_prompt
+        if is_task_cancelled(session_id):
+            logging.info(f"[STREAM] Task cancelled, skip final response generation")
+            return
 
-        status_prompt_template = get_status_agent_prompt()
-        status_formatted = status_prompt_template.format(
-            current_agent=status_context.get("current_agent", "unknown"),
-            user_goal=status_context.get("user_goal", "processing"),
-        )
-        status_response = await asyncio.wait_for(status_agent_runnable.ainvoke(status_formatted), timeout=10.0)
-        return status_response.content.strip() if hasattr(status_response, "content") else str(status_response).strip()
-    except Exception as e:
-        print(f"DEBUG: Fallback status agent failed: {type(e).__name__}: {str(e)}")
-        return None
+        content_parts = []
+
+        # Use action outputs (hands execution results)
+        if action_outputs:
+            formatted_outputs = [format_agent_output(output) for output in action_outputs]
+            content_parts.extend(formatted_outputs)
+            logging.info(f"[STREAM] Added {len(formatted_outputs)} action outputs")
+
+        # Use brain response if available
+        if final_brain_response:
+            content_parts.append(format_agent_output(final_brain_response))
+            logging.info(f"[STREAM] Added brain response ({len(final_brain_response)} chars)")
+
+        if not content_parts:
+            logging.warning(f"[STREAM] No content_parts built, using fallback extraction")
+            fallback_content = None
+            for msg in reversed(all_messages):
+                if hasattr(msg, "type") and msg.type in ["ai", "tool"]:
+                    fallback_content = msg.content
+                    break
+
+            if not fallback_content or not str(fallback_content).strip():
+                try:
+                    from src.api_utils.artifact_tracker import get_artifact_tracker
+
+                    tracker = get_artifact_tracker()
+                    session_artifacts = tracker.get_session_artifacts_with_urls(session_id)
+
+                    if session_artifacts:
+                        all_artifacts = session_artifacts.get("artifacts", [])
+                        viz_artifacts = [a for a in all_artifacts if a.get("category") == "visualization"]
+                        if viz_artifacts:
+                            fallback_content = f"## Analysis Complete\n\nI've generated **{len(viz_artifacts)} visualizations** for your analysis:\n\n"
+                            for artifact in viz_artifacts[:10]:
+                                filename = artifact.get("filename", "")
+                                url = artifact.get("url", f"/static/plots/{filename}")
+                                if filename.endswith(".html"):
+                                    fallback_content += f"- [📊 {filename}]({url})\n"
+                                elif filename.endswith((".png", ".jpg")):
+                                    fallback_content += f"![{filename}]({url})\n"
+                            if len(viz_artifacts) > 10:
+                                fallback_content += f"\n...and {len(viz_artifacts) - 10} more visualizations.\n"
+                            fallback_content += "\n*Please review the generated charts above. If you need specific insights, ask me to analyze them.*"
+                        else:
+                            fallback_content = "Task completed successfully."
+                    else:
+                        fallback_content = "Task completed successfully."
+                except Exception as e:
+                    logging.warning(f"[STREAM] Could not get artifacts for fallback: {e}")
+                    fallback_content = "Task completed successfully."
+
+            content_parts.append(format_agent_output(fallback_content))
+
+        content = "\n\n".join(content_parts) if content_parts else "Task completed successfully."
+        logging.info(f"[STREAM] Content length: {len(content)} chars")
+
+        from .message_storage import save_message
+
+        metadata = {"plots": plots} if plots else None
+        save_message(session_id, "ai", content, metadata=metadata)
+        logging.info(f"[STREAM] Message saved to storage")
+
+        try:
+            from data_scientist_chatbot.app.utils.knowledge_store import get_knowledge_store
+
+            store = get_knowledge_store(session_id)
+            store.add_conversation_turn(message, content)
+            logging.info(f"[STREAM] Conversation turn saved to memory ({store.memory_count()} total)")
+        except Exception as mem_error:
+            logging.warning(f"[STREAM] Failed to save to memory: {mem_error}")
+
+        # [REPORT UI TRIGGER] Extract report_id from action outputs for final response
+        report_id = None
+        for output in action_outputs:
+            if '"event": "report_generated"' in output:
+                try:
+                    json_match = re.search(r'\{.*"event":\s*"report_generated".*\}', output, re.DOTALL)
+                    if json_match:
+                        report_data = json.loads(json_match.group(0))
+                        report_id = report_data.get("report_id")
+                except:
+                    pass
+
+        final_json = {"type": "final_response", "response": content, "plots": plots}
+        if report_id:
+            final_json["report_id"] = report_id
+
+        from src.api import session_store as api_session_store
+
+        token_streaming = api_session_store.get(session_id, {}).get("token_streaming", True)
+
+        if token_streaming:
+            yield f"data: {json.dumps({'type': 'start_tokens'})}\n\n"
+            async for token_event in _stream_brain_tokens(content, session_id):
+                yield token_event
+            yield f"data: {json.dumps({'type': 'end_tokens'})}\n\n"
+
+        logging.info(f"[STREAM] Yielding final response to frontend...")
+        yield f"data: {json.dumps(final_json)}\n\n"
+        logging.info(f"[STREAM] Final response yielded successfully!")
+
+    except Exception as final_error:
+        logging.error(f"[STREAM] Error in final response processing: {final_error}")
+        import traceback
+
+        logging.error(f"[STREAM] Traceback:\n{traceback.format_exc()}")
+
+        error_response = {"type": "final_response", "response": "Analysis completed.", "plots": []}
+        yield f"data: {json.dumps(error_response)}\n\n"

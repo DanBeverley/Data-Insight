@@ -44,7 +44,14 @@ class DatabaseConfig:
 
             return f"postgresql://{username}:{password}@{host}:{port}/{database}"
 
-        return "sqlite:///data_insight_meta.db"
+        # Convert relative path to absolute to avoid CWD ambiguity
+        # Use path relative to this file's location (src/database/connection.py -> src/../data/databases/data_insight_meta.db)
+        from pathlib import Path
+
+        # db_path = (Path(__file__).parent.parent.parent / "data_insight_meta.db").resolve()
+        db_path = (Path(__file__).parent.parent.parent / "data" / "databases" / "data_insight_meta.db").resolve()
+        # print(f"DEBUG: Database Path Resolved to: {db_path}")
+        return f"sqlite:///{db_path}"
 
     def is_postgresql(self) -> bool:
         """Check if configured for PostgreSQL"""
@@ -85,7 +92,7 @@ class DatabaseManager:
                     "pool_recycle": self.config.pool_recycle,
                     "connect_args": {
                         "connect_timeout": self.config.connect_timeout,
-                        "application_name": "DataInsight_AI",
+                        "application_name": "Quorvix_AI",
                     },
                 }
             )
@@ -142,10 +149,14 @@ class DatabaseManager:
         try:
             with self.get_session() as session:
                 if self.config.is_postgresql():
-                    result = session.execute("SELECT version()").scalar()
+                    from sqlalchemy import text
+
+                    result = session.execute(text("SELECT version()")).scalar()
                     version = result.split()[0] if result else "Unknown"
                 else:
-                    result = session.execute("SELECT sqlite_version()").scalar()
+                    from sqlalchemy import text
+
+                    result = session.execute(text("SELECT sqlite_version()")).scalar()
                     version = f"SQLite {result}" if result else "Unknown"
 
                 return {

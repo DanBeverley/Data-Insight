@@ -53,7 +53,7 @@ def stream_agent_response(
     if len(query) > MAX_QUERY_LENGTH:
         raise ValueError(f"Query too long: {len(query)} characters exceeds maximum of {MAX_QUERY_LENGTH}")
 
-    from data_scientist_chatbot.app.utils.sanitizers import sanitize_input
+    from data_scientist_chatbot.app.utils.text_processing import sanitize_input
     import builtins
 
     sanitized_query = sanitize_input(query)
@@ -63,10 +63,13 @@ def stream_agent_response(
 
     has_dataset = False
     df = None
-    if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
-        has_dataset = "dataframe" in builtins._session_store[session_id]
+    from src.api_utils.session_management import session_data_manager
+
+    session_data = session_data_manager.get_session(session_id)
+    if session_data:
+        has_dataset = "dataframe" in session_data
         if has_dataset:
-            df = builtins._session_store[session_id]["dataframe"]
+            df = session_data["dataframe"]
 
     if not has_dataset:
         yield {"content": "Please upload a dataset first to proceed with your analysis."}

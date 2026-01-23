@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import Mock
-from data_scientist_chatbot.app.tools.parsers import parse_message_to_tool_call
+from data_scientist_chatbot.app.utils.text_processing import parse_message_to_tool_call
 
 
 @pytest.mark.unit

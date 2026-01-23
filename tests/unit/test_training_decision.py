@@ -4,6 +4,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "data_scientist_chatbot" / "app"))
 
+from langchain_core.messages import HumanMessage
+
 
 @pytest.mark.unit
 class TestTrainingDecisionEngine:
@@ -150,7 +152,7 @@ class TestTrainingDecisionIntegration:
         from data_scientist_chatbot.app.agent import run_hands_agent
 
         state = {
-            "messages": [("human", "Train a neural network model on this data")],
+            "messages": [HumanMessage(content="Train a neural network model on this data")],
             "session_id": "test_training_123",
             "python_executions": 0,
             "plan": None,

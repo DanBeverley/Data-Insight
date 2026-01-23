@@ -1,13 +1,23 @@
 """Semantic pattern matching for intelligent code retrieval"""
 
 import numpy as np
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import yaml
 from pathlib import Path
 from datetime import datetime
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "core"))
+try:
+    from core.logger import logger
+except ImportError:
+    from ..core.logger import logger
 
 
 class SemanticPatternMatcher:
+    _model_cache: Optional[Any] = None  # Class-level model cache
+
     def __init__(self, config_path: Optional[str] = None):
         if config_path is None:
             config_path = Path(__file__).parent.parent.parent.parent / "config.yaml"
@@ -22,9 +32,13 @@ class SemanticPatternMatcher:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self.model = SentenceTransformer(embedding_model)
+            if SemanticPatternMatcher._model_cache is None:
+                SemanticPatternMatcher._model_cache = SentenceTransformer(embedding_model)
+                logger.info(f"[SemanticMatcher] Loaded model {embedding_model} (cached for reuse)")
+
+            self.model = SemanticPatternMatcher._model_cache
         except ImportError:
-            print("[SemanticMatcher] sentence-transformers not installed, pattern matching disabled")
+            logger.warning("[SemanticMatcher] sentence-transformers not installed, pattern matching disabled")
             self.model = None
 
     def find_relevant_patterns(
@@ -105,7 +119,7 @@ class SemanticPatternMatcher:
 
         return score
 
-    def _format_patterns(self, top_patterns: List[tuple]) -> str:
+    def _format_patterns(self, top_patterns: List[Tuple[float, Dict[str, Any]]]) -> str:
         if not top_patterns:
             return ""
 

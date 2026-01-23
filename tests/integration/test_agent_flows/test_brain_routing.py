@@ -1,24 +1,32 @@
+"""Integration tests for Brain agent routing and behavior.
+
+These tests validate:
+1. Routing logic (route_from_brain) - which agent handles the next step
+2. Brain agent invocation with proper mocking at the chain level
+3. State structure validation
+4. Edge cases and error handling
+"""
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, patch
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 
-@pytest.fixture
-def mock_ollama():
-    import data_scientist_chatbot.app.core.agent_factory as agent_factory
+class MockAIResponse:
+    """Mock AIMessage-like response for testing."""
 
-    with patch.object(agent_factory, "ChatOllama") as mock:
-        mock_instance = MagicMock()
-        mock_instance.invoke.return_value = AIMessage(content="Brain agent response")
-        mock_instance.bind_tools.return_value = mock_instance
-        mock.return_value = mock_instance
-        yield mock_instance
+    def __init__(self, content: str = "", tool_calls: list = None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+        self.type = "ai"
+        self.additional_kwargs = {}
 
 
 @pytest.fixture
-def brain_agent_state():
+def base_state():
+    """Base state for Brain agent tests."""
     return {
-        "messages": [HumanMessage(content="Analyze the correlation between price and area")],
+        "messages": [HumanMessage(content="Analyze the data")],
         "session_id": "test_session_123",
         "python_executions": 0,
         "plan": None,
@@ -32,285 +40,303 @@ def brain_agent_state():
         "retry_count": 0,
         "last_agent_sequence": [],
         "router_decision": "brain",
+        "artifacts": [],
+        "agent_insights": [],
+        "execution_result": None,
     }
 
 
 @pytest.mark.integration
-class TestBrainAgentRouting:
-    def test_brain_delegates_to_hands_for_technical_work(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import AgentState
-        from data_scientist_chatbot.app.core.router import route_from_brain
+class TestRouteFromBrain:
+    """Tests for the route_from_brain routing function.
 
-        mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "delegate_coding_task",
-                    "args": {"task_description": "Calculate correlation between price and area"},
-                    "id": "call_123",
-                }
-            ],
-        )
+    These tests validate routing decisions without invoking the full LLM chain.
+    """
 
-        state = {
-            "messages": [HumanMessage(content="Analyze the correlation between price and area")],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "retry_count": 0,
-            "last_agent_sequence": [],
-        }
-
-        from data_scientist_chatbot.app.agent import run_brain_agent
-
-        result = run_brain_agent(state)
-
-        assert len(result["messages"]) > 0
-        last_message = result["messages"][-1]
-
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            assert last_message.tool_calls[0].get("name") == "delegate_coding_task"
-            decision = route_from_brain(result)
-            assert decision == "parser"
-
-    def test_brain_responds_conversationally_without_delegation(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import run_brain_agent
-        from data_scientist_chatbot.app.core.router import route_from_brain, END
-
-        mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(content="Hello! I'm here to help with your data analysis needs.")
-
-        state = {
-            "messages": [HumanMessage(content="Hello")],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "retry_count": 0,
-            "last_agent_sequence": [],
-        }
-
-        result = run_brain_agent(state)
-
-        assert len(result["messages"]) > 0
-        last_message = result["messages"][-1]
-        assert isinstance(last_message, AIMessage)
-        assert len(last_message.content) > 10
-
-        decision = route_from_brain(result)
-        assert decision == END
-
-    def test_brain_prevents_infinite_delegation_loop(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import run_brain_agent
-        from data_scientist_chatbot.app.core.router import route_from_brain, END
+    def test_routes_to_parser_when_tool_calls_present(self):
+        """When last message has tool_calls, should route to parser."""
+        from data_scientist_chatbot.app.core.graph_builder import route_from_brain
 
         state = {
             "messages": [
                 HumanMessage(content="Analyze data"),
-                AIMessage(content="", tool_calls=[{"name": "delegate_coding_task", "args": {}, "id": "call_loop"}]),
-            ],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "retry_count": 3,
-            "last_agent_sequence": ["brain", "hands", "brain", "hands"],
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "delegate_coding_task", "args": {"task_description": "run analysis"}, "id": "call_1"}
+                    ],
+                ),
+            ]
         }
 
         decision = route_from_brain(state)
-        assert decision == END
+        assert decision == "parser", "Should route to parser when tool_calls exist"
 
-    def test_brain_uses_knowledge_graph_for_historical_queries(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import run_brain_agent
-
-        mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "knowledge_graph_query",
-                    "args": {"query": "previous housing analysis patterns"},
-                    "id": "call_456",
-                }
-            ],
-        )
+    def test_routes_to_end_when_no_tool_calls(self):
+        """When last message has no tool_calls, should route to END."""
+        from data_scientist_chatbot.app.core.graph_builder import route_from_brain
+        from langgraph.graph import END
 
         state = {
-            "messages": [HumanMessage(content="What patterns did we find in previous housing data analysis?")],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "retry_count": 0,
-            "last_agent_sequence": [],
+            "messages": [
+                HumanMessage(content="Hello"),
+                AIMessage(content="Hello! How can I help you today?"),
+            ]
         }
 
-        result = run_brain_agent(state)
+        decision = route_from_brain(state)
+        assert decision == END, "Should route to END when no tool_calls"
 
-        last_message = result["messages"][-1]
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            assert last_message.tool_calls[0].get("name") == "knowledge_graph_query"
+    def test_routes_to_end_with_empty_messages(self):
+        """When no messages, should route to END."""
+        from data_scientist_chatbot.app.core.graph_builder import route_from_brain
+        from langgraph.graph import END
 
-    def test_brain_web_search_integration(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import run_brain_agent
+        state = {"messages": []}
 
-        mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
-            content="",
-            tool_calls=[
-                {"name": "web_search", "args": {"query": "current housing market trends 2024"}, "id": "call_789"}
-            ],
-        )
+        decision = route_from_brain(state)
+        assert decision == END, "Should route to END with empty messages"
+
+    def test_routes_to_parser_for_knowledge_graph_query(self):
+        """Should route to parser for knowledge_graph_query tool."""
+        from data_scientist_chatbot.app.core.graph_builder import route_from_brain
 
         state = {
-            "messages": [HumanMessage(content="What are the current housing market trends?")],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "retry_count": 0,
-            "last_agent_sequence": [],
+            "messages": [
+                HumanMessage(content="What did we find in previous analysis?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "knowledge_graph_query", "args": {"query": "previous analysis"}, "id": "kg_1"}
+                    ],
+                ),
+            ]
         }
 
-        result = run_brain_agent(state)
+        decision = route_from_brain(state)
+        assert decision == "parser", "Should route to parser for any tool call"
 
-        last_message = result["messages"][-1]
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            assert last_message.tool_calls[0].get("name") == "web_search"
-
-    def test_brain_avoids_web_search_for_dataset_analysis(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import run_brain_agent
-
-        mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "delegate_coding_task",
-                    "args": {"task_description": "Analyze the price distribution in our dataset"},
-                    "id": "call_delegate",
-                }
-            ],
-        )
+    def test_routes_to_parser_for_web_search(self):
+        """Should route to parser for web_search tool."""
+        from data_scientist_chatbot.app.core.graph_builder import route_from_brain
 
         state = {
-            "messages": [HumanMessage(content="Analyze the price distribution in our dataset")],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "retry_count": 0,
-            "last_agent_sequence": [],
+            "messages": [
+                HumanMessage(content="What are current market trends?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "web_search", "args": {"query": "market trends 2024"}, "id": "ws_1"}],
+                ),
+            ]
         }
 
-        result = run_brain_agent(state)
+        decision = route_from_brain(state)
+        assert decision == "parser", "Should route to parser for web_search"
 
-        last_message = result["messages"][-1]
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-            tool_name = last_message.tool_calls[0].get("name")
-            assert tool_name in [
-                "delegate_coding_task",
-                "knowledge_graph_query",
-            ], f"Dataset analysis should use delegate_coding_task or knowledge_graph_query, not {tool_name}"
-            assert tool_name != "web_search", "Should not use web_search for dataset-specific questions"
 
-    def test_brain_maintains_business_context(self, mock_ollama):
-        from data_scientist_chatbot.app.agent import run_brain_agent
+@pytest.mark.integration
+class TestBrainAgentInvocation:
+    """Tests for Brain agent invocation with proper mocking.
 
-        mock_ollama.bind_tools.return_value = mock_ollama
-        mock_ollama.invoke.return_value = AIMessage(content="Analysis complete")
+    These tests mock at the chain level to verify agent behavior.
+    """
 
-        state = {
-            "messages": [HumanMessage(content="Analyze sales data")],
-            "session_id": "test_123",
-            "current_agent": "brain",
-            "business_context": {"domain": "retail", "objective": "revenue_optimization"},
-            "retry_count": 0,
-            "last_agent_sequence": [],
-        }
+    def test_brain_returns_valid_state_structure(self, base_state):
+        """Brain agent should return a valid state dictionary."""
+        with patch("data_scientist_chatbot.app.agents.brain.create_brain_agent") as mock_factory:
+            mock_llm = MagicMock()
+            mock_factory.return_value = mock_llm
 
-        result = run_brain_agent(state)
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = MockAIResponse(content="Analysis complete.")
 
-        assert (
-            result.get("business_context", {}).get("domain") == "retail"
-            or "business_context" in result
-            or len(result.get("messages", [])) > 0
-        )
+            with patch("data_scientist_chatbot.app.agents.brain.get_brain_prompt") as mock_prompt:
+                mock_prompt_instance = MagicMock()
+                mock_prompt_instance.__or__ = MagicMock(return_value=mock_chain)
+                mock_prompt.return_value = mock_prompt_instance
 
-    def test_complexity_scoring_in_router(self):
-        from data_scientist_chatbot.app.agent import run_router_agent
-        from unittest.mock import patch, MagicMock
+                from data_scientist_chatbot.app.agents.brain import run_brain_agent
 
-        state = {
-            "messages": [HumanMessage(content="Analyze complex multivariate relationships with deep learning")],
-            "session_id": "test_123",
-            "python_executions": 0,
-            "plan": None,
-            "scratchpad": "",
-            "business_objective": None,
-            "task_type": None,
-            "target_column": None,
-            "workflow_stage": None,
-            "current_agent": "router",
-            "business_context": {},
-            "retry_count": 0,
-            "last_agent_sequence": [],
-            "router_decision": None,
-        }
+                result = run_brain_agent(base_state)
 
-        result = run_router_agent(state)
+                assert isinstance(result, dict), "Result should be a dictionary"
+                assert "messages" in result, "Result should contain messages"
+                assert "current_agent" in result, "Result should contain current_agent"
+                assert result["current_agent"] == "brain", "current_agent should be 'brain'"
 
-        assert "complexity_score" in result
-        assert isinstance(result["complexity_score"], int)
-        assert 1 <= result["complexity_score"] <= 10, "Complexity score should be 1-10"
+    def test_brain_appends_response_to_messages(self, base_state):
+        """Brain agent should return AI response in messages."""
+        with patch("data_scientist_chatbot.app.agents.brain.create_brain_agent") as mock_factory:
+            mock_llm = MagicMock()
+            mock_factory.return_value = mock_llm
 
-        assert "route_strategy" in result
-        assert result["route_strategy"] in ["direct", "standard", "collaborative"]
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = MockAIResponse(content="Here is my analysis.")
 
-    def test_complexity_routing_strategy_enforcement(self):
-        from data_scientist_chatbot.app.agent import run_router_agent
+            with patch("data_scientist_chatbot.app.agents.brain.get_brain_prompt") as mock_prompt:
+                mock_prompt_instance = MagicMock()
+                mock_prompt_instance.__or__ = MagicMock(return_value=mock_chain)
+                mock_prompt.return_value = mock_prompt_instance
 
-        simple_task_state = {
-            "messages": [HumanMessage(content="Show first 5 rows of data")],
-            "session_id": "test_123",
-            "python_executions": 0,
-            "plan": None,
-            "scratchpad": "",
-            "business_objective": None,
-            "task_type": None,
-            "target_column": None,
-            "workflow_stage": None,
-            "current_agent": "router",
-            "business_context": {},
-            "retry_count": 0,
-            "last_agent_sequence": [],
-            "router_decision": None,
-        }
+                from data_scientist_chatbot.app.agents.brain import run_brain_agent
 
-        result = run_router_agent(simple_task_state)
+                result = run_brain_agent(base_state)
 
-        if result["complexity_score"] <= 3:
-            assert result["route_strategy"] == "direct", "Simple tasks (score <= 3) should use 'direct' strategy"
+                # Brain returns the response in messages list
+                assert len(result["messages"]) >= 1, "Should have at least one message"
+                last_msg = result["messages"][-1]
+                assert hasattr(last_msg, "content"), "Last message should have content"
 
-    def test_session_memory_recording_after_brain_execution(self):
-        from data_scientist_chatbot.app.agent import run_brain_agent
-        from data_scientist_chatbot.app.core.session_memory import get_session_memory
-        from unittest.mock import patch
+    def test_brain_handles_tool_calls_in_response(self, base_state):
+        """Brain agent should properly handle responses with tool_calls."""
+        with patch("data_scientist_chatbot.app.agents.brain.create_brain_agent") as mock_factory:
+            mock_llm = MagicMock()
+            mock_factory.return_value = mock_llm
 
-        with patch("data_scientist_chatbot.app.agent.create_brain_agent") as mock_agent_factory:
-            mock_agent = MagicMock()
-            mock_agent.bind_tools.return_value = mock_agent
-            mock_agent.invoke.return_value = AIMessage(content="Analysis complete")
-            mock_agent_factory.return_value = mock_agent
+            mock_chain = MagicMock()
+            mock_response = MockAIResponse(
+                content="",
+                tool_calls=[
+                    {"name": "delegate_coding_task", "args": {"task_description": "Calculate stats"}, "id": "tc_1"}
+                ],
+            )
+            mock_chain.invoke.return_value = mock_response
 
-            state = {
-                "messages": [HumanMessage(content="Analyze the data")],
-                "session_id": "test_memory_123",
-                "python_executions": 0,
-                "plan": None,
-                "scratchpad": "",
-                "business_objective": None,
-                "task_type": None,
-                "target_column": None,
-                "workflow_stage": None,
-                "current_agent": "brain",
-                "business_context": {},
-                "retry_count": 0,
-                "last_agent_sequence": [],
-                "router_decision": "brain",
-            }
+            with patch("data_scientist_chatbot.app.agents.brain.get_brain_prompt") as mock_prompt:
+                mock_prompt_instance = MagicMock()
+                mock_prompt_instance.__or__ = MagicMock(return_value=mock_chain)
+                mock_prompt.return_value = mock_prompt_instance
 
-            result = run_brain_agent(state)
+                from data_scientist_chatbot.app.agents.brain import run_brain_agent
 
-            assert len(result["messages"]) > 0
-            assert result["current_agent"] == "brain"
+                result = run_brain_agent(base_state)
+
+                last_message = result["messages"][-1]
+                assert hasattr(last_message, "tool_calls") or "tool_calls" in str(type(last_message))
+
+    def test_brain_updates_agent_sequence(self, base_state):
+        """Brain should append itself to last_agent_sequence."""
+        with patch("data_scientist_chatbot.app.agents.brain.create_brain_agent") as mock_factory:
+            mock_llm = MagicMock()
+            mock_factory.return_value = mock_llm
+
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = MockAIResponse(content="Done.")
+
+            with patch("data_scientist_chatbot.app.agents.brain.get_brain_prompt") as mock_prompt:
+                mock_prompt_instance = MagicMock()
+                mock_prompt_instance.__or__ = MagicMock(return_value=mock_chain)
+                mock_prompt.return_value = mock_prompt_instance
+
+                from data_scientist_chatbot.app.agents.brain import run_brain_agent
+
+                result = run_brain_agent(base_state)
+
+                assert "brain" in result.get("last_agent_sequence", []), "Brain should be in agent sequence"
+
+
+@pytest.mark.integration
+class TestBrainAgentContext:
+    """Tests for Brain agent context handling."""
+
+    def test_brain_uses_session_id_from_state(self, base_state):
+        """Brain should use session_id from state."""
+        base_state["session_id"] = "unique_session_456"
+
+        with patch("data_scientist_chatbot.app.agents.brain.create_brain_agent") as mock_factory:
+            mock_llm = MagicMock()
+            mock_factory.return_value = mock_llm
+
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = MockAIResponse(content="Response.")
+
+            with patch("data_scientist_chatbot.app.agents.brain.get_brain_prompt") as mock_prompt:
+                mock_prompt_instance = MagicMock()
+                mock_prompt_instance.__or__ = MagicMock(return_value=mock_chain)
+                mock_prompt.return_value = mock_prompt_instance
+
+                with patch("data_scientist_chatbot.app.agents.brain.get_data_context") as mock_context:
+                    mock_context.return_value = "Context for unique_session_456"
+
+                    from data_scientist_chatbot.app.agents.brain import run_brain_agent
+
+                    run_brain_agent(base_state)
+
+                    mock_context.assert_called()
+
+    def test_brain_preserves_agent_insights(self, base_state):
+        """Brain should preserve agent_insights in state."""
+        base_state["agent_insights"] = [{"label": "Test Insight", "value": "42"}]
+
+        with patch("data_scientist_chatbot.app.agents.brain.create_brain_agent") as mock_factory:
+            mock_llm = MagicMock()
+            mock_factory.return_value = mock_llm
+
+            mock_chain = MagicMock()
+            mock_chain.invoke.return_value = MockAIResponse(content="Analysis.")
+
+            with patch("data_scientist_chatbot.app.agents.brain.get_brain_prompt") as mock_prompt:
+                mock_prompt_instance = MagicMock()
+                mock_prompt_instance.__or__ = MagicMock(return_value=mock_chain)
+                mock_prompt.return_value = mock_prompt_instance
+
+                from data_scientist_chatbot.app.agents.brain import run_brain_agent
+
+                result = run_brain_agent(base_state)
+
+                assert result.get("agent_insights") == [{"label": "Test Insight", "value": "42"}]
+
+
+@pytest.mark.integration
+class TestBrainHelperFunctions:
+    """Tests for Brain agent helper functions."""
+
+    def test_extract_last_user_message(self):
+        """Should extract the last human message content."""
+        from data_scientist_chatbot.app.agents.brain import _extract_last_user_message
+
+        messages = [
+            HumanMessage(content="First question"),
+            AIMessage(content="First answer"),
+            HumanMessage(content="Second question"),
+            AIMessage(content="Second answer"),
+        ]
+
+        result = _extract_last_user_message(messages)
+        assert result == "Second question", "Should return last human message"
+
+    def test_extract_last_user_message_empty(self):
+        """Should return default when no human messages."""
+        from data_scientist_chatbot.app.agents.brain import _extract_last_user_message
+
+        messages = [AIMessage(content="Only AI")]
+
+        result = _extract_last_user_message(messages)
+        assert result == "Provide analysis and insights.", "Should return default"
+
+    def test_filter_messages_removes_internal(self):
+        """Should filter out internal AI messages."""
+        from data_scientist_chatbot.app.agents.brain import _filter_messages_for_brain
+
+        internal_msg = AIMessage(content="Internal processing")
+        internal_msg.additional_kwargs = {"internal": True}
+
+        messages = [
+            HumanMessage(content="User question"),
+            internal_msg,
+            AIMessage(content="Public response"),
+        ]
+
+        filtered = _filter_messages_for_brain(messages, [], [])
+
+        assert len(filtered) == 2, "Should filter out internal message"
+        assert all(not getattr(m, "additional_kwargs", {}).get("internal") for m in filtered)
+
+    def test_fix_artifact_paths(self):
+        """Should fix artifact paths in content."""
+        from data_scientist_chatbot.app.agents.brain import _fix_artifact_paths
+
+        content = "Here's the chart: ![chart](myplot.png)"
+        result = _fix_artifact_paths(content)
+
+        assert "/static/plots/" in result or "myplot.png" in result

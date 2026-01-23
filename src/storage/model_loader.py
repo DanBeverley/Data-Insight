@@ -13,14 +13,14 @@ class ModelLoader:
     Handles loading models from blob storage with local caching
     """
 
-    def __init__(self, blob_service, registry_service, cache_dir: Optional[Path] = None):
+    def __init__(self, cloud_storage, registry_service, cache_dir: Optional[Path] = None):
         """
         Args:
-            blob_service: BlobStorageService instance
+            cloud_storage: Cloud storage service instance (R2StorageService)
             registry_service: ModelRegistryService instance
             cache_dir: Local cache directory (defaults to data/model_cache)
         """
-        self.blob_service = blob_service
+        self.blob_service = cloud_storage
         self.registry = registry_service
 
         if cache_dir is None:

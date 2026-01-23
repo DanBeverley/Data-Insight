@@ -1,4 +1,4 @@
-"""Multi-Layer Anomaly Detection System for DataInsight AI"""
+"""Multi-Layer Anomaly Detection System for Quorvix AI"""
 
 import logging
 import numpy as np
@@ -73,7 +73,7 @@ class MultiLayerAnomalyDetector:
         self._detect_statistical_outliers(df)
 
         # Layer 2: Distribution-based detection
-        if reference_df is not None:
+        if reference_df is not None and isinstance(reference_df, pd.DataFrame):
             self._detect_distribution_anomalies(df, reference_df)
 
         # Layer 3: Pattern-based detection

@@ -18,10 +18,71 @@ async def get_data_preview(session_id: str, rows: int = 10):
     if session_id not in session_store:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    if "dataframe" not in session_store[session_id]:
+        return {"data": [], "shape": [0, 0], "columns": [], "message": "No dataset uploaded"}
+
     df = session_store[session_id]["dataframe"]
-    preview_data = df.head(rows).to_dict("records")
+
+    # Replace NaN/Infinity with None for JSON compliance
+    df_clean = df.replace([float("inf"), float("-inf")], None).where(pd.notnull(df), None)
+
+    preview_data = df_clean.head(rows).to_dict("records")
 
     return {"data": preview_data, "shape": df.shape, "columns": df.columns.tolist()}
+
+
+@router.get("/{session_id}/uploads")
+async def get_session_uploads(session_id: str):
+    from ..api import session_store
+
+    uploads = []
+    seen_files = set()
+
+    # 1. Check in-memory session store
+    if session_id in session_store:
+        session_data = session_store[session_id]
+        datasets = session_data.get("datasets", {})
+        for filename, df in datasets.items():
+            uploads.append(
+                {
+                    "filename": filename,
+                    "rows": len(df) if df is not None else 0,
+                    "columns": len(df.columns) if df is not None else 0,
+                }
+            )
+            seen_files.add(filename)
+
+        if session_data.get("filename") and session_data["filename"] not in seen_files:
+            df = session_data.get("dataframe")
+            uploads.append(
+                {
+                    "filename": session_data["filename"],
+                    "rows": len(df) if df is not None else 0,
+                    "columns": len(df.columns) if df is not None else 0,
+                }
+            )
+            seen_files.add(session_data["filename"])
+
+    # 2. Check disk for persisted files (handle backend reboot)
+    # Using relative path from project root (assumed CWD)
+    try:
+        upload_dir = Path(f"data/uploads/{session_id}")
+        if upload_dir.exists():
+            for file_path in upload_dir.glob("*"):
+                if file_path.is_file() and file_path.name not in seen_files:
+                    # Basic metadata since we can't load DF instantly
+                    uploads.append(
+                        {
+                            "filename": file_path.name,
+                            "rows": 0,  # Unknown without loading
+                            "columns": 0,  # Unknown without loading
+                        }
+                    )
+                    seen_files.add(file_path.name)
+    except Exception as e:
+        print(f"Error scanning upload dir: {e}")
+
+    return {"files": uploads, "status": "success" if uploads else "no_files"}
 
 
 @router.post("/{session_id}/eda")
@@ -66,7 +127,10 @@ async def generate_eda(session_id: str):
 
         categorical_cols = df.select_dtypes(include=["object", "category"]).columns[:5]
         for col in categorical_cols:
-            value_counts = df[col].value_counts().head()
+            try:
+                value_counts = df[col].value_counts().head()
+            except TypeError:
+                value_counts = df[col].astype(str).value_counts().head()
             eda_report["categorical_summary"][col] = {str(k): int(v) for k, v in value_counts.to_dict().items()}
 
         session_store[session_id]["eda_report"] = eda_report
@@ -102,8 +166,10 @@ async def get_intelligence_profile(session_id: str):
 
         if "intelligence_profile" in session_store[session_id]:
             intelligence_profile = session_store[session_id]["intelligence_profile"]
-        elif hasattr(builtins, "_session_store") and session_id in builtins._session_store:
-            session_data = builtins._session_store[session_id]
+        else:
+            from src.api_utils.session_management import session_data_manager
+
+            session_data = session_data_manager.get_session(session_id)
             if "data_profile" in session_data:
                 data_profile = session_data["data_profile"]
                 column_profiles = {}
@@ -389,7 +455,7 @@ async def get_session_artifacts(session_id: str, category: Optional[str] = None)
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
 
-        artifacts_data = artifact_tracker.get_session_artifacts(session_id, cat_filter)
+        artifacts_data = artifact_tracker.get_session_artifacts_with_urls(session_id, cat_filter)
 
         return {"status": "success", **artifacts_data}
 
@@ -520,6 +586,77 @@ async def zip_selected_artifacts(session_id: str, request: dict):
         raise HTTPException(status_code=500, detail=f"Error creating zip file: {str(e)}")
 
 
+@router.get("/{session_id}/artifacts/zip-all")
+async def zip_all_artifacts(session_id: str, dataset: Optional[str] = None):
+    from ..api_utils.artifact_tracker import artifact_tracker
+    import shutil
+
+    artifacts_data = artifact_tracker.get_session_artifacts(session_id)
+    all_artifacts = artifacts_data.get("artifacts", [])
+
+    if dataset:
+        dataset_lower = dataset.lower()
+        all_artifacts = [
+            a
+            for a in all_artifacts
+            if a.get("source_dataset") == dataset
+            or dataset_lower in a.get("filename", "").lower()
+            or dataset_lower in a.get("description", "").lower()
+        ]
+
+    if not all_artifacts:
+        detail = f"No artifacts found for dataset '{dataset}'" if dataset else "No artifacts found for this session"
+        raise HTTPException(status_code=404, detail=detail)
+
+    temp_dir = tempfile.mkdtemp()
+    dataset_slug = f"_{dataset[:20]}" if dataset else ""
+    zip_filename = f"artifacts{dataset_slug}_{session_id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    zip_path = Path(temp_dir) / zip_filename
+
+    files_added = 0
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for artifact in all_artifacts:
+                file_path = Path(artifact.get("file_path", ""))
+
+                if file_path.exists():
+                    arcname = f"{artifact.get('category', 'misc')}/{artifact['filename']}"
+                    zipf.write(file_path, arcname=arcname)
+                    files_added += 1
+
+        if files_added == 0:
+            raise HTTPException(status_code=404, detail="No artifact files could be found on disk")
+
+        if not zip_path.exists() or zip_path.stat().st_size == 0:
+            raise HTTPException(status_code=500, detail="Failed to create zip file")
+
+        def cleanup():
+            try:
+                if os.path.exists(str(zip_path)):
+                    os.unlink(str(zip_path))
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename=zip_filename,
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"},
+            background=cleanup,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if zip_path.exists():
+            os.unlink(zip_path)
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Error creating zip file: {str(e)}")
+
+
 @router.delete("/{session_id}/artifacts/{artifact_id}")
 async def delete_artifact(session_id: str, artifact_id: str):
     from ..api_utils.artifact_tracker import artifact_tracker
@@ -536,26 +673,263 @@ async def delete_artifact(session_id: str, artifact_id: str):
         raise HTTPException(status_code=500, detail=f"Error removing artifact: {str(e)}")
 
 
-@router.get("/quota/status")
-async def get_quota_status():
-    """Get GPU quota status for AWS and Azure"""
+@router.get("/{session_id}/artifact/{filename:path}")
+async def get_artifact_file(session_id: str, filename: str):
+    from fastapi.responses import RedirectResponse, StreamingResponse
+    from ..api_utils.artifact_tracker import artifact_tracker
+    import io
+
+    project_root = Path(__file__).parent.parent.parent
+    local_path = project_root / "static" / "plots" / filename
+
+    if local_path.exists():
+        return FileResponse(local_path)
+
     try:
-        import sys
-        from pathlib import Path
+        artifacts_data = artifact_tracker.get_session_artifacts(session_id)
+        artifacts = artifacts_data.get("artifacts", [])
 
-        app_path = Path(__file__).resolve().parent.parent.parent / "data_scientist_chatbot" / "app" / "core"
-        sys.path.insert(0, str(app_path))
+        matching_artifact = None
+        for artifact in artifacts:
+            if artifact.get("filename") == filename:
+                matching_artifact = artifact
+                break
 
-        from quota_tracker import quota_tracker
+        if not matching_artifact:
+            raise HTTPException(status_code=404, detail="Artifact not found")
 
-        status = quota_tracker.get_quota_status()
+        if matching_artifact.get("presigned_url"):
+            return RedirectResponse(url=matching_artifact["presigned_url"])
 
-        return {"status": "success", "quotas": status, "timestamp": datetime.now().isoformat()}
+        if matching_artifact.get("blob_url"):
+            return RedirectResponse(url=matching_artifact["blob_url"])
+
+        blob_path = matching_artifact.get("blob_path")
+        if blob_path:
+            from src.storage.cloud_storage import get_cloud_storage
+
+            storage = get_cloud_storage()
+            if storage:
+                presigned = storage.get_blob_url(blob_path, expires_in=86400)
+                return RedirectResponse(url=presigned)
+
+        raise HTTPException(status_code=404, detail="Artifact not available locally or in cloud")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching artifact: {str(e)}")
+
+
+@router.get("/{session_id}/insights")
+async def get_session_insights(session_id: str):
+    """
+    Get intelligent insights for a session using hybrid data profiler.
+    No rigid pattern matching - uses ML-based semantic understanding.
+    """
+    from ..api import session_store
+    from ..intelligence.hybrid_data_profiler import generate_dataset_profile_for_agent
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        if session_id not in session_store:
+            return {"status": "success", "insights": [], "message": "No data available for this session"}
+
+        session_data = session_store[session_id]
+        df = session_data.get("dataframe")
+        data_profile = session_data.get("data_profile")
+
+        if df is None:
+            return {"status": "success", "insights": [], "message": "No dataset uploaded yet"}
+
+        import builtins
+
+        agent_insights = []
+        if hasattr(builtins, "_session_store") and session_id in builtins._session_store:
+            agent_insights = builtins._session_store[session_id].get("agent_insights", [])
+            print(f"DEBUG: get_session_insights found {len(agent_insights)} agent insights from builtins")
+
+        if not agent_insights:
+            from src.api_utils.session_management import session_data_manager
+
+            session_mgr_data = session_data_manager.get_session(session_id)
+            if session_mgr_data:
+                agent_insights = session_mgr_data.get("agent_insights", [])
+                print(
+                    f"DEBUG: get_session_insights found {len(agent_insights)} agent insights from session_data_manager"
+                )
+
+        # Fallback to persistent storage (survives restart)
+        if not agent_insights:
+            from src.api_utils.artifact_tracker import get_artifact_tracker
+
+            tracker = get_artifact_tracker()
+            agent_insights = tracker.get_insights(session_id)
+            if agent_insights:
+                print(
+                    f"DEBUG: get_session_insights loaded {len(agent_insights)} insights from artifact_tracker (persistent)"
+                )
+
+        system_insights = []
+        if data_profile:
+            try:
+                summary = data_profile.dataset_insights
+                system_insights.append(
+                    {
+                        "label": "Dataset Size",
+                        "value": f"{summary.total_records:,} rows × {summary.total_features} cols",
+                        "type": "summary",
+                        "source": "System",
+                    }
+                )
+
+                if summary.missing_data_percentage > 0:
+                    system_insights.append(
+                        {
+                            "label": "Data Quality",
+                            "value": f"{summary.missing_data_percentage}% missing data",
+                            "type": "warning",
+                            "source": "System",
+                        }
+                    )
+                else:
+                    system_insights.append(
+                        {
+                            "label": "Data Quality",
+                            "value": "No missing values detected",
+                            "type": "success",
+                            "source": "System",
+                        }
+                    )
+
+                # Memory usage - NOT available directly in DatasetInsights
+                # system_insights.append({
+                #     "label": "Memory Usage",
+                #     "value": f"{summary.memory_usage_mb:.2f} MB",
+                #     "type": "info",
+                #     "source": "System"
+                # })
+            except Exception as e:
+                logger.warning(f"Failed to extract system insights: {e}")
+
+        combined_insights = agent_insights + system_insights
+
+        if not combined_insights:
+            combined_insights = [
+                {"label": "Status", "value": "Waiting for analysis...", "type": "info", "source": "System"}
+            ]
+
+        return {
+            "status": "success",
+            "insights": combined_insights,
+            "session_id": session_id,
+            "source": "tiered_insight_system",
+        }
 
     except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Failed to fetch quota: {str(e)}",
-            "quotas": {},
-            "timestamp": datetime.now().isoformat(),
-        }
+        logger.error(f"Error generating insights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{session_id}/artifact/{filename}/code")
+async def get_artifact_code(session_id: str, filename: str):
+    from src.api_utils.code_registry import get_code_registry
+
+    code_registry = get_code_registry()
+    code_entry = code_registry.get_code_for_artifact(session_id, filename)
+
+    if not code_entry:
+        raise HTTPException(status_code=404, detail="Code not found for this artifact")
+
+    return {"code": code_entry.get("code", ""), "description": code_entry.get("description", "")}
+
+
+@router.get("/{session_id}/artifact/{filename}/export/{format}")
+async def export_artifact(session_id: str, filename: str, format: str):
+    from fastapi.responses import Response, StreamingResponse
+    from src.api_utils.code_registry import get_code_registry
+    from io import BytesIO
+
+    code_registry = get_code_registry()
+    code_entry = code_registry.get_code_for_artifact(session_id, filename)
+
+    if format == "code":
+        if not code_entry:
+            raise HTTPException(status_code=404, detail="Code not found for this artifact")
+
+        code_content = code_entry.get("code", "")
+        py_filename = filename.rsplit(".", 1)[0] + ".py"
+
+        return Response(
+            content=code_content,
+            media_type="text/x-python",
+            headers={"Content-Disposition": f"attachment; filename={py_filename}"},
+        )
+
+    elif format == "notebook":
+        if not code_entry:
+            raise HTTPException(status_code=404, detail="Code not found for this artifact")
+
+        import nbformat
+        from nbformat.v4 import new_notebook, new_code_cell, new_markdown_cell
+
+        nb = new_notebook()
+        nb.cells.append(new_markdown_cell(f"# Code for {filename}"))
+        nb.cells.append(new_code_cell("import pandas as pd\nimport numpy as np\nimport plotly.express as px"))
+        nb.cells.append(new_code_cell(code_entry.get("code", "")))
+
+        nb_filename = filename.rsplit(".", 1)[0] + ".ipynb"
+
+        return Response(
+            content=nbformat.writes(nb),
+            media_type="application/x-ipynb+json",
+            headers={"Content-Disposition": f"attachment; filename={nb_filename}"},
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+
+
+@router.get("/{session_id}/code/export/{format}")
+async def export_session_code(session_id: str, format: str):
+    from fastapi.responses import Response
+    from src.api_utils.code_registry import get_code_registry
+
+    code_registry = get_code_registry()
+
+    if format == "script":
+        script_content = code_registry.export_as_script(session_id)
+        if not script_content:
+            raise HTTPException(status_code=404, detail="No code found for this session")
+
+        return Response(
+            content=script_content,
+            media_type="text/x-python",
+            headers={"Content-Disposition": f"attachment; filename=analysis_{session_id[:8]}.py"},
+        )
+
+    elif format == "notebook":
+        notebook_content = code_registry.export_as_notebook(session_id)
+        if not notebook_content:
+            raise HTTPException(status_code=404, detail="No code found for this session")
+
+        return Response(
+            content=notebook_content,
+            media_type="application/x-ipynb+json",
+            headers={"Content-Disposition": f"attachment; filename=analysis_{session_id[:8]}.ipynb"},
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}. Use 'script' or 'notebook'")
+
+
+@router.get("/{session_id}/code")
+async def get_session_code(session_id: str):
+    from src.api_utils.code_registry import get_code_registry
+
+    code_registry = get_code_registry()
+    codes = code_registry.get_session_code(session_id)
+
+    return {"session_id": session_id, "code_entries": codes, "total": len(codes)}

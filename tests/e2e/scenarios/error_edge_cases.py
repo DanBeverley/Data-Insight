@@ -2,9 +2,14 @@ import pytest
 import pandas as pd
 from typing import List
 from tests.e2e.scenarios.base_scenario import BaseScenario, ScenarioStep
+import os
+
+# Skip all e2e tests in CI environment (requires Ollama LLM)
+pytestmark = pytest.mark.skipif(
+    os.environ.get("CI") == "true", reason="E2E tests require Ollama LLM which is not available in CI"
+)
 
 
-@pytest.mark.e2e
 class ErrorEdgeCasesScenario(BaseScenario):
     def __init__(self):
         super().__init__(

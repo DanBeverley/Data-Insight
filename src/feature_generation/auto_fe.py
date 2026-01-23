@@ -1,4 +1,4 @@
-"""Intelligent Automated Feature Engineering Module for DataInsight AI"""
+"""Intelligent Automated Feature Engineering Module for Quorvix AI"""
 
 import logging
 import psutil
@@ -539,7 +539,7 @@ class AutomatedFeatureEngineer:
 
         logging.info("Starting Deep Feature Synthesis...")
 
-        self.entityset = ft.EntitySet(id="datainsight_es")
+        self.entityset = ft.EntitySet(id="Quorvix_es")
 
         # Add dataframes to entityset
         for entity_name, df_original in dataframes.items():
