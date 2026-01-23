@@ -54,7 +54,8 @@ class TestReportGenerationFlow:
 
 @pytest.mark.integration
 class TestReportExportFlow:
-    def test_export_to_pdf_integration(self, mock_report_data: Dict):
+    @pytest.mark.asyncio
+    async def test_export_to_pdf_integration(self, mock_report_data: Dict):
         from src.reporting.report_exporter import get_report_exporter
 
         exporter = get_report_exporter()
@@ -64,11 +65,13 @@ class TestReportExportFlow:
         ]
 
         try:
-            result = exporter.export_pdf(sections, title="Test Report")
+            result = await exporter.export_pdf(sections, title="Test Report")
             assert isinstance(result, bytes)
             assert result[:4] == b"%PDF"
-        except ImportError:
-            pytest.skip("reportlab not installed")
+        except (ImportError, Exception) as e:
+            if "playwright" in str(e).lower() or "browser" in str(e).lower():
+                pytest.skip("Playwright browser not available")
+            raise
 
     def test_export_to_html_integration(self, mock_report_data: Dict):
         from src.reporting.report_exporter import get_report_exporter
