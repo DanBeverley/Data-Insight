@@ -22,6 +22,32 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Node.js
+node_modules/
+frontend/node_modules/
+npm-debug.log
+yarn-error.log
+
+# Static Generated Files
+static/plots/
+static/reports/
+static/assets/
+static/chart_cache/
+static/index.js
+static/sw.js
+static/*.html
+static/*.js
+static/*.css
+!static/plots/
+
+# Test artifacts
+reports/
+.pytest_cache/
+coverage.xml
+.coverage.*
+junit.xml
+test-results/
+
 # Virtual Environment
 venv/
 env/
@@ -97,15 +123,6 @@ docs/_build/
 *.temp
 *.log
 
-
-# Test artifacts
-reports/
-.pytest_cache/
-coverage.xml
-.coverage.*
-junit.xml
-test-results/
-
 # Docker
 .dockerignore
 docker-compose.override.yml
@@ -115,7 +132,6 @@ artifact_storage.json
 temp_frontend_analysis/
 frontend_backup*/
 *_backup_*/
-node_modules/
 package-lock.json
 *.tsbuildinfo
 
@@ -125,14 +141,3 @@ sessions_metadata.db*
 context.db*
 *.db-shm
 *.db-wal
-
-# Static build artifacts (exclude plots which are user data)
-static/assets/
-static/*.html
-static/*.js
-static/*.css
-!static/plots/
-
-# Generated artifacts
-static/plots/
-static/chart_cache/
