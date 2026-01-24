@@ -3,6 +3,8 @@
 > An AI data science platform with multi-agent architecture, self-learning capabilities, deep research, database connect, cloud GPU training.
 ---
 
+**[🚀 Live Demo](https://35.184.75.148.nip.io)**
+
 ## ✨ Features
 
 ### 🤖 Multi-Agent Architecture (LangGraph)
