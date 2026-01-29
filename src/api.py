@@ -588,7 +588,7 @@ async def chat_endpoint(chat_request: ChatMessage, background_tasks: BackgroundT
             db_conn.close()
 
             if current_title == "New Chat" and len(final_response_content) > 20:
-                # We need to wrap the async call for background tasks
+
                 async def run_auto_name(sid, msg, resp):
                     try:
                         await auto_name_session(sid, {"user_message": msg, "agent_response": resp}, None)
@@ -627,8 +627,16 @@ async def upload_data(
 
         if session_id in session_store:
             session_owner = session_store[session_id].get("user_id")
-            if session_owner and session_owner != user_id and session_owner != "anonymous":
+            # Session access rules:
+            # 1. Anonymous sessions can be accessed by anyone (allows upgrade to logged-in)
+            # 2. Anonymous users can access any session (allows logout then continue working)
+            # 3. Only block if both are authenticated AND explicitly different users
+            if session_owner and session_owner != "anonymous" and user_id != "anonymous" and session_owner != user_id:
                 raise HTTPException(status_code=403, detail="Not authorized to access this session")
+            # Upgrade anonymous session to logged-in user's session
+            if session_owner == "anonymous" and user_id != "anonymous":
+                session_store[session_id]["user_id"] = user_id
+                logging.info(f"[SESSION] Upgraded anonymous session {session_id} to user {user_id}")
         else:
             session_store[session_id] = {"user_id": user_id}
 
@@ -889,7 +897,13 @@ async def upload_data(
             else None,
         }
 
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is (403, 400, etc.)
     except Exception as e:
+        import traceback
+
+        logging.error(f"[UPLOAD] Error processing upload: {e}")
+        logging.error(f"[UPLOAD] Traceback:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error processing upload: {str(e)}")
 
 
