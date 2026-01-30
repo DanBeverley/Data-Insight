@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpangocairo-1.0-0 \
     libgdk-pixbuf-2.0-0 \
     shared-mime-info \
+    zstd \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
