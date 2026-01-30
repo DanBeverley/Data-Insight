@@ -10,10 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for layer caching
-COPY requirements.txt .
+COPY requirements-railway.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (CPU-only, lighter)
+RUN pip install --no-cache-dir -r requirements-railway.txt
 
 # Copy application code
 COPY . .
