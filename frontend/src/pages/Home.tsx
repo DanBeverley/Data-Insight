@@ -36,16 +36,19 @@ export default function Home() {
       try {
         if (user) {
           const savedSessionId = localStorage.getItem('current_session_id');
-          if (savedSessionId && !savedSessionId.startsWith('guest_')) {
-            setSessionId(savedSessionId);
-            return;
-          }
-
-          localStorage.removeItem('current_session_id');
 
           const response = await authFetch('/api/sessions');
           if (response.ok) {
             const sessions = await response.json();
+            const sessionIds = sessions?.map((s: { id: string }) => s.id) || [];
+
+            if (savedSessionId && sessionIds.includes(savedSessionId)) {
+              setSessionId(savedSessionId);
+              return;
+            }
+
+            localStorage.removeItem('current_session_id');
+
             if (sessions?.length > 0) {
               setSessionId(sessions[0].id);
               localStorage.setItem('current_session_id', sessions[0].id);
@@ -60,6 +63,7 @@ export default function Home() {
             localStorage.setItem('current_session_id', data.session_id);
           }
         } else {
+          localStorage.removeItem('current_session_id');
           const response = await fetch('/api/sessions/new', { method: 'POST' });
           if (response.ok) {
             const data = await response.json();
