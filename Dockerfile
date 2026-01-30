@@ -31,16 +31,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 1: Base requirements (Cached if unchanged)
+# Layer 1: Base requirements (Cached if unchanged)
 COPY requirements-base.txt .
 RUN pip install --no-cache-dir --user -r requirements-base.txt
 
 # Layer 2: Heavy/New requirements (Only this re-runs if fast-changing)
 COPY requirements-heavy.txt .
-RUN pip install --no-cache-dir --user -r requirements-heavy.txt
+RUN pip install --no-cache-dir --user -r requirements-heavy.txt && \
+    rm -rf /root/.cache/pip
 
-# Install Playwright browsers (Chromium only to save space)
-RUN /root/.local/bin/playwright install chromium
-
+# Install Playwright browsers (Chromium only) & Clean up
+RUN /root/.local/bin/playwright install chromium --with-deps && \
+    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /root/.cache/ms-playwright/chromium-*/headless_shell.tar.gz
 
 # =============================================================================
 # Stage 3: Final Production Image
@@ -54,13 +57,13 @@ COPY --from=python-builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 # Install minimal runtime dependencies + System libs for WeasyPrint/Playwright
+# Removed libffi-dev (build only)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libcairo2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
     libgdk-pixbuf-2.0-0 \
-    libffi-dev \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
