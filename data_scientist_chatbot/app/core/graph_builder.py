@@ -44,6 +44,12 @@ except ImportError as e:
     CHECKPOINTER_AVAILABLE = False
 
 DB_PATH = "data/databases/checkpoints.db"
+
+# Ensure database directory exists (for Railway/Docker deployments)
+import os
+
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
 _checkpointer: Optional[AsyncSqliteSaver] = None
 
 
