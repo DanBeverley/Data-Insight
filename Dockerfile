@@ -1,38 +1,58 @@
-# Multi-stage build for smaller image
-FROM python:3.11-slim as builder
+# =============================================================================
+# Stage 1: Build Frontend
+# =============================================================================
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /frontend
+
+# Copy frontend files
+COPY frontend/package*.json ./
+RUN npm ci --prefer-offline --no-audit
+
+COPY frontend/ ./
+RUN npm run build
+
+# =============================================================================
+# Stage 2: Install Python Dependencies
+# =============================================================================
+FROM python:3.11-slim AS python-builder
 
 WORKDIR /build
 
-# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
 COPY requirements-railway.txt .
 RUN pip install --no-cache-dir --user -r requirements-railway.txt
 
-# Final stage - smaller image
+# =============================================================================
+# Stage 3: Final Production Image
+# =============================================================================
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy only runtime dependencies from builder
-COPY --from=builder /root/.local /root/.local
+# Copy Python dependencies from builder
+COPY --from=python-builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
-# Install minimal runtime dependencies only
+# Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    && rm -rf /var/cache/apt/archives/*
+    && apt-get clean
 
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE 8000
+# Copy built frontend assets from frontend-builder
+COPY --from=frontend-builder /frontend/dist/assets ./static/assets
+COPY --from=frontend-builder /frontend/dist/index.html ./static/index.html
+COPY --from=frontend-builder /frontend/dist/favicon.svg ./static/favicon.svg
+
+# Expose port (Railway sets PORT env var)
+EXPOSE 8080
 
 # Run the application
 CMD ["python", "run_app.py"]
