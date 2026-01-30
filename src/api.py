@@ -209,11 +209,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="DnA", description="", version="2.0.0", lifespan=lifespan)
 
-# Mount static assets
+# Mount static assets (create directories if they don't exist for Railway)
 import os
 
 static_dir = Path("static")
-if static_dir.exists():
+static_assets_dir = Path("static/assets")
+static_plots_dir = Path("static/plots")
+static_models_dir = Path("static/models")
+static_datasets_dir = Path("static/datasets")
+
+# Create required directories
+for dir_path in [static_dir, static_assets_dir, static_plots_dir, static_models_dir, static_datasets_dir]:
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+if static_assets_dir.exists():
     app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 
 
