@@ -35,12 +35,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements-base.txt .
 RUN pip install --no-cache-dir --user -r requirements-base.txt
 
-# Layer 2: Heavy/New requirements (Only this re-runs if fast-changing)
 COPY requirements-heavy.txt .
-RUN pip install --no-cache-dir --user -r requirements-heavy.txt && \
+RUN pip install --no-cache-dir --user -r requirements-heavy.txt --extra-index-url https://download.pytorch.org/whl/cpu && \
     rm -rf /root/.cache/pip
 
-# Install Playwright browsers (Chromium only) & Clean up
 RUN /root/.local/bin/playwright install chromium --with-deps && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /root/.cache/ms-playwright/chromium-*/headless_shell.tar.gz
