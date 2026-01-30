@@ -66,17 +66,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy application code
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
+COPY start.sh .
+RUN chmod +x start.sh
+
 COPY . .
 
-# Copy built frontend assets from frontend-builder
-# Note: Vite builds to ../static (relative to frontend), so in Docker it's at /static
 COPY --from=frontend-builder /static/assets ./static/assets
 COPY --from=frontend-builder /static/index.html ./static/index.html
 COPY --from=frontend-builder /static/favicon.svg ./static/favicon.svg
 
-# Expose port (Railway sets PORT env var)
 EXPOSE 8080
 
-# Run the application
-CMD ["python", "run_app.py"]
+CMD ["./start.sh"]
