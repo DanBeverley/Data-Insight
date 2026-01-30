@@ -168,6 +168,7 @@ async def lifespan(app: FastAPI):
             )
 
             async with AsyncSqliteSaver.from_conn_string(DB_PATH) as checkpointer:
+                await checkpointer.setup()
                 set_checkpointer(checkpointer)
                 logging.info("AsyncSqliteSaver initialized successfully")
 
