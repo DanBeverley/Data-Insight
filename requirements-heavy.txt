@@ -1,0 +1,19 @@
+# Heavy ML/Analytics packages (install these last in Dockerfile)
+
+# NLP & ML
+sentence-transformers>=2.2.0
+flaml[automl]>=2.1.0
+pyLDAvis>=3.4.0
+ydata-profiling>=4.6.0
+
+# Document Processing (Needs system deps: weasyprint needs libpango/libcairo)
+weasyprint>=60.0
+python-docx>=1.0.0
+python-pptx>=0.6.23
+PyMuPDF>=1.23.0
+beautifulsoup4>=4.12.0
+odfpy>=1.4.1
+striprtf>=0.0.26
+
+# Heavy Tools
+playwright>=1.40.0
