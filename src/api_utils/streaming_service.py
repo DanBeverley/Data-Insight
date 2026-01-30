@@ -799,7 +799,13 @@ async def _stream_with_events(
 
 
 async def cancellable_stream(stream, session_id):
+    """Stream wrapper with cancellation support and SSE keepalive."""
+    import time
+
     iterator = stream.__aiter__()
+    last_heartbeat = time.time()
+    HEARTBEAT_INTERVAL = 15  # Send heartbeat every 15 seconds to keep connection alive
+
     while True:
         from .cancellation import is_task_cancelled
 
@@ -817,7 +823,14 @@ async def cancellable_stream(stream, session_id):
                         pass
                     yield {"__cancelled__": True}
                     return
+
+                # Send SSE keepalive heartbeat to prevent connection timeout
+                if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
+                    yield {"__heartbeat__": True}
+                    last_heartbeat = time.time()
+
                 await asyncio.sleep(0.5)
+            last_heartbeat = time.time()  # Reset heartbeat timer on actual event
             yield next_item_task.result()
         except StopAsyncIteration:
             break
@@ -891,6 +904,11 @@ async def _stream_fallback(message: str, session_id: str, agent) -> AsyncGenerat
                 logging.info(f"[STREAM] User cancelled task for session {session_id}")
                 yield f"data: {json.dumps({'type': 'cancelled', 'message': 'Generation stopped by user'})}\n\n"
                 break
+
+            # Handle SSE keepalive heartbeat - send as SSE comment to keep connection alive
+            if "__heartbeat__" in event:
+                yield ": keepalive\n\n"
+                continue
 
             elapsed = time.time() - start_time
 
