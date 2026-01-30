@@ -47,9 +47,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 # Copy built frontend assets from frontend-builder
-COPY --from=frontend-builder /frontend/dist/assets ./static/assets
-COPY --from=frontend-builder /frontend/dist/index.html ./static/index.html
-COPY --from=frontend-builder /frontend/dist/favicon.svg ./static/favicon.svg
+# Note: Vite builds to ../static (relative to frontend), so in Docker it's at /static
+COPY --from=frontend-builder /static/assets ./static/assets
+COPY --from=frontend-builder /static/index.html ./static/index.html
+COPY --from=frontend-builder /static/favicon.svg ./static/favicon.svg
 
 # Expose port (Railway sets PORT env var)
 EXPOSE 8080
